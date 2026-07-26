@@ -22,6 +22,8 @@ export interface GoogleOAuthConfig {
 export interface GoogleAuthorizationResult {
   tokens: StoredTokens;
   emailAddress: string;
+  /** The Google account's profile name, used as the From header's display name (Section 6). */
+  displayName?: string;
 }
 
 function generateCodeVerifier(): string {
@@ -87,7 +89,7 @@ export function runGoogleOAuthFlow(
           }
 
           client.setCredentials(tokens);
-          const userinfo = await client.request<{ email: string }>({
+          const userinfo = await client.request<{ email: string; name?: string }>({
             url: "https://www.googleapis.com/oauth2/v3/userinfo"
           });
 
@@ -97,7 +99,8 @@ export function runGoogleOAuthFlow(
               refreshToken: tokens.refresh_token,
               expiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000)
             },
-            emailAddress: userinfo.data.email
+            emailAddress: userinfo.data.email,
+            displayName: userinfo.data.name
           });
         } catch (err) {
           server.close();

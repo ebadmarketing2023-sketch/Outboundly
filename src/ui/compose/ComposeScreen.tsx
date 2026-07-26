@@ -103,7 +103,7 @@ export function ComposeScreen(): JSX.Element {
         <select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
-              {a.emailAddress}
+              {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
             </option>
           ))}
         </select>

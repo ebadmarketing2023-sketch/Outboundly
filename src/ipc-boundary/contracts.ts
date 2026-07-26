@@ -10,6 +10,7 @@ export interface AccountSummary {
   id: string;
   provider: string;
   emailAddress: string;
+  displayName?: string;
   status: string;
 }
 

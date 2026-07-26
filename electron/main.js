@@ -51,7 +51,13 @@ function documentFromPlainText(text) {
 }
 
 function serializeAccount(row) {
-  return { id: row.id, provider: row.provider, emailAddress: row.emailAddress, status: row.status };
+  return {
+    id: row.id,
+    provider: row.provider,
+    emailAddress: row.emailAddress,
+    displayName: row.displayName ?? undefined,
+    status: row.status
+  };
 }
 
 function serializeDraft(draft) {
@@ -84,22 +90,46 @@ function registerIpcHandlers() {
       }
     );
 
-    const accountId = generateId();
     const now = new Date();
-    db.insert(accountsTable)
-      .values({
-        id: accountId,
-        provider: "google",
-        emailAddress: result.emailAddress,
-        status: "connected",
-        connectedAt: now,
-        createdAt: now,
-        updatedAt: now
-      })
-      .run();
+
+    // Reconnecting the same Google account updates its existing row (display name, refreshed
+    // tokens) instead of creating a duplicate entry — Section 13.3's "easy reconnect" behavior.
+    const existing = db
+      .select()
+      .from(accountsTable)
+      .where(eq(accountsTable.emailAddress, result.emailAddress))
+      .get();
+
+    const accountId = existing?.id ?? generateId();
+
+    if (existing) {
+      db.update(accountsTable)
+        .set({ displayName: result.displayName, status: "connected", updatedAt: now })
+        .where(eq(accountsTable.id, accountId))
+        .run();
+    } else {
+      db.insert(accountsTable)
+        .values({
+          id: accountId,
+          provider: "google",
+          emailAddress: result.emailAddress,
+          displayName: result.displayName,
+          status: "connected",
+          connectedAt: now,
+          createdAt: now,
+          updatedAt: now
+        })
+        .run();
+    }
 
     await tokenVault.store(accountId, result.tokens);
-    return serializeAccount({ id: accountId, provider: "google", emailAddress: result.emailAddress, status: "connected" });
+    return serializeAccount({
+      id: accountId,
+      provider: "google",
+      emailAddress: result.emailAddress,
+      displayName: result.displayName,
+      status: "connected"
+    });
   });
 
   ipcMain.handle("drafts:create", async (_event, request) => {
@@ -132,7 +162,7 @@ function registerIpcHandlers() {
 
     return sendDraftMessage({
       draft,
-      from: { address: EmailAddress.parse(account.emailAddress) },
+      from: { address: EmailAddress.parse(account.emailAddress), displayName: account.displayName ?? undefined },
       sendingDomain,
       draftLifecycle,
       provider: gmailProvider,
