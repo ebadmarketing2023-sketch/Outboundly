@@ -1,0 +1,89 @@
+import type {
+  BlockNode,
+  Document,
+  InlineNode,
+  LinkRun,
+  TextRun
+} from "./document-model.js";
+import { MissingPersonalizationValueError } from "./document-model.js";
+
+/**
+ * Serializes the Internal Document Model into clean, constrained HTML (Section 8.2-8.4).
+ * This is a closed serializer over a known node schema — it never passes arbitrary content
+ * through, so it cannot emit an unclosed tag or a disallowed element (Section 8.3).
+ */
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeAttr(text: string): string {
+  return escapeHtml(text).replace(/'/g, "&#39;");
+}
+
+function renderTextRun(run: TextRun): string {
+  let html = escapeHtml(run.text);
+  if (run.marks.includes("bold")) html = `<b>${html}</b>`;
+  if (run.marks.includes("italic")) html = `<i>${html}</i>`;
+  if (run.marks.includes("underline")) html = `<u>${html}</u>`;
+  return html;
+}
+
+function renderLinkRun(link: LinkRun): string {
+  const inner = link.children.map(renderTextRun).join("");
+  return `<a href="${escapeAttr(link.href)}">${inner}</a>`;
+}
+
+function renderInline(node: InlineNode): string {
+  switch (node.type) {
+    case "text":
+      return renderTextRun(node);
+    case "link":
+      return renderLinkRun(node);
+    case "break":
+      return "<br>";
+    case "variable":
+      throw new MissingPersonalizationValueError(node.name);
+  }
+}
+
+function renderBlock(block: BlockNode): string {
+  switch (block.type) {
+    case "paragraph":
+      return `<div>${block.children.map(renderInline).join("")}</div>`;
+    case "list": {
+      const tag = block.ordered ? "ol" : "ul";
+      const items = block.items
+        .map((item) => `<li>${item.map(renderInline).join("")}</li>`)
+        .join("");
+      return `<${tag}>${items}</${tag}>`;
+    }
+    case "quote": {
+      const attribution = block.attribution
+        ? `<div class="gmail_attr">${escapeHtml(block.attribution)}</div>`
+        : "";
+      const inner = block.children.map(renderBlock).join("");
+      return (
+        `${attribution}<blockquote class="gmail_quote" ` +
+        `style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${inner}</blockquote>`
+      );
+    }
+    case "image":
+      return `<img src="cid:${escapeAttr(block.contentId)}" alt="${escapeAttr(block.alt ?? "")}">`;
+  }
+}
+
+/**
+ * Renders a fully personalized Document (no remaining VariableRun nodes) into HTML.
+ * Throws MissingPersonalizationValueError if an unresolved token slipped through — that error
+ * belongs at the Personalization stage (Section 9.2, stage 3), not here, so surfacing it late
+ * is treated as a pipeline bug, not a normal user-facing validation path.
+ */
+export function renderHtml(document: Document): string {
+  const body = document.blocks.map(renderBlock).join("");
+  return `<div dir="ltr">${body}</div>`;
+}

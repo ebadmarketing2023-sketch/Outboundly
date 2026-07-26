@@ -1,0 +1,12 @@
+node_modules/
+dist/
+electron/renderer/bundle.js
+tsconfig.tsbuildinfo
+*.log
+.env
+.env.local
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
