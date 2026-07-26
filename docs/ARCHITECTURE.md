@@ -16,6 +16,13 @@ This is not a slogan sitting above the architecture — it is a constraint that 
 
 The result Outboundly is aiming for: a professional-grade email automation platform with Gmail-level message construction, reliable delivery infrastructure, and enterprise-quality testing — a legitimate architectural answer to Instantly and Smartlead, not a clone of either.
 
+### What this philosophy does not claim
+
+Two limits are worth stating plainly here rather than letting the philosophy read as a promise it can't keep:
+
+- **Standards compliance maximizes deliverability; it cannot guarantee it.** Final inbox placement also depends on factors entirely outside this application's control — the recipient's own ISP/filter heuristics, the sending domain's and account's reputation history, and the actual words the user chooses to write. What Outboundly guarantees is the part it controls: RFC/MIME correctness, honest pre-send risk signals, and no code path designed to manipulate a filter. Every reference to "avoiding spam" in this document means *removing the risk factors this system controls*, not promising an outcome owned by systems it doesn't.
+- **Every "would Gmail generate this" claim is a hypothesis until it's checked against real Gmail output.** The Gmail Compatibility Layer's score (Section 10) is only as trustworthy as the fixtures it's diffed against (Section 24.7), and the broader "feels like Gmail" compose experience is only real once a person has actually used the editor. Nothing in this document should be read as already verified — it is a design for the test suite in Section 24 to prove or disprove, not a claim standing on its own.
+
 ---
 
 ## Table of Contents
@@ -109,6 +116,7 @@ flowchart TB
         LeadsMod[Leads / Contacts Module]
         AccountsMod[Accounts Module]
         ConvEngine[Conversation Engine]
+        InboxMod[Unified Inbox]
         GmailCompat[Gmail Compatibility Layer]
         DelivEngine[Deliverability Engine]
         DelivLab[Deliverability Lab]
@@ -151,6 +159,8 @@ flowchart TB
     CampaignMod --> PolicyEngine
     CampaignMod --> EventBus
     ConvEngine --> EventBus
+    ConvEngine --> InboxMod
+    InboxMod --> EventBus
     EventBus --> AnalyticsMod
     AnalyticsMod --> InsightsEngine
     EventBus --> NotifMod
@@ -197,6 +207,7 @@ Each module owns exactly one responsibility and exposes a narrow interface. "Dep
 | **Provider Layer** | Abstract Gmail / Microsoft / SMTP / IMAP behind one `MailProvider` interface | External APIs | — | — |
 | **Provider Capability Service** | Expose per-adapter capability descriptors (drafts, labels, threads, push, aliases, quotas) to the rest of the core | Provider Layer | `CapabilityChanged` | — |
 | **Conversation Engine** | Subject normalization, Message-ID/reference graph reconstruction, participant matching, duplicate detection, thread merging, conversation state | Provider Layer, Database | `ReplyDetected`, `BounceDetected`, `NewMessageSynced`, `ConversationMerged` | — |
+| **Unified Inbox** | Cross-account read-model view: archive/star/snooze state, labels, search (Section 11.4) | Conversation Engine, Leads / Contacts (labels) | `ThreadArchived`, `ThreadStarred`, `ThreadSnoozed`, `ThreadResurfaced` | `NewMessageSynced`, `ReplyDetected` |
 | **Gmail Compatibility Layer** | Answer "would Gmail generate this message?" against headers, MIME, and RFC compliance; produce a compatibility score and fixes | (pure logic) | `CompatibilityIssueFound` | — |
 | **Deliverability Engine** | Evaluate a message/campaign/account against deliverability rules and explain findings | Gmail Compatibility Layer (for rfc/mime categories), Account Health Engine (for auth/reputation categories) | `DeliverabilityIssueFound` | — |
 | **Deliverability Lab** | On-demand, side-effect-free diagnostic workbench reusing the same rule engines against hypothetical messages | Gmail Compatibility Layer, Deliverability Engine rule registry | — | — |
@@ -230,6 +241,7 @@ outboundly/
 │   ├── leads/
 │   ├── accounts/
 │   ├── conversation/              # Conversation Engine: header graph, dedupe, merge
+│   ├── inbox/                     # Unified Inbox view-model: archive/star/snooze, search
 │   ├── mime/                      # MIME generation + canonicalization
 │   ├── gmail-compatibility/        # Gmail Compatibility Layer rule set
 │   ├── deliverability/            # Deliverability Engine rule registry
@@ -346,13 +358,15 @@ account_health_findings
 ```
 threads
   id (pk), account_id (fk), provider_thread_id, subject_normalized,
-  conversation_state (active|awaiting_reply|stale|closed), created_at, updated_at
+  conversation_state (active|awaiting_reply|stale|closed),
+  archived_at (nullable), snoozed_until (nullable),  -- Unified Inbox state, Section 11.4
+  created_at, updated_at
 
 messages
   id (pk), thread_id (fk), account_id (fk), provider_message_id, message_id_header (RFC 5322),
   in_reply_to_header, references_header, direction (inbound|outbound),
   from_address, to_addresses (json), cc_addresses (json), bcc_addresses (json),
-  subject, body_html, body_text, snippet, sent_at, received_at,
+  subject, body_html, body_text, snippet, starred (bool, default false), sent_at, received_at,
   status (draft|queued|sending|sent|failed|bounced), campaign_enrollment_id (fk, nullable),
   policy_trace_json (nullable),  -- which scheduling policies fired and why (Section 15)
   created_at, updated_at
@@ -489,6 +503,7 @@ insights
 
 - `messages`: index on `(account_id, sent_at)`, `(thread_id)`, `(message_id_header)`, `(campaign_enrollment_id)`.
 - `message_reference_edges`: index on `(referenced_message_id_header)` — this is the hot path the Conversation Engine's graph reconstruction depends on.
+- `threads`: index on `(snoozed_until)` and `(archived_at)` — the hot path for the Unified Inbox's resurfacing worker and filtered views (Section 11.4).
 - `contacts`: unique index on `email`; index on labels via join table.
 - `send_queue`: index on `(status, earliest_send_at)` — this is the hot path the Rate Limiter and dispatch workers poll.
 - `campaign_enrollments`: index on `(status, next_send_at)` — the hot path the Scheduling Policy Engine polls.
@@ -728,6 +743,16 @@ flowchart TB
 
 Where a provider's own thread ID is available (Gmail, Graph), it is used as a quick corroborating signal to avoid unnecessary graph recomputation. But the header graph — `Message-ID`/`In-Reply-To`/`References` — remains authoritative, because it is the only mechanism that works uniformly across every provider, including SMTP/IMAP accounts that have no thread concept at all.
 
+### 11.4 Inbox state: archive, star, snooze, search
+
+Archive, star, and snooze are deliberately modeled as thin state on the Conversation Engine's own storage (`threads.archived_at`, `threads.snoozed_until`, `messages.starred` — Section 5.3) rather than as a separate module keeping its own copy of thread data. The **Unified Inbox** (Section 3) is the read-model view that composes this state across every connected account into one list — it does not own conversation identity or threading logic, which stays entirely inside the Conversation Engine; it only adds and queries presentation-level flags on top of it.
+
+- **Archive** and **star** are simple, directly-set state — no background process needed, just an indexed column checked at query time.
+- **Snooze** is the one case that needs a time-based re-check: a snoozed thread should reappear in the inbox once `snoozed_until` elapses, unprompted. This reuses the same due-work polling pattern as the Scheduler tick and Send worker (Section 21) rather than inventing a new mechanism — a lightweight **Snooze resurfacing** worker (Section 21.1) periodically queries `threads` where `snoozed_until <= now`, clears the field, and publishes `ThreadResurfaced` so Notifications can surface it and the Unified Inbox picks it up on next read.
+- **Search** runs against the existing indexed columns (`subject_normalized`, `from_address`, participant records) plus full-text search over `body_text` — handled here rather than as a separate module because it is a query concern over data the Conversation Engine and Messaging Core already own, not a new source of truth.
+
+This keeps the Unified Inbox honestly thin: it is a view and a small set of state flags, not a competing model of what a "thread" is.
+
 ---
 
 ## 12. Provider Abstraction & Capability Detection
@@ -832,6 +857,15 @@ sequenceDiagram
 ### 13.4 On the "embedded secret" question
 
 If a future provider integration insists on a confidential-client credential that cannot use PKCE-only public-client flow, the correct pattern is **not** to embed a real secret in a distributable desktop binary. The correct pattern is a minimal, stateless token-exchange relay: a tiny backend endpoint that holds the real secret, accepts only `(auth code, PKCE verifier)`, and returns tokens — it sees no user data and stores nothing. Google and Microsoft's own current desktop flows do not require this today; it's documented here as the fallback if a future provider does.
+
+### 13.5 Provider verification & consent overhead
+
+"Click Sign in with Google" being simple for the user does not make it simple to ship. Two real, non-architectural constraints belong in this plan rather than being discovered later:
+
+- **Google OAuth verification.** `gmail.send` is a sensitive scope; broader scopes such as `gmail.modify`/`gmail.readonly` are restricted. Any app requesting them for public users must pass Google's OAuth verification — an application review, a published privacy policy, a demonstration video, and, for restricted scopes, a recurring third-party security assessment (Google's CASA program). This is measured in weeks, sits on the critical path before the app can be distributed to real users, and recurs annually for as long as restricted scopes are requested. It should be scoped and started early in the project timeline, not treated as a launch-week formality.
+- **Microsoft publisher verification and tenant admin consent.** Microsoft's equivalent is lighter for the developer (publisher verification is a one-time process), but introduces a constraint entirely outside Outboundly's control: many Microsoft 365 organizations block third-party app consent by default, so a user inside such an org cannot grant `Mail.Send`/`Mail.ReadWrite` consent themselves, no matter how simple the button is — their tenant admin has to allow it first. The Accounts module's onboarding flow needs an honest, specific error state for this case, not just a generic retry.
+
+Neither point changes the architecture described in Sections 13.1–13.4; both change the project timeline and should be reflected wherever launch readiness is planned (see also Section 26 and Section 28).
 
 ---
 
@@ -1217,6 +1251,7 @@ Insight Engine output specifically about reply-rate-by-hour or reply-rate-by-dom
 | **Account health sweep** | Fixed interval (e.g., hourly) | Recomputes Account Health Engine snapshots and findings (Section 19) |
 | **Analytics rollup** | Fixed interval or on-event | Recomputes materialized rollups from the events log |
 | **Insights worker** | Fixed interval, after rollups | Runs the Insight Rule registry against fresh rollups (Section 20.3) |
+| **Snooze resurfacing** | Fixed interval (e.g., every 60s) | Detect threads whose `snoozed_until` has elapsed, clear the flag, emit `ThreadResurfaced` (Section 11.4) |
 | **Token refresh** | Ahead of expiry, per account | Refreshes OAuth access tokens proactively |
 | **Backup** | User-configured schedule | Database backup/export (Section 23) |
 
@@ -1437,6 +1472,9 @@ The hexagonal boundary is what makes each of these additive rather than a rewrit
 | Conversation Engine as active logic distinct from the `threads` table | Treat `threads` table plus provider thread IDs as sufficient | Provider thread IDs don't exist for SMTP/IMAP and can't be trusted alone for merge/dedupe across accounts; header-graph reconstruction is the only universal mechanism | More complex sync logic than "trust the provider's thread ID" |
 | Open Rate demoted from primary to secondary/unreliable metric | Open Rate as a headline metric (Instantly's model) | Apple MPP, Gmail image caching, and corporate scanners make it structurally unreliable; Reply/Bounce/Delivery/Conversion are trustworthy | Users coming from tools that foreground open rate may expect it front-and-center; needs clear onboarding messaging |
 | Deliverability Lab as a separate, side-effect-free tool from the live Deliverability Engine | One engine, always live | Lets users iterate on templates without any risk of a stray send or account interaction | Two entry points to the same underlying rules to keep in sync — mitigated by both consuming the same rule registries, never duplicating them |
+| Deliverability framed as maximizing likelihood, never as a guarantee (Guiding Philosophy) | Present pre-send checks as ensuring inbox placement | Overstating what standards compliance can control would be dishonest and would set the wrong user expectation | A user who sees a "passed" message can still misread it as a placement guarantee; needs reinforcement in UI copy, not just this document |
+| Google/Microsoft OAuth verification treated as a planned workstream, scoped early (Section 13.5) | Assume "Sign in with Google/Microsoft" ships as fast as the OAuth code itself | Google's sensitive/restricted-scope verification takes weeks and recurs annually; Microsoft tenant admin-consent blocks are entirely outside the app's control | Verification lead time sits on the critical path to any public release; tenant-blocked users have no in-app workaround, only an honest error state |
+| Archive/star/snooze modeled as thin state on the Conversation Engine's own tables, not a separate inbox data model (Section 11.4) | A dedicated Inbox module owning its own copy of thread/message data | Keeps one source of truth for conversation identity; the Unified Inbox stays a view plus a few flags | Snooze resurfacing needs its own polling worker (Section 21.1) rather than being "free" |
 | OAuth via PKCE only, no embedded confidential secret | Embed a client secret in the desktop binary | Both providers document desktop client secrets as non-secret; PKCE is the current best practice | If a future provider mandates a true confidential client, a minimal token-exchange relay becomes necessary (Section 13.4) |
 | Durable, DB-backed queue instead of an external broker | Redis/RabbitMQ-backed queue | No extra infrastructure appropriate for a single-user desktop app; DB transactions already give durability | Throughput ceiling far below what's needed here — a non-issue at this product's scale |
 | Hexagonal/ports-and-adapters core | Framework-coupled MVC-style app | Every module genuinely replaceable, testable without I/O, and future-proof for API/mobile expansion | Slightly more upfront structure/ceremony than a quick monolithic script would need |
@@ -1485,5 +1523,6 @@ Before any code is written, these decisions should be explicitly confirmed (or r
 6. **Positive Reply Rate's initial definition** (Section 20.2) — confirm starting with manual user-applied labels (rather than an automatic classifier) is acceptable for v1.
 7. **Whole-database encryption approach and backup passphrase UX** (Section 23) — confirm the intended user experience for first-run key setup and backup/restore.
 8. **Scope of "v1"** — this document specs the full product, now materially larger than the previous draft (Conversation Engine, Gmail Compatibility Layer, Account Health Engine, Deliverability Lab, Insights Engine, and the full Testing Architecture are all new). Confirm whether an initial implementation phase should sequence a deliberately narrow subset (e.g., Google-only, single account, manual-send-first, Draft Lifecycle + Rendering Engine + basic Deliverability Engine, with Conversation Engine/Account Health/Insights/Lab following in later phases) before attempting the full breadth described here.
+9. **OAuth verification lead time** (Section 13.5) — confirm you want Google's app verification process started in parallel with early development rather than after a feature-complete build, given its multi-week, non-architectural timeline.
 
 Nothing in this document has been implemented. Awaiting review, questions, and explicit approval before any code, scaffolding, or dependency is introduced.
