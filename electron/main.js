@@ -8,7 +8,7 @@ import { accounts as accountsTable } from "../dist/adapters/persistence/schema.j
 import { SqliteDraftRepository } from "../dist/adapters/persistence/repositories/draft-repository.js";
 import { DraftLifecycleService } from "../dist/core/drafts/draft-lifecycle.js";
 import { SystemClock } from "../dist/ports/clock.port.js";
-import { paragraph, textRun } from "../dist/core/rendering/document-model.js";
+import { parsePlainTextToDocument } from "../dist/core/rendering/plain-text-parser.js";
 import { GmailProvider } from "../dist/adapters/providers/google/gmail-provider.js";
 import { runGoogleOAuthFlow } from "../dist/adapters/providers/google/oauth-flow.js";
 import { NativeKeychainTokenVault } from "../dist/adapters/credential-vault/native-keychain-token-vault.js";
@@ -43,11 +43,6 @@ function initServices() {
     { clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET, scopes: GOOGLE_SCOPES },
     tokenVault
   );
-}
-
-function documentFromPlainText(text) {
-  const blocks = text.split(/\n{2,}/).map((block) => paragraph(textRun(block)));
-  return { blocks: blocks.length > 0 ? blocks : [paragraph()] };
 }
 
 function serializeAccount(row) {
@@ -136,7 +131,7 @@ function registerIpcHandlers() {
     const draft = await draftLifecycle.createDraft({
       accountId: request.accountId,
       subject: request.subject,
-      document: documentFromPlainText(request.body),
+      document: parsePlainTextToDocument(request.body),
       to: request.to.map((addr) => ({ address: EmailAddress.parse(addr) }))
     });
     return serializeDraft(draft);
@@ -145,7 +140,7 @@ function registerIpcHandlers() {
   ipcMain.handle("drafts:autosave", async (_event, request) => {
     const patch = {};
     if (request.subject !== undefined) patch.subject = request.subject;
-    if (request.body !== undefined) patch.document = documentFromPlainText(request.body);
+    if (request.body !== undefined) patch.document = parsePlainTextToDocument(request.body);
     const draft = await draftLifecycle.autosave(request.draftId, patch);
     return serializeDraft(draft);
   });
