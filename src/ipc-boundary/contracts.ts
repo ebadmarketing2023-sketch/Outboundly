@@ -1,4 +1,5 @@
 import type { CompatibilityReport } from "../core/gmail-compatibility/types.js";
+import type { DeliverabilityReport } from "../core/deliverability/types.js";
 
 /**
  * The typed contract crossing the UI <-> core boundary (Section 1.3, Section 23). Both the
@@ -43,6 +44,7 @@ export interface SendDraftRequest {
 export interface SendDraftResponse {
   sent: boolean;
   compatibilityReport: CompatibilityReport;
+  deliverabilityReport?: DeliverabilityReport;
   providerMessageId?: string;
 }
 

@@ -293,6 +293,22 @@ export function ComposeScreen(): JSX.Element {
               ))}
             </ul>
           )}
+          {sendResult.deliverabilityReport && (
+            <>
+              <p>Deliverability score: {sendResult.deliverabilityReport.score}</p>
+              {sendResult.deliverabilityReport.findings.length > 0 && (
+                <ul>
+                  {sendResult.deliverabilityReport.findings.map((f, i) => (
+                    <li key={`${f.ruleId}-${i}`}>
+                      <strong>[{f.severity}] [{f.category}] {f.message}</strong>
+                      <div>{f.explanation}</div>
+                      {f.recommendedFix && <div><em>Fix: {f.recommendedFix}</em></div>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
         </section>
       )}
     </div>

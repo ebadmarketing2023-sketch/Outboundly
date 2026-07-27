@@ -9,6 +9,7 @@ import { accounts as accountsTable } from "../dist/adapters/persistence/schema.j
 import { SqliteDraftRepository } from "../dist/adapters/persistence/repositories/draft-repository.js";
 import { SqliteConversationRepository } from "../dist/adapters/persistence/repositories/conversation-repository.js";
 import { InboxViewRepository } from "../dist/adapters/persistence/repositories/inbox-view-repository.js";
+import { SqliteDeliverabilityReportRepository } from "../dist/adapters/persistence/repositories/deliverability-report-repository.js";
 import { DraftLifecycleService } from "../dist/core/drafts/draft-lifecycle.js";
 import { SystemClock } from "../dist/ports/clock.port.js";
 import { parsePlainTextToDocument } from "../dist/core/rendering/plain-text-parser.js";
@@ -59,6 +60,7 @@ let microsoftProvider;
 let smtpImapProvider;
 let conversationRepository;
 let inboxViewRepository;
+let deliverabilityReportRepository;
 
 function initServices() {
   const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -74,6 +76,7 @@ function initServices() {
   smtpImapProvider = new SmtpImapProvider(tokenVault);
   conversationRepository = new SqliteConversationRepository(db);
   inboxViewRepository = new InboxViewRepository(db);
+  deliverabilityReportRepository = new SqliteDeliverabilityReportRepository(db);
 }
 
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
@@ -339,7 +342,8 @@ function registerIpcHandlers() {
       draftLifecycle,
       provider: providerFor(account),
       accountRef,
-      conversationRepo: conversationRepository
+      conversationRepo: conversationRepository,
+      deliverabilityReportRepo: deliverabilityReportRepository
     });
   });
 

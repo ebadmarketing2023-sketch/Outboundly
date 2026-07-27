@@ -139,3 +139,80 @@ export const threadMerges = sqliteTable("thread_merges", {
   reason: text("reason").notNull(),
   mergedAt: integer("merged_at", { mode: "timestamp_ms" }).notNull()
 });
+
+/**
+ * Account Health Engine storage (Section 5.2, Section 19) — a snapshot is a point-in-time
+ * computation (manually triggered in this phase; no background Scheduler exists until Phase 4),
+ * with its findings/recommendations stored as separate rows so a snapshot is more than a bare
+ * number.
+ */
+export const accountHealthSnapshots = sqliteTable("account_health_snapshots", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id")
+    .notNull()
+    .references(() => accounts.id),
+  capturedAt: integer("captured_at", { mode: "timestamp_ms" }).notNull(),
+  bounceRate: integer("bounce_rate", { mode: "number" }),
+  replyRate: integer("reply_rate", { mode: "number" }),
+  spamComplaintRate: integer("spam_complaint_rate", { mode: "number" }),
+  sendsLast24h: integer("sends_last_24h").notNull(),
+  sendsLast7d: integer("sends_last_7d").notNull(),
+  accountAgeDays: integer("account_age_days").notNull(),
+  sendingConsistencyScore: integer("sending_consistency_score", { mode: "number" }),
+  spfStatus: text("spf_status").notNull(), // 'pass' | 'fail' | 'none'
+  dkimStatus: text("dkim_status").notNull(), // 'pass' | 'fail' | 'none'
+  dmarcStatus: text("dmarc_status").notNull(), // 'pass' | 'fail' | 'none'
+  oauthFailureCount30d: integer("oauth_failure_count_30d").notNull(),
+  tokenExpiringSoon: integer("token_expiring_soon", { mode: "boolean" }).notNull(),
+  providerQuotaUsagePct: integer("provider_quota_usage_pct", { mode: "number" }),
+  healthScore: integer("health_score", { mode: "number" }).notNull(),
+  riskLevel: text("risk_level").notNull() // 'healthy' | 'watch' | 'at_risk' | 'critical'
+});
+
+export const accountHealthFindings = sqliteTable("account_health_findings", {
+  id: text("id").primaryKey(),
+  snapshotId: text("snapshot_id")
+    .notNull()
+    .references(() => accountHealthSnapshots.id),
+  findingType: text("finding_type").notNull(),
+  severity: text("severity").notNull(), // 'info' | 'warning' | 'critical'
+  message: text("message").notNull(),
+  explanation: text("explanation").notNull(),
+  recommendedAction: text("recommended_action")
+});
+
+/**
+ * Deliverability Engine + Lab storage (Section 5.8, Section 17, Section 18). campaignId has no FK
+ * yet — Campaigns (Section 5.6) don't exist until Phase 4 — matching the same nullable,
+ * unconstrained pattern already used for messages.campaignEnrollmentId above.
+ */
+export const deliverabilityReports = sqliteTable("deliverability_reports", {
+  id: text("id").primaryKey(),
+  messageId: text("message_id").references(() => messages.id),
+  campaignId: text("campaign_id"),
+  accountId: text("account_id").references(() => accounts.id),
+  scope: text("scope").notNull(), // 'message' | 'campaign' | 'account'
+  generatedAt: integer("generated_at", { mode: "timestamp_ms" }).notNull(),
+  overallScore: integer("overall_score", { mode: "number" }).notNull(),
+  findingsJson: text("findings_json", { mode: "json" }).notNull().$type<DeliverabilityFindingRecord[]>()
+});
+
+/**
+ * Deliverability Lab output (Section 18.3) — intentionally separate from deliverability_reports
+ * because a lab run has no real message_id/campaign_id/account_id to attach to; the input is a
+ * hypothetical draft/template, not a real send.
+ */
+export const labReports = sqliteTable("lab_reports", {
+  id: text("id").primaryKey(),
+  inputSnapshotJson: text("input_snapshot_json").notNull(),
+  score: integer("score", { mode: "number" }).notNull(),
+  findingsJson: text("findings_json", { mode: "json" }).notNull().$type<DeliverabilityFindingRecord[]>(),
+  generatedAt: integer("generated_at", { mode: "timestamp_ms" }).notNull()
+});
+
+export interface DeliverabilityFindingRecord {
+  ruleId: string;
+  category: string;
+  severity: string;
+  explanation: string;
+}

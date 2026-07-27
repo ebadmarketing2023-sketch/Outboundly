@@ -8,7 +8,14 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/db.js";
 import * as schema from "../../src/adapters/persistence/schema.js";
-import { accounts, drafts } from "../../src/adapters/persistence/schema.js";
+import {
+  accounts,
+  accountHealthFindings,
+  accountHealthSnapshots,
+  deliverabilityReports,
+  drafts,
+  labReports
+} from "../../src/adapters/persistence/schema.js";
 import { eq } from "drizzle-orm";
 
 describe("SQLite schema + migrations (Section 5, Section 24.6)", () => {
@@ -157,5 +164,93 @@ describe("SQLite schema + migrations (Section 5, Section 24.6)", () => {
         .where(eq(accounts.emailAddress, preExistingEmail))
         .get()?.emailAddress
     ).toBe(preExistingEmail);
+  });
+
+  it("round-trips Account Health and Deliverability rows (Section 5.2, 5.8)", () => {
+    const accountId = randomUUID();
+    const now = new Date();
+    db.insert(accounts)
+      .values({
+        id: accountId,
+        provider: "google",
+        emailAddress: "health-test@outboundly.app",
+        status: "connected",
+        connectedAt: now,
+        createdAt: now,
+        updatedAt: now
+      })
+      .run();
+
+    const snapshotId = randomUUID();
+    db.insert(accountHealthSnapshots)
+      .values({
+        id: snapshotId,
+        accountId,
+        capturedAt: now,
+        sendsLast24h: 3,
+        sendsLast7d: 12,
+        accountAgeDays: 30,
+        spfStatus: "pass",
+        dkimStatus: "pass",
+        dmarcStatus: "none",
+        oauthFailureCount30d: 0,
+        tokenExpiringSoon: false,
+        healthScore: 82,
+        riskLevel: "healthy"
+      })
+      .run();
+
+    db.insert(accountHealthFindings)
+      .values({
+        id: randomUUID(),
+        snapshotId,
+        findingType: "dmarc_missing",
+        severity: "warning",
+        message: "No DMARC record found",
+        explanation: "Without DMARC, spoofed mail claiming to be from your domain isn't reported to you.",
+        recommendedAction: "Publish a DMARC TXT record, starting with p=none to monitor."
+      })
+      .run();
+
+    const snapshot = db.select().from(accountHealthSnapshots).where(eq(accountHealthSnapshots.id, snapshotId)).get();
+    expect(snapshot?.riskLevel).toBe("healthy");
+    expect(snapshot?.tokenExpiringSoon).toBe(false);
+
+    const findings = db
+      .select()
+      .from(accountHealthFindings)
+      .where(eq(accountHealthFindings.snapshotId, snapshotId))
+      .all();
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.findingType).toBe("dmarc_missing");
+
+    db.insert(deliverabilityReports)
+      .values({
+        id: randomUUID(),
+        accountId,
+        scope: "account",
+        generatedAt: now,
+        overallScore: 90,
+        findingsJson: [{ ruleId: "content.html-text-ratio", category: "content", severity: "info", explanation: "fine" }]
+      })
+      .run();
+
+    const report = db.select().from(deliverabilityReports).where(eq(deliverabilityReports.accountId, accountId)).get();
+    expect(report?.findingsJson).toEqual([
+      { ruleId: "content.html-text-ratio", category: "content", severity: "info", explanation: "fine" }
+    ]);
+
+    db.insert(labReports)
+      .values({
+        id: randomUUID(),
+        inputSnapshotJson: JSON.stringify({ subject: "hypothetical" }),
+        score: 75,
+        findingsJson: [],
+        generatedAt: now
+      })
+      .run();
+
+    const lab = db.select().from(labReports).get();
+    expect(lab?.score).toBe(75);
   });
 });
