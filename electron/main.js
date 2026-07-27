@@ -24,7 +24,10 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/gmail.compose",
-  "https://www.googleapis.com/auth/userinfo.email"
+  "https://www.googleapis.com/auth/userinfo.email",
+  // Needed for Google's userinfo endpoint to return the account's profile `name` field at all —
+  // without this, "name" is silently absent from the response no matter how the app asks for it.
+  "https://www.googleapis.com/auth/userinfo.profile"
 ];
 
 let db;

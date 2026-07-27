@@ -28,6 +28,12 @@ in "Testing" publishing status with yourself added as a test user is enough.
    - `https://www.googleapis.com/auth/gmail.send`
    - `https://www.googleapis.com/auth/gmail.compose`
    - `https://www.googleapis.com/auth/userinfo.email`
+   - `https://www.googleapis.com/auth/userinfo.profile` (needed so Google returns the account's
+     profile name for the `From` header's display name — without it, sent mail shows only a
+     bare address instead of "Your Name <you@gmail.com>")
+
+   If you already created your OAuth consent screen before this scope was added, go back and add
+   it now, then reconnect the account in the app (Sign in with Google again) to pick up the name.
 
 ## 3. Create an OAuth Client ID
 
