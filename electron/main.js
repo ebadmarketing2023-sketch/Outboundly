@@ -10,6 +10,8 @@ import { SqliteDraftRepository } from "../dist/adapters/persistence/repositories
 import { SqliteConversationRepository } from "../dist/adapters/persistence/repositories/conversation-repository.js";
 import { InboxViewRepository } from "../dist/adapters/persistence/repositories/inbox-view-repository.js";
 import { SqliteDeliverabilityReportRepository } from "../dist/adapters/persistence/repositories/deliverability-report-repository.js";
+import { SqliteLabReportRepository } from "../dist/adapters/persistence/repositories/lab-report-repository.js";
+import { runLabAnalysis } from "../dist/application/deliverability-lab/run-lab-analysis.js";
 import { SqliteAccountHealthMetricsSource } from "../dist/adapters/persistence/repositories/account-health-metrics-source.js";
 import { SqliteAccountHealthRepository } from "../dist/adapters/persistence/repositories/account-health-repository.js";
 import { DnsDomainAuthChecker } from "../dist/adapters/dns/dns-domain-auth-checker.js";
@@ -68,6 +70,7 @@ let deliverabilityReportRepository;
 let accountHealthMetricsSource;
 let accountHealthRepository;
 let domainAuthChecker;
+let labReportRepository;
 
 function initServices() {
   const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -87,6 +90,7 @@ function initServices() {
   accountHealthMetricsSource = new SqliteAccountHealthMetricsSource(db);
   accountHealthRepository = new SqliteAccountHealthRepository(db);
   domainAuthChecker = new DnsDomainAuthChecker();
+  labReportRepository = new SqliteLabReportRepository(db);
 }
 
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
@@ -445,6 +449,38 @@ function registerIpcHandlers() {
   ipcMain.handle("accountHealth:getLatest", async (_event, request) => {
     const record = await accountHealthRepository.getLatest(request.accountId);
     return record ? serializeAccountHealthSnapshot(record) : undefined;
+  });
+
+  ipcMain.handle("deliverabilityLab:runAnalysis", async (_event, request) => {
+    const account = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
+    if (!account) throw new Error("Account not found");
+
+    const report = await runLabAnalysis({
+      input: {
+        subject: request.subject,
+        document: parsePlainTextToDocument(request.body),
+        to: request.to.map((addr) => ({ address: EmailAddress.parse(addr) })),
+        from: { address: EmailAddress.parse(account.emailAddress), displayName: account.displayName ?? undefined },
+        sendingDomain: account.emailAddress.split("@")[1],
+        authCheck: request.checkDomainAuth
+          ? { domain: account.emailAddress.split("@")[1], providerName: account.provider }
+          : undefined
+      },
+      draftLifecycle,
+      authChecker: domainAuthChecker,
+      repository: labReportRepository
+    });
+
+    return {
+      score: report.score,
+      findings: report.findings.map((f) => ({
+        ruleId: f.ruleId,
+        category: f.category,
+        severity: f.severity,
+        message: f.message,
+        explanation: f.explanation
+      }))
+    };
   });
 }
 

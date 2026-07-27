@@ -131,6 +131,23 @@ export interface AccountHealthRequest {
   accountId: string;
 }
 
+/** Deliverability Lab (Section 18) — an on-demand sandbox: no draft is saved, no account is
+ * touched to build the message, nothing is queued or sent. `accountId` here is only ever used to
+ * borrow a display name/email/domain for the hypothetical "From" identity and, if requested, to
+ * pick which provider's default DKIM selector to check — never to authenticate or send. */
+export interface RunLabAnalysisRequest {
+  subject: string;
+  body: string;
+  to: string[];
+  accountId: string;
+  checkDomainAuth?: boolean;
+}
+
+export interface LabAnalysisResponse {
+  score: number;
+  findings: Array<{ ruleId: string; category: string; severity: string; message: string; explanation: string }>;
+}
+
 export interface ConnectSmtpImapRequest {
   emailAddress: string;
   displayName?: string;
@@ -159,4 +176,5 @@ export interface OutboundlyRendererApi {
   setMessageStarred(request: SetMessageStarredRequest): Promise<void>;
   computeAccountHealth(request: AccountHealthRequest): Promise<AccountHealthSnapshotSummary>;
   getLatestAccountHealth(request: AccountHealthRequest): Promise<AccountHealthSnapshotSummary | undefined>;
+  runLabAnalysis(request: RunLabAnalysisRequest): Promise<LabAnalysisResponse>;
 }
