@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,7 @@ describe("InboxViewRepository (Section 11.4)", () => {
 
   beforeEach(() => {
     const dir = mkdtempSync(join(tmpdir(), "outboundly-inbox-view-test-"));
-    db = openDatabase(join(dir, "test.sqlite"));
+    db = openDatabase(join(dir, "test.sqlite"), randomBytes(32).toString("hex"));
     accountId = randomUUID();
     const now = new Date();
     db.insert(accounts)

@@ -6,15 +6,17 @@ Modern desktop email outreach platform combining authentic composition with powe
 - **Phase 1 (done):** a single-provider (Google), single-account compose/send loop proving the
   core Draft Lifecycle → Rendering Engine → MIME pipeline → Gmail Compatibility Layer → Gmail
   API send path described in `docs/ARCHITECTURE.md`.
-- **Phase 2 (in progress, this slice done):** the Conversation Engine (Section 11) — reply
-  detection via the Message-ID/References header graph, not a flat thread table — wired to Gmail
-  inbox sync, Sent Mail Synchronization (every sent message is now recorded so replies have
-  something to attach to), a minimal Unified Inbox UI (thread list, archive, star, manual "Sync
-  now"), a second full MailProvider (Microsoft 365/Outlook.com via MSAL + Graph API,
-  `src/adapters/providers/microsoft/`), and a third: a universal SMTP/IMAP fallback
+- **Phase 2 (done):** the Conversation Engine (Section 11) — reply detection via the
+  Message-ID/References header graph, not a flat thread table — wired to Gmail inbox sync, Sent
+  Mail Synchronization (every sent message is now recorded so replies have something to attach
+  to), a minimal Unified Inbox UI (thread list, archive, star, manual "Sync now"), a second full
+  MailProvider (Microsoft 365/Outlook.com via MSAL + Graph API,
+  `src/adapters/providers/microsoft/`), a third: a universal SMTP/IMAP fallback
   (`src/adapters/providers/smtp-imap/`) for any mailbox that isn't Gmail or Microsoft, using
-  nodemailer for sending and imapflow/mailparser for reading — all three providers share the same
-  generic `TokenVault` port. Database-at-rest encryption is still open for this phase.
+  nodemailer for sending and imapflow/mailparser for reading, and whole-database at-rest
+  encryption (Section 23) via `better-sqlite3-multiple-ciphers`, keyed from the OS keychain
+  (`src/adapters/persistence/database-key.ts`) — including an in-place migration path for
+  installs that already have an unencrypted database on disk from before this shipped.
 
 Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -46,7 +48,8 @@ directly for your SMTP/IMAP host, port, username, and password (an app-specific 
 providers that require one) rather than an OAuth sign-in, since there's no shared app-wide OAuth
 client for arbitrary mail servers.
 
-> **Native module note:** `better-sqlite3` is a native addon and must be built against whichever
+> **Native module note:** `better-sqlite3-multiple-ciphers` (a drop-in, encryption-capable
+> better-sqlite3 fork — see Section 23) is a native addon and must be built against whichever
 > runtime is going to load it. `npm run electron:dev` automatically rebuilds it for Electron's
 > Node ABI before launching. If you then go back to running `npm test`, rebuild it for plain
 > Node.js first with `npm run rebuild:native:node` — otherwise the tests fail with a

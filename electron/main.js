@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 
 import { openDatabase } from "../dist/adapters/persistence/db.js";
+import { getOrCreateDatabaseEncryptionKey } from "../dist/adapters/persistence/database-key.js";
 import { accounts as accountsTable } from "../dist/adapters/persistence/schema.js";
 import { SqliteDraftRepository } from "../dist/adapters/persistence/repositories/draft-repository.js";
 import { SqliteConversationRepository } from "../dist/adapters/persistence/repositories/conversation-repository.js";
@@ -61,7 +62,7 @@ let inboxViewRepository;
 
 function initServices() {
   const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
-  db = openDatabase(dbPath);
+  db = openDatabase(dbPath, getOrCreateDatabaseEncryptionKey());
   draftRepository = new SqliteDraftRepository(db);
   draftLifecycle = new DraftLifecycleService(draftRepository, new SystemClock());
   tokenVault = new NativeKeychainTokenVault();
