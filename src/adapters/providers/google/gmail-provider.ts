@@ -128,24 +128,34 @@ export class GmailProvider implements MailProvider {
     const auth = await this.clientFor(account);
     const gmail = google.gmail({ version: "v1", auth });
 
-    if (!cursor.cursor) {
-      // First sync for this account: establishing a bare historyId cursor with zero backfill
-      // would leave the Unified Inbox empty until the next real change arrives. Pull a small
-      // set of recent messages as an initial baseline alongside the cursor.
-      const INITIAL_BACKFILL_COUNT = 25;
-      const [{ data: profile }, { data: list }] = await Promise.all([
-        gmail.users.getProfile({ userId: "me" }),
-        gmail.users.messages.list({ userId: "me", maxResults: INITIAL_BACKFILL_COUNT })
-      ]);
-      const refs = (list.messages ?? []).map((m) => m.id).filter((id): id is string => Boolean(id));
-      return { cursor: String(profile.historyId ?? ""), newOrChangedMessageRefs: refs };
+    if (cursor.cursor) {
+      try {
+        const { data } = await gmail.users.history.list({ userId: "me", startHistoryId: cursor.cursor });
+        const refs = (data.history ?? []).flatMap(
+          (entry) => (entry.messagesAdded ?? []).map((added) => added.message?.id).filter((id): id is string => Boolean(id))
+        );
+        return { cursor: data.historyId ?? cursor.cursor, newOrChangedMessageRefs: refs };
+      } catch (err) {
+        const status = (err as { code?: number; response?: { status?: number } })?.response?.status ?? (err as { code?: number })?.code;
+        if (status !== 404) throw err;
+        // Gmail's History API documents that a historyId can expire/become invalid, returning
+        // 404 ("Requested entity was not found") — and explicitly recommends falling back to a
+        // full resync rather than treating it as fatal. Duplicate detection (Section 11.2) makes
+        // re-fetching already-known messages harmless; we fall through to the same backfill path
+        // first sync uses.
+      }
     }
 
-    const { data } = await gmail.users.history.list({ userId: "me", startHistoryId: cursor.cursor });
-    const refs = (data.history ?? []).flatMap(
-      (entry) => (entry.messagesAdded ?? []).map((added) => added.message?.id).filter((id): id is string => Boolean(id))
-    );
-    return { cursor: data.historyId ?? cursor.cursor, newOrChangedMessageRefs: refs };
+    // First sync for this account, or recovering from an expired/invalid history cursor above:
+    // pull a small set of recent messages as a fresh baseline alongside a new cursor, since
+    // establishing a bare cursor with zero backfill would leave the Unified Inbox looking empty.
+    const INITIAL_BACKFILL_COUNT = 25;
+    const [{ data: profile }, { data: list }] = await Promise.all([
+      gmail.users.getProfile({ userId: "me" }),
+      gmail.users.messages.list({ userId: "me", maxResults: INITIAL_BACKFILL_COUNT })
+    ]);
+    const refs = (list.messages ?? []).map((m) => m.id).filter((id): id is string => Boolean(id));
+    return { cursor: String(profile.historyId ?? ""), newOrChangedMessageRefs: refs };
   }
 
   async fetchMessage(account: AccountRef, providerMessageId: string): Promise<NormalizedMessage> {
