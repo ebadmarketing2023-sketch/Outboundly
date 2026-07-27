@@ -12,9 +12,23 @@ import type {
   SyncCursor
 } from "../../../ports/mail-provider.port.js";
 import { GMAIL_CAPABILITIES, type ProviderCapabilities } from "../../../ports/provider-capabilities.port.js";
-import type { TokenVault } from "../../../ports/token-vault.port.js";
+import type { StoredTokens, TokenVault } from "../../../ports/token-vault.port.js";
 import type { GoogleOAuthConfig } from "./oauth-flow.js";
 import { refreshGoogleAccessToken } from "./oauth-flow.js";
+
+/**
+ * Google's token shape, JSON-encoded before being handed to the now-provider-agnostic
+ * TokenVault port (Section 13.3) — see token-vault.port.ts for why the port itself no longer
+ * assumes this shape (Microsoft's MSAL library needs a completely different payload).
+ */
+export function serializeStoredTokens(tokens: StoredTokens): string {
+  return JSON.stringify({ ...tokens, expiresAt: tokens.expiresAt.toISOString() });
+}
+
+export function deserializeStoredTokens(payload: string): StoredTokens {
+  const parsed = JSON.parse(payload) as StoredTokens & { expiresAt: string };
+  return { ...parsed, expiresAt: new Date(parsed.expiresAt) };
+}
 
 function toBase64Url(raw: string): string {
   return Buffer.from(raw, "utf8").toString("base64url");
@@ -65,16 +79,16 @@ export class GmailProvider implements MailProvider {
   ) {}
 
   private async clientFor(account: AccountRef): Promise<OAuth2Client> {
-    const tokens = await this.tokenVault.retrieve(account.accountId);
-    if (!tokens) {
+    const payload = await this.tokenVault.retrieve(account.accountId);
+    if (!payload) {
       throw new Error(`No stored Google tokens for account ${account.accountId} — reconnect required`);
     }
 
-    let { accessToken, refreshToken, expiresAt } = tokens;
+    let { accessToken, refreshToken, expiresAt } = deserializeStoredTokens(payload);
     const REFRESH_SKEW_MS = 60_000;
     if (expiresAt.getTime() <= Date.now() + REFRESH_SKEW_MS) {
       const refreshed = await refreshGoogleAccessToken(this.config, refreshToken);
-      await this.tokenVault.store(account.accountId, refreshed);
+      await this.tokenVault.store(account.accountId, serializeStoredTokens(refreshed));
       ({ accessToken, refreshToken, expiresAt } = refreshed);
     }
 

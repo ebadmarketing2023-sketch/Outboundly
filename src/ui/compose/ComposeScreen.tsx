@@ -47,6 +47,20 @@ export function ComposeScreen(): JSX.Element {
     }
   }
 
+  async function handleConnectMicrosoft(): Promise<void> {
+    setError(null);
+    setBusy(true);
+    try {
+      const account = await window.outboundly.connectMicrosoftAccount();
+      setAccounts((prev) => [...prev, account]);
+      setSelectedAccountId(account.id);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleSaveDraft(): Promise<void> {
     setError(null);
     setBusy(true);
@@ -109,6 +123,9 @@ export function ComposeScreen(): JSX.Element {
         </select>
         <button onClick={handleConnectGoogle} disabled={busy} style={{ marginLeft: "0.5rem" }}>
           Sign in with Google
+        </button>
+        <button onClick={handleConnectMicrosoft} disabled={busy} style={{ marginLeft: "0.5rem" }}>
+          Sign in with Microsoft
         </button>
       </section>
 

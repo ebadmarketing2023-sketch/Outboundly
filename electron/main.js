@@ -11,8 +11,10 @@ import { InboxViewRepository } from "../dist/adapters/persistence/repositories/i
 import { DraftLifecycleService } from "../dist/core/drafts/draft-lifecycle.js";
 import { SystemClock } from "../dist/ports/clock.port.js";
 import { parsePlainTextToDocument } from "../dist/core/rendering/plain-text-parser.js";
-import { GmailProvider } from "../dist/adapters/providers/google/gmail-provider.js";
+import { GmailProvider, serializeStoredTokens } from "../dist/adapters/providers/google/gmail-provider.js";
 import { runGoogleOAuthFlow } from "../dist/adapters/providers/google/oauth-flow.js";
+import { MicrosoftProvider } from "../dist/adapters/providers/microsoft/microsoft-provider.js";
+import { runMicrosoftOAuthFlow } from "../dist/adapters/providers/microsoft/oauth-flow.js";
 import { NativeKeychainTokenVault } from "../dist/adapters/credential-vault/native-keychain-token-vault.js";
 import { sendDraftMessage } from "../dist/application/send-message/send-message.js";
 import { syncInboxForAccount } from "../dist/application/sync-inbox/sync-inbox.js";
@@ -39,11 +41,18 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly"
 ];
 
+const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
+// openid/profile/offline_access are appended automatically by MSAL to every auth/token request
+// (verified against @azure/msal-common's ScopeSet construction, which always adds
+// OIDC_DEFAULT_SCOPES) — only the Graph-specific mail scopes need to be listed here.
+const MICROSOFT_SCOPES = ["Mail.Send", "Mail.ReadWrite"];
+
 let db;
 let draftRepository;
 let draftLifecycle;
 let tokenVault;
 let gmailProvider;
+let microsoftProvider;
 let conversationRepository;
 let inboxViewRepository;
 
@@ -57,8 +66,15 @@ function initServices() {
     { clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET, scopes: GOOGLE_SCOPES },
     tokenVault
   );
+  microsoftProvider = new MicrosoftProvider({ clientId: MICROSOFT_CLIENT_ID, scopes: MICROSOFT_SCOPES }, tokenVault);
   conversationRepository = new SqliteConversationRepository(db);
   inboxViewRepository = new InboxViewRepository(db);
+}
+
+/** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
+function providerFor(account) {
+  if (account.provider === "microsoft") return microsoftProvider;
+  return gmailProvider;
 }
 
 function serializeAccount(row) {
@@ -159,10 +175,63 @@ function registerIpcHandlers() {
         .run();
     }
 
-    await tokenVault.store(accountId, result.tokens);
+    await tokenVault.store(accountId, serializeStoredTokens(result.tokens));
     return serializeAccount({
       id: accountId,
       provider: "google",
+      emailAddress: result.emailAddress,
+      displayName: result.displayName,
+      status: "connected"
+    });
+  });
+
+  ipcMain.handle("accounts:connectMicrosoft", async () => {
+    if (!MICROSOFT_CLIENT_ID) {
+      throw new Error(
+        "MICROSOFT_CLIENT_ID is not configured. See docs/microsoft-oauth-setup.md for how to create one."
+      );
+    }
+
+    const result = await runMicrosoftOAuthFlow({ clientId: MICROSOFT_CLIENT_ID, scopes: MICROSOFT_SCOPES }, (url) => {
+      void shell.openExternal(url);
+    });
+
+    const now = new Date();
+
+    // Reconnecting the same Microsoft account updates its existing row (display name, refreshed
+    // token cache) instead of creating a duplicate entry, mirroring the Google flow above.
+    const existing = db
+      .select()
+      .from(accountsTable)
+      .where(eq(accountsTable.emailAddress, result.emailAddress))
+      .get();
+
+    const accountId = existing?.id ?? generateId();
+
+    if (existing) {
+      db.update(accountsTable)
+        .set({ displayName: result.displayName, status: "connected", updatedAt: now })
+        .where(eq(accountsTable.id, accountId))
+        .run();
+    } else {
+      db.insert(accountsTable)
+        .values({
+          id: accountId,
+          provider: "microsoft",
+          emailAddress: result.emailAddress,
+          displayName: result.displayName,
+          status: "connected",
+          connectedAt: now,
+          createdAt: now,
+          updatedAt: now
+        })
+        .run();
+    }
+
+    await tokenVault.store(accountId, result.serializedCache);
+    return serializeAccount({
+      id: accountId,
+      provider: "microsoft",
       emailAddress: result.emailAddress,
       displayName: result.displayName,
       status: "connected"
@@ -202,7 +271,7 @@ function registerIpcHandlers() {
       from: { address: EmailAddress.parse(account.emailAddress), displayName: account.displayName ?? undefined },
       sendingDomain,
       draftLifecycle,
-      provider: gmailProvider,
+      provider: providerFor(account),
       accountRef,
       conversationRepo: conversationRepository
     });
@@ -216,7 +285,7 @@ function registerIpcHandlers() {
     const result = await syncInboxForAccount({
       accountId: account.id,
       accountRef,
-      provider: gmailProvider,
+      provider: providerFor(account),
       repo: conversationRepository
     });
 

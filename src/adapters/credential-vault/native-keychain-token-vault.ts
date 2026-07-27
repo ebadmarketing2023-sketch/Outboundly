@@ -1,6 +1,6 @@
 import { Entry } from "@napi-rs/keyring";
 import type { AccountId } from "../../core/shared-kernel/ids.js";
-import type { StoredTokens, TokenVault } from "../../ports/token-vault.port.js";
+import type { TokenVault } from "../../ports/token-vault.port.js";
 
 const SERVICE_NAME = "Outboundly";
 
@@ -8,6 +8,8 @@ const SERVICE_NAME = "Outboundly";
  * OS-native credential store adapter (Section 23): macOS Keychain, Windows Credential Manager,
  * or Linux Secret Service, via @napi-rs/keyring. Token material never touches the SQL database —
  * only the opaque `provider_token_ref` (Section 5.1) does, and that ref is simply this account's ID.
+ * Stores an opaque string payload per account; each provider adapter owns its own serialization
+ * format (see token-vault.port.ts).
  *
  * Requires a real desktop session with a working keychain/Secret Service. In a headless
  * environment (no D-Bus Secret Service, no display session) this throws at call time rather than
@@ -15,18 +17,15 @@ const SERVICE_NAME = "Outboundly";
  * automatic insecure fallback in the production code path.
  */
 export class NativeKeychainTokenVault implements TokenVault {
-  async store(accountId: AccountId, tokens: StoredTokens): Promise<void> {
+  async store(accountId: AccountId, payload: string): Promise<void> {
     const entry = new Entry(SERVICE_NAME, accountId);
-    entry.setPassword(JSON.stringify(tokens));
+    entry.setPassword(payload);
   }
 
-  async retrieve(accountId: AccountId): Promise<StoredTokens | undefined> {
+  async retrieve(accountId: AccountId): Promise<string | undefined> {
     const entry = new Entry(SERVICE_NAME, accountId);
     try {
-      const raw = entry.getPassword();
-      if (!raw) return undefined;
-      const parsed = JSON.parse(raw) as StoredTokens & { expiresAt: string };
-      return { ...parsed, expiresAt: new Date(parsed.expiresAt) };
+      return entry.getPassword() ?? undefined;
     } catch {
       return undefined;
     }

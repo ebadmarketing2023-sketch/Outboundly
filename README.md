@@ -9,9 +9,10 @@ Modern desktop email outreach platform combining authentic composition with powe
 - **Phase 2 (in progress, this slice done):** the Conversation Engine (Section 11) — reply
   detection via the Message-ID/References header graph, not a flat thread table — wired to Gmail
   inbox sync, Sent Mail Synchronization (every sent message is now recorded so replies have
-  something to attach to), and a minimal Unified Inbox UI (thread list, archive, star, manual
-  "Sync now"). Microsoft/SMTP-IMAP adapters and database-at-rest encryption are still open for
-  this phase.
+  something to attach to), a minimal Unified Inbox UI (thread list, archive, star, manual "Sync
+  now"), and a second full MailProvider: Microsoft 365/Outlook.com via MSAL (PKCE) + Graph API
+  (`src/adapters/providers/microsoft/`), reusing the same generic `TokenVault` port as Gmail.
+  SMTP/IMAP adapter and database-at-rest encryption are still open for this phase.
 
 Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -29,6 +30,13 @@ client, then:
 
 ```bash
 GOOGLE_CLIENT_ID="..." GOOGLE_CLIENT_SECRET="..." npm run electron:dev
+```
+
+To sign in with a Microsoft 365/Outlook.com account instead, see
+[`docs/microsoft-oauth-setup.md`](docs/microsoft-oauth-setup.md), then:
+
+```bash
+MICROSOFT_CLIENT_ID="..." npm run electron:dev
 ```
 
 > **Native module note:** `better-sqlite3` is a native addon and must be built against whichever

@@ -103,6 +103,7 @@ export interface SetMessageStarredRequest {
 export interface OutboundlyRendererApi {
   listAccounts(): Promise<AccountSummary[]>;
   connectGoogleAccount(): Promise<AccountSummary>;
+  connectMicrosoftAccount(): Promise<AccountSummary>;
   createDraft(request: CreateDraftRequest): Promise<DraftSummary>;
   autosaveDraft(request: AutosaveDraftRequest): Promise<DraftSummary>;
   sendDraft(request: SendDraftRequest): Promise<SendDraftResponse>;
