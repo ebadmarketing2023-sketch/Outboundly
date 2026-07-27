@@ -102,6 +102,35 @@ export interface SetMessageStarredRequest {
   starred: boolean;
 }
 
+/** Account Health Engine (Section 19) — a manual-trigger read model, since no background
+ * Scheduler exists yet (Phase 4) to run this periodically. */
+export interface AccountHealthFindingSummary {
+  findingType: string;
+  severity: string;
+  message: string;
+  explanation: string;
+  recommendedAction?: string;
+}
+
+export interface AccountHealthSnapshotSummary {
+  capturedAt: string;
+  healthScore: number;
+  riskLevel: string;
+  sendsLast24h: number;
+  sendsLast7d: number;
+  accountAgeDays: number;
+  replyRate?: number;
+  sendingConsistencyScore?: number;
+  spfStatus: string;
+  dkimStatus: string;
+  dmarcStatus: string;
+  findings: AccountHealthFindingSummary[];
+}
+
+export interface AccountHealthRequest {
+  accountId: string;
+}
+
 export interface ConnectSmtpImapRequest {
   emailAddress: string;
   displayName?: string;
@@ -128,4 +157,6 @@ export interface OutboundlyRendererApi {
   getThreadMessages(request: GetThreadMessagesRequest): Promise<MessageSummary[]>;
   setThreadArchived(request: SetThreadArchivedRequest): Promise<void>;
   setMessageStarred(request: SetMessageStarredRequest): Promise<void>;
+  computeAccountHealth(request: AccountHealthRequest): Promise<AccountHealthSnapshotSummary>;
+  getLatestAccountHealth(request: AccountHealthRequest): Promise<AccountHealthSnapshotSummary | undefined>;
 }

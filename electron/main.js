@@ -10,6 +10,10 @@ import { SqliteDraftRepository } from "../dist/adapters/persistence/repositories
 import { SqliteConversationRepository } from "../dist/adapters/persistence/repositories/conversation-repository.js";
 import { InboxViewRepository } from "../dist/adapters/persistence/repositories/inbox-view-repository.js";
 import { SqliteDeliverabilityReportRepository } from "../dist/adapters/persistence/repositories/deliverability-report-repository.js";
+import { SqliteAccountHealthMetricsSource } from "../dist/adapters/persistence/repositories/account-health-metrics-source.js";
+import { SqliteAccountHealthRepository } from "../dist/adapters/persistence/repositories/account-health-repository.js";
+import { DnsDomainAuthChecker } from "../dist/adapters/dns/dns-domain-auth-checker.js";
+import { computeAccountHealthSnapshot } from "../dist/application/account-health/compute-account-health-snapshot.js";
 import { DraftLifecycleService } from "../dist/core/drafts/draft-lifecycle.js";
 import { SystemClock } from "../dist/ports/clock.port.js";
 import { parsePlainTextToDocument } from "../dist/core/rendering/plain-text-parser.js";
@@ -61,6 +65,9 @@ let smtpImapProvider;
 let conversationRepository;
 let inboxViewRepository;
 let deliverabilityReportRepository;
+let accountHealthMetricsSource;
+let accountHealthRepository;
+let domainAuthChecker;
 
 function initServices() {
   const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -77,6 +84,9 @@ function initServices() {
   conversationRepository = new SqliteConversationRepository(db);
   inboxViewRepository = new InboxViewRepository(db);
   deliverabilityReportRepository = new SqliteDeliverabilityReportRepository(db);
+  accountHealthMetricsSource = new SqliteAccountHealthMetricsSource(db);
+  accountHealthRepository = new SqliteAccountHealthRepository(db);
+  domainAuthChecker = new DnsDomainAuthChecker();
 }
 
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
@@ -130,6 +140,29 @@ function serializeMessage(message) {
     starred: message.starred,
     sentAt: message.sentAt ? message.sentAt.toISOString() : undefined,
     receivedAt: message.receivedAt ? message.receivedAt.toISOString() : undefined
+  };
+}
+
+function serializeAccountHealthSnapshot(record) {
+  return {
+    capturedAt: record.capturedAt.toISOString(),
+    healthScore: record.result.healthScore,
+    riskLevel: record.result.riskLevel,
+    sendsLast24h: record.input.metrics.sendsLast24h,
+    sendsLast7d: record.input.metrics.sendsLast7d,
+    accountAgeDays: record.input.metrics.accountAgeDays,
+    replyRate: record.input.metrics.replyRate,
+    sendingConsistencyScore: record.input.metrics.sendingConsistencyScore,
+    spfStatus: record.input.authStatus.spf,
+    dkimStatus: record.input.authStatus.dkim,
+    dmarcStatus: record.input.authStatus.dmarc,
+    findings: record.result.findings.map((f) => ({
+      findingType: f.findingType,
+      severity: f.severity,
+      message: f.message,
+      explanation: f.explanation,
+      recommendedAction: f.recommendedAction
+    }))
   };
 }
 
@@ -390,6 +423,28 @@ function registerIpcHandlers() {
 
   ipcMain.handle("inbox:setMessageStarred", async (_event, request) => {
     await inboxViewRepository.setMessageStarred(request.messageId, request.starred);
+  });
+
+  ipcMain.handle("accountHealth:computeSnapshot", async (_event, request) => {
+    const account = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
+    if (!account) throw new Error("Account not found");
+
+    await computeAccountHealthSnapshot({
+      accountRef: { accountId: account.id, emailAddress: account.emailAddress },
+      provider: providerFor(account),
+      metricsSource: accountHealthMetricsSource,
+      authChecker: domainAuthChecker,
+      repository: accountHealthRepository,
+      providerName: account.provider
+    });
+
+    const record = await accountHealthRepository.getLatest(account.id);
+    return serializeAccountHealthSnapshot(record);
+  });
+
+  ipcMain.handle("accountHealth:getLatest", async (_event, request) => {
+    const record = await accountHealthRepository.getLatest(request.accountId);
+    return record ? serializeAccountHealthSnapshot(record) : undefined;
   });
 }
 

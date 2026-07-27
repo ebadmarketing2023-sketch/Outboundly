@@ -17,5 +17,7 @@ contextBridge.exposeInMainWorld("outboundly", {
   listThreads: (request) => ipcRenderer.invoke("inbox:listThreads", request),
   getThreadMessages: (request) => ipcRenderer.invoke("inbox:getThreadMessages", request),
   setThreadArchived: (request) => ipcRenderer.invoke("inbox:setThreadArchived", request),
-  setMessageStarred: (request) => ipcRenderer.invoke("inbox:setMessageStarred", request)
+  setMessageStarred: (request) => ipcRenderer.invoke("inbox:setMessageStarred", request),
+  computeAccountHealth: (request) => ipcRenderer.invoke("accountHealth:computeSnapshot", request),
+  getLatestAccountHealth: (request) => ipcRenderer.invoke("accountHealth:getLatest", request)
 });
