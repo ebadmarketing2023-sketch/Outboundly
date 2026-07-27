@@ -59,5 +59,8 @@ function renderBlock(block: BlockNode): string {
 }
 
 export function renderPlainText(document: Document): string {
-  return document.blocks.map(renderBlock).join("\n\n");
+  // A single "\n" between top-level blocks, not "\n\n": Section 8.4's per-line paragraph model
+  // means blank lines are already their own (empty) paragraph blocks in the sequence, so a
+  // single join separator reproduces the original typed spacing exactly rather than doubling it.
+  return document.blocks.map(renderBlock).join("\n");
 }

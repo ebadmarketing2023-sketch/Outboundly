@@ -1,27 +1,20 @@
-import type { Document, InlineNode, ParagraphBlock } from "./document-model.js";
+import type { Document, ParagraphBlock } from "./document-model.js";
 import { paragraph, textRun } from "./document-model.js";
 
 /**
  * Parses plain typed text into the Internal Document Model (Section 8.1) — the plain-text
- * counterpart to html-parser.ts's parseHtmlToDocument. Mirrors the convention every Gmail-like
- * compose box uses: a blank line (two or more consecutive newlines) starts a new paragraph,
- * while a single newline is a line break *within* the current paragraph, not a paragraph break.
+ * counterpart to html-parser.ts's parseHtmlToDocument.
  *
- * Getting this distinction right matters: collapsing a single Enter press into nothing (as the
- * naive `text.split("\n\n")` version of this function used to) silently drops the writer's
- * intended line breaks from the sent message.
+ * Matches real Gmail compose behavior exactly: every Enter press starts a new line, full stop —
+ * Gmail's own contenteditable box has no separate "soft break within a paragraph" concept the
+ * way word processors distinguish Enter from Shift+Enter, and a plain `<textarea>` can't make
+ * that distinction at all (there is no Shift+Enter signal to capture). So every typed line
+ * becomes its own paragraph block; a blank line is simply an empty paragraph, which the HTML
+ * renderer turns into <div><br></div> (Section 8.4) exactly the way Gmail's own compose does.
  */
 export function parsePlainTextToDocument(text: string): Document {
-  const paragraphTexts = text.split(/\n{2,}/);
-  const blocks: ParagraphBlock[] = paragraphTexts.map((paragraphText) => {
-    const lines = paragraphText.split("\n");
-    const children: InlineNode[] = [];
-    lines.forEach((line, index) => {
-      if (index > 0) children.push({ type: "break" });
-      children.push(textRun(line));
-    });
-    return paragraph(...children);
-  });
+  const lines = text.split("\n");
+  const blocks: ParagraphBlock[] = lines.map((line) => (line.length === 0 ? paragraph() : paragraph(textRun(line))));
 
   return { blocks: blocks.length > 0 ? blocks : [paragraph()] };
 }

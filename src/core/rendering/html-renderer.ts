@@ -53,8 +53,13 @@ function renderInline(node: InlineNode): string {
 
 function renderBlock(block: BlockNode): string {
   switch (block.type) {
-    case "paragraph":
+    case "paragraph": {
+      // A paragraph with no children represents a blank typed line (Section 8.4): Gmail's own
+      // compose renders that as <div><br></div>, not an empty <div></div> — a bare empty div
+      // has no content to establish a line box and can collapse to zero height in some clients.
+      if (block.children.length === 0) return "<div><br></div>";
       return `<div>${block.children.map(renderInline).join("")}</div>`;
+    }
     case "list": {
       const tag = block.ordered ? "ol" : "ul";
       const items = block.items
