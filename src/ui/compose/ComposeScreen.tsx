@@ -4,7 +4,6 @@ import type {
   DraftSummary,
   SendDraftResponse
 } from "../../ipc-boundary/contracts.js";
-import { BUILT_AT } from "../build-info.js";
 
 /**
  * The Phase 1 "minimal" compose UI (Task 9): plain To/Subject/Body fields exercising the real
@@ -97,9 +96,6 @@ export function ComposeScreen(): JSX.Element {
   return (
     <div style={{ fontFamily: "sans-serif", maxWidth: 640, margin: "2rem auto" }}>
       <h1>Outboundly — Compose (Phase 1)</h1>
-      <p style={{ color: "#888", fontSize: "0.8rem", marginTop: "-0.75rem" }}>
-        Build: {BUILT_AT} — check this matches what you expect if something looks out of date
-      </p>
 
       <section style={{ marginBottom: "1.5rem" }}>
         <h2>Account</h2>

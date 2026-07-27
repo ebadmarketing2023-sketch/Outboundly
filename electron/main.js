@@ -6,6 +6,8 @@ import { eq } from "drizzle-orm";
 import { openDatabase } from "../dist/adapters/persistence/db.js";
 import { accounts as accountsTable } from "../dist/adapters/persistence/schema.js";
 import { SqliteDraftRepository } from "../dist/adapters/persistence/repositories/draft-repository.js";
+import { SqliteConversationRepository } from "../dist/adapters/persistence/repositories/conversation-repository.js";
+import { InboxViewRepository } from "../dist/adapters/persistence/repositories/inbox-view-repository.js";
 import { DraftLifecycleService } from "../dist/core/drafts/draft-lifecycle.js";
 import { SystemClock } from "../dist/ports/clock.port.js";
 import { parsePlainTextToDocument } from "../dist/core/rendering/plain-text-parser.js";
@@ -13,6 +15,7 @@ import { GmailProvider } from "../dist/adapters/providers/google/gmail-provider.
 import { runGoogleOAuthFlow } from "../dist/adapters/providers/google/oauth-flow.js";
 import { NativeKeychainTokenVault } from "../dist/adapters/credential-vault/native-keychain-token-vault.js";
 import { sendDraftMessage } from "../dist/application/send-message/send-message.js";
+import { syncInboxForAccount } from "../dist/application/sync-inbox/sync-inbox.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
 import { generateId } from "../dist/core/shared-kernel/ids.js";
 
@@ -27,7 +30,13 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
   // Needed for Google's userinfo endpoint to return the account's profile `name` field at all —
   // without this, "name" is silently absent from the response no matter how the app asks for it.
-  "https://www.googleapis.com/auth/userinfo.profile"
+  "https://www.googleapis.com/auth/userinfo.profile",
+  // Phase 2: reading the inbox (Conversation Engine sync) needs read access, which
+  // gmail.send/gmail.compose do not grant. This is Google's "Restricted" scope tier (Section
+  // 13.5 of the architecture doc) — fine for local dev/testing with your own test-user account,
+  // but a real consideration if this app is ever published publicly (it would require Google's
+  // CASA security assessment, unlike the Sensitive-tier scopes above).
+  "https://www.googleapis.com/auth/gmail.readonly"
 ];
 
 let db;
@@ -35,6 +44,8 @@ let draftRepository;
 let draftLifecycle;
 let tokenVault;
 let gmailProvider;
+let conversationRepository;
+let inboxViewRepository;
 
 function initServices() {
   const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -46,6 +57,8 @@ function initServices() {
     { clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET, scopes: GOOGLE_SCOPES },
     tokenVault
   );
+  conversationRepository = new SqliteConversationRepository(db);
+  inboxViewRepository = new InboxViewRepository(db);
 }
 
 function serializeAccount(row) {
@@ -66,6 +79,32 @@ function serializeDraft(draft) {
     to: draft.to.map((a) => a.address.toString()),
     autosaveVersion: draft.autosaveVersion,
     lastSavedAt: draft.lastSavedAt.toISOString()
+  };
+}
+
+function serializeThread(thread) {
+  return {
+    id: thread.id,
+    subjectNormalized: thread.subjectNormalized,
+    conversationState: thread.conversationState,
+    archivedAt: thread.archivedAt ? thread.archivedAt.toISOString() : undefined,
+    updatedAt: thread.updatedAt.toISOString()
+  };
+}
+
+function serializeMessage(message) {
+  return {
+    id: message.id,
+    direction: message.direction,
+    fromAddress: message.fromAddress,
+    toAddresses: message.toAddresses,
+    subject: message.subject,
+    bodyText: message.bodyText,
+    bodyHtml: message.bodyHtml,
+    snippet: message.snippet,
+    starred: message.starred,
+    sentAt: message.sentAt ? message.sentAt.toISOString() : undefined,
+    receivedAt: message.receivedAt ? message.receivedAt.toISOString() : undefined
   };
 }
 
@@ -164,8 +203,42 @@ function registerIpcHandlers() {
       sendingDomain,
       draftLifecycle,
       provider: gmailProvider,
-      accountRef
+      accountRef,
+      conversationRepo: conversationRepository
     });
+  });
+
+  ipcMain.handle("inbox:sync", async (_event, request) => {
+    const account = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
+    if (!account) throw new Error("Account not found");
+
+    const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
+    return syncInboxForAccount({
+      accountId: account.id,
+      accountRef,
+      provider: gmailProvider,
+      repo: conversationRepository
+    });
+  });
+
+  ipcMain.handle("inbox:listThreads", async (_event, request) => {
+    const threadRows = await inboxViewRepository.listThreads(request.accountId, {
+      includeArchived: request.includeArchived
+    });
+    return threadRows.map(serializeThread);
+  });
+
+  ipcMain.handle("inbox:getThreadMessages", async (_event, request) => {
+    const messageRows = await inboxViewRepository.getThreadMessages(request.threadId);
+    return messageRows.map(serializeMessage);
+  });
+
+  ipcMain.handle("inbox:setThreadArchived", async (_event, request) => {
+    await inboxViewRepository.setThreadArchived(request.threadId, request.archived);
+  });
+
+  ipcMain.handle("inbox:setMessageStarred", async (_event, request) => {
+    await inboxViewRepository.setMessageStarred(request.messageId, request.starred);
   });
 }
 

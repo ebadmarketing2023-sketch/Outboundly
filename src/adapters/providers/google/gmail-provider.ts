@@ -1,10 +1,11 @@
 import { OAuth2Client } from "google-auth-library";
-import { google } from "googleapis";
+import { google, type gmail_v1 } from "googleapis";
 import type { BuiltMimeMessage } from "../../../core/mime/types.js";
 import type {
   AccountRef,
   ChangeSet,
   MailProvider,
+  NormalizedMessage,
   NormalizedThread,
   ProviderDraftRef,
   ProviderSendResult,
@@ -17,6 +18,39 @@ import { refreshGoogleAccessToken } from "./oauth-flow.js";
 
 function toBase64Url(raw: string): string {
   return Buffer.from(raw, "utf8").toString("base64url");
+}
+
+export function headerValue(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string | undefined {
+  return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? undefined;
+}
+
+export function splitAddressList(value: string | undefined): string[] {
+  return value
+    ? value
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean)
+    : [];
+}
+
+/** Walks a (possibly nested multipart) message part tree collecting the first text/plain and text/html bodies found. */
+export function extractBodies(part: gmail_v1.Schema$MessagePart): { html?: string; text?: string } {
+  let html: string | undefined;
+  let text: string | undefined;
+
+  if (part.mimeType === "text/html" && part.body?.data) {
+    html = Buffer.from(part.body.data, "base64url").toString("utf8");
+  } else if (part.mimeType === "text/plain" && part.body?.data) {
+    text = Buffer.from(part.body.data, "base64url").toString("utf8");
+  }
+
+  for (const child of part.parts ?? []) {
+    const nested = extractBodies(child);
+    html = html ?? nested.html;
+    text = text ?? nested.text;
+  }
+
+  return { html, text };
 }
 
 /**
@@ -95,8 +129,16 @@ export class GmailProvider implements MailProvider {
     const gmail = google.gmail({ version: "v1", auth });
 
     if (!cursor.cursor) {
-      const { data } = await gmail.users.getProfile({ userId: "me" });
-      return { cursor: String(data.historyId ?? ""), newOrChangedMessageRefs: [] };
+      // First sync for this account: establishing a bare historyId cursor with zero backfill
+      // would leave the Unified Inbox empty until the next real change arrives. Pull a small
+      // set of recent messages as an initial baseline alongside the cursor.
+      const INITIAL_BACKFILL_COUNT = 25;
+      const [{ data: profile }, { data: list }] = await Promise.all([
+        gmail.users.getProfile({ userId: "me" }),
+        gmail.users.messages.list({ userId: "me", maxResults: INITIAL_BACKFILL_COUNT })
+      ]);
+      const refs = (list.messages ?? []).map((m) => m.id).filter((id): id is string => Boolean(id));
+      return { cursor: String(profile.historyId ?? ""), newOrChangedMessageRefs: refs };
     }
 
     const { data } = await gmail.users.history.list({ userId: "me", startHistoryId: cursor.cursor });
@@ -104,6 +146,34 @@ export class GmailProvider implements MailProvider {
       (entry) => (entry.messagesAdded ?? []).map((added) => added.message?.id).filter((id): id is string => Boolean(id))
     );
     return { cursor: data.historyId ?? cursor.cursor, newOrChangedMessageRefs: refs };
+  }
+
+  async fetchMessage(account: AccountRef, providerMessageId: string): Promise<NormalizedMessage> {
+    const auth = await this.clientFor(account);
+    const gmail = google.gmail({ version: "v1", auth });
+    // format=full: Gmail returns already-parsed headers + a nested MIME part tree, so this reads
+    // through the provider's own structured API rather than us hand-parsing raw RFC 2822 text.
+    const { data } = await gmail.users.messages.get({ userId: "me", id: providerMessageId, format: "full" });
+
+    const headers = data.payload?.headers;
+    const dateHeader = headerValue(headers, "Date");
+    const bodies = data.payload ? extractBodies(data.payload) : {};
+
+    return {
+      providerMessageId: data.id ?? providerMessageId,
+      providerThreadId: data.threadId ?? undefined,
+      messageIdHeader: headerValue(headers, "Message-ID") ?? "",
+      inReplyToHeader: headerValue(headers, "In-Reply-To"),
+      referencesHeader: headerValue(headers, "References"),
+      from: headerValue(headers, "From") ?? "",
+      to: splitAddressList(headerValue(headers, "To")),
+      cc: headerValue(headers, "Cc") ? splitAddressList(headerValue(headers, "Cc")) : undefined,
+      subject: headerValue(headers, "Subject") ?? "",
+      date: dateHeader ? new Date(dateHeader) : new Date(Number(data.internalDate ?? Date.now())),
+      bodyHtml: bodies.html,
+      bodyText: bodies.text,
+      snippet: data.snippet ?? undefined
+    };
   }
 
   async fetchThread(account: AccountRef, threadRef: string): Promise<NormalizedThread> {

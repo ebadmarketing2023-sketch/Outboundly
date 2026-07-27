@@ -8,16 +8,45 @@ import type {
   AccountRef,
   ChangeSet,
   MailProvider,
+  NormalizedMessage,
   NormalizedThread,
   ProviderDraftRef,
   ProviderSendResult,
   SyncCursor
 } from "../../src/ports/mail-provider.port.js";
 import { GMAIL_CAPABILITIES, type ProviderCapabilities } from "../../src/ports/provider-capabilities.port.js";
+import type { ConversationRepository, NewMessageInput } from "../../src/ports/conversation-repository.port.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
 import { EmailAddress } from "../../src/core/shared-kernel/email-address.js";
 import { asAccountId, type DraftId } from "../../src/core/shared-kernel/ids.js";
 import type { BuiltMimeMessage } from "../../src/core/mime/types.js";
+
+class InMemoryConversationRepository implements ConversationRepository {
+  insertedMessages: NewMessageInput[] = [];
+  private nextId = 1;
+
+  async getSyncCursor(): Promise<string | undefined> {
+    return undefined;
+  }
+  async setSyncCursor(): Promise<void> {}
+  async findThreadIdsForMessageIds(): Promise<Map<string, string>> {
+    return new Map();
+  }
+  async findThreadIdForProviderThreadId(): Promise<string | undefined> {
+    return undefined;
+  }
+  async createThread(): Promise<string> {
+    return `thread-${this.nextId++}`;
+  }
+  async updateThreadState(): Promise<void> {}
+  async mergeThreads(): Promise<void> {}
+  async insertMessage(input: NewMessageInput): Promise<string> {
+    this.insertedMessages.push(input);
+    return `message-${this.nextId++}`;
+  }
+  async insertReferenceEdges(): Promise<void> {}
+  async upsertParticipants(): Promise<void> {}
+}
 
 class InMemoryDraftRepository implements Repository<Draft, DraftId> {
   private readonly store = new Map<DraftId, Draft>();
@@ -50,6 +79,9 @@ class FakeMailProvider implements MailProvider {
   async listChangesSince(): Promise<ChangeSet> {
     return { cursor: "", newOrChangedMessageRefs: [] };
   }
+  async fetchMessage(): Promise<NormalizedMessage> {
+    throw new Error("not used by this test");
+  }
   async fetchThread(): Promise<NormalizedThread> {
     return { providerThreadId: "t", messageRefs: [] };
   }
@@ -71,13 +103,15 @@ describe("send-message use case (Phase 1 direct send path)", () => {
     });
 
     const provider = new FakeMailProvider();
+    const conversationRepo = new InMemoryConversationRepository();
     const result = await sendDraftMessage({
       draft,
       from: { address: EmailAddress.parse("me@outboundly.app") },
       sendingDomain: "outboundly.app",
       draftLifecycle,
       provider,
-      accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" }
+      accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" },
+      conversationRepo
     });
 
     expect(result.sent).toBe(true);
@@ -87,6 +121,16 @@ describe("send-message use case (Phase 1 direct send path)", () => {
 
     const reloaded = await repo.findById(draft.id);
     expect(reloaded?.providerDraftRef).toBe("fake-draft-1");
+
+    // Sent Mail Synchronization (Section 9.5): the sent message should be recorded locally so a
+    // future reply has something to attach to.
+    expect(conversationRepo.insertedMessages).toHaveLength(1);
+    expect(conversationRepo.insertedMessages[0]).toMatchObject({
+      direction: "outbound",
+      providerMessageId: "fake-message-1",
+      subject: "Hello",
+      bodyText: "Hi there"
+    });
   });
 
   it("halts before any provider call when a personalization token is unresolved (fail-fast, Section 9.2 stage 3)", async () => {
@@ -107,7 +151,8 @@ describe("send-message use case (Phase 1 direct send path)", () => {
         sendingDomain: "outboundly.app",
         draftLifecycle,
         provider,
-        accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" }
+        accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" },
+        conversationRepo: new InMemoryConversationRepository()
       })
     ).rejects.toThrow(/first_name/); // unresolved personalization token halts before Gmail Compatibility even runs
     expect(provider.sentRefs).toEqual([]);

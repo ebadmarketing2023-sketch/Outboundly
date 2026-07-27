@@ -31,9 +31,19 @@ in "Testing" publishing status with yourself added as a test user is enough.
    - `https://www.googleapis.com/auth/userinfo.profile` (needed so Google returns the account's
      profile name for the `From` header's display name — without it, sent mail shows only a
      bare address instead of "Your Name <you@gmail.com>")
+   - `https://www.googleapis.com/auth/gmail.readonly` (Phase 2: needed to sync the inbox for the
+     Conversation Engine/Unified Inbox — reading mail wasn't required in Phase 1)
 
-   If you already created your OAuth consent screen before this scope was added, go back and add
-   it now, then reconnect the account in the app (Sign in with Google again) to pick up the name.
+   If you already created your OAuth consent screen before one of these scopes was added, go back
+   and add it now, then reconnect the account in the app (Sign in with Google again) to pick up
+   the new permission.
+
+   Note: `gmail.readonly` is one of Google's "Restricted" scopes (a stricter tier than
+   `gmail.send`/`gmail.compose`, which are "Sensitive"). This has no effect on local development —
+   your own test-user account can still authorize it freely — but it's a real consideration
+   documented in `docs/ARCHITECTURE.md` Section 13.5 if this app is ever published publicly:
+   restricted scopes require Google's annual CASA security assessment, not just the one-time
+   review sensitive scopes need.
 
 ## 3. Create an OAuth Client ID
 

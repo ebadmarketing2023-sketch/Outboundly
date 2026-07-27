@@ -3,9 +3,15 @@ Modern desktop email outreach platform combining authentic composition with powe
 
 ## Status
 
-Phase 1 of the implementation plan is underway: a single-provider (Google), single-account
-compose/send loop proving the core Draft Lifecycle → Rendering Engine → MIME pipeline →
-Gmail Compatibility Layer → Gmail API send path described in `docs/ARCHITECTURE.md`.
+- **Phase 1 (done):** a single-provider (Google), single-account compose/send loop proving the
+  core Draft Lifecycle → Rendering Engine → MIME pipeline → Gmail Compatibility Layer → Gmail
+  API send path described in `docs/ARCHITECTURE.md`.
+- **Phase 2 (in progress, this slice done):** the Conversation Engine (Section 11) — reply
+  detection via the Message-ID/References header graph, not a flat thread table — wired to Gmail
+  inbox sync, Sent Mail Synchronization (every sent message is now recorded so replies have
+  something to attach to), and a minimal Unified Inbox UI (thread list, archive, star, manual
+  "Sync now"). Microsoft/SMTP-IMAP adapters and database-at-rest encryption are still open for
+  this phase.
 
 Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

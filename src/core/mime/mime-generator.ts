@@ -87,3 +87,26 @@ export function generateMimeTree(content: GeneratedContent): MimePart {
 
   return root;
 }
+
+/**
+ * Recovers the plain-text/HTML source content from an already-built MIME tree — used by Sent
+ * Mail Synchronization (Section 9.5) to store a sent message's body without re-parsing the
+ * canonicalized wire format. Leaf parts' `body` field holds the pre-encoding source content
+ * (Section 9.4's canonicalize() encodes into `raw` without mutating it), so this is a plain tree
+ * walk, not a MIME parser.
+ */
+export function extractPlainAndHtmlBodies(root: MimePart): { text?: string; html?: string } {
+  let text: string | undefined;
+  let html: string | undefined;
+
+  if (root.contentType.startsWith("text/plain") && root.body !== undefined) text = root.body;
+  if (root.contentType.startsWith("text/html") && root.body !== undefined) html = root.body;
+
+  for (const child of root.parts ?? []) {
+    const nested = extractPlainAndHtmlBodies(child);
+    text = text ?? nested.text;
+    html = html ?? nested.html;
+  }
+
+  return { text, html };
+}

@@ -46,10 +46,66 @@ export interface SendDraftResponse {
   providerMessageId?: string;
 }
 
+/** Unified Inbox (Section 11.4) — a read-model view over the Conversation Engine's storage. */
+export interface ThreadSummary {
+  id: string;
+  subjectNormalized: string;
+  conversationState: string;
+  archivedAt?: string;
+  updatedAt: string;
+}
+
+export interface MessageSummary {
+  id: string;
+  direction: string;
+  fromAddress: string;
+  toAddresses: string[];
+  subject: string;
+  bodyText?: string;
+  bodyHtml?: string;
+  snippet?: string;
+  starred: boolean;
+  sentAt?: string;
+  receivedAt?: string;
+}
+
+export interface SyncInboxRequest {
+  accountId: string;
+}
+
+export interface SyncInboxResponse {
+  newMessageCount: number;
+  repliesDetected: number;
+}
+
+export interface ListThreadsRequest {
+  accountId: string;
+  includeArchived?: boolean;
+}
+
+export interface GetThreadMessagesRequest {
+  threadId: string;
+}
+
+export interface SetThreadArchivedRequest {
+  threadId: string;
+  archived: boolean;
+}
+
+export interface SetMessageStarredRequest {
+  messageId: string;
+  starred: boolean;
+}
+
 export interface OutboundlyRendererApi {
   listAccounts(): Promise<AccountSummary[]>;
   connectGoogleAccount(): Promise<AccountSummary>;
   createDraft(request: CreateDraftRequest): Promise<DraftSummary>;
   autosaveDraft(request: AutosaveDraftRequest): Promise<DraftSummary>;
   sendDraft(request: SendDraftRequest): Promise<SendDraftResponse>;
+  syncInbox(request: SyncInboxRequest): Promise<SyncInboxResponse>;
+  listThreads(request: ListThreadsRequest): Promise<ThreadSummary[]>;
+  getThreadMessages(request: GetThreadMessagesRequest): Promise<MessageSummary[]>;
+  setThreadArchived(request: SetThreadArchivedRequest): Promise<void>;
+  setMessageStarred(request: SetMessageStarredRequest): Promise<void>;
 }

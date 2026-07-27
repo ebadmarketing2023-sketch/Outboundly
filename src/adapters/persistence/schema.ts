@@ -15,6 +15,9 @@ export const accounts = sqliteTable("accounts", {
   status: text("status").notNull(), // 'connected' | 'reauth_required' | 'disconnected'
   connectedAt: integer("connected_at", { mode: "timestamp_ms" }).notNull(),
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp_ms" }),
+  // Opaque incremental-sync cursor (Gmail's historyId, Section 11.2) — provider-specific, never
+  // interpreted by core logic, just round-tripped through MailProvider.listChangesSince.
+  syncCursor: text("sync_cursor"),
   dailySendLimit: integer("daily_send_limit"),
   hourlySendLimit: integer("hourly_send_limit"),
   warmupMode: integer("warmup_mode", { mode: "boolean" }).notNull().default(false),
@@ -93,4 +96,46 @@ export const messages = sqliteTable("messages", {
   policyTraceJson: text("policy_trace_json", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
+});
+
+/**
+ * Conversation Engine storage (Section 5.4, Section 11) — the active logic that decides what
+ * goes into `threads`/`messages` and keeps it correct, distinct from those tables' passive
+ * storage role.
+ */
+
+export const messageReferenceEdges = sqliteTable("message_reference_edges", {
+  id: text("id").primaryKey(),
+  messageId: text("message_id")
+    .notNull()
+    .references(() => messages.id),
+  referencedMessageIdHeader: text("referenced_message_id_header").notNull(),
+  position: integer("position").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull()
+});
+
+export const conversationParticipants = sqliteTable("conversation_participants", {
+  id: text("id").primaryKey(),
+  threadId: text("thread_id")
+    .notNull()
+    .references(() => threads.id),
+  // No FK to a contacts table yet — Leads/Contacts (Section 5.5) is a later phase; this column
+  // is nullable and unconstrained until that module exists to reconcile against.
+  contactId: text("contact_id"),
+  emailAddress: text("email_address").notNull(),
+  displayName: text("display_name"),
+  role: text("role").notNull(), // 'sender' | 'to' | 'cc'
+  firstSeenAt: integer("first_seen_at", { mode: "timestamp_ms" }).notNull()
+});
+
+export const threadMerges = sqliteTable("thread_merges", {
+  id: text("id").primaryKey(),
+  absorbedThreadId: text("absorbed_thread_id")
+    .notNull()
+    .references(() => threads.id),
+  canonicalThreadId: text("canonical_thread_id")
+    .notNull()
+    .references(() => threads.id),
+  reason: text("reason").notNull(),
+  mergedAt: integer("merged_at", { mode: "timestamp_ms" }).notNull()
 });
