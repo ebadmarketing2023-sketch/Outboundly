@@ -15,6 +15,8 @@ import { GmailProvider, serializeStoredTokens } from "../dist/adapters/providers
 import { runGoogleOAuthFlow } from "../dist/adapters/providers/google/oauth-flow.js";
 import { MicrosoftProvider } from "../dist/adapters/providers/microsoft/microsoft-provider.js";
 import { runMicrosoftOAuthFlow } from "../dist/adapters/providers/microsoft/oauth-flow.js";
+import { SmtpImapProvider } from "../dist/adapters/providers/smtp-imap/smtp-imap-provider.js";
+import { serializeSmtpImapCredentials } from "../dist/adapters/providers/smtp-imap/credentials.js";
 import { NativeKeychainTokenVault } from "../dist/adapters/credential-vault/native-keychain-token-vault.js";
 import { sendDraftMessage } from "../dist/application/send-message/send-message.js";
 import { syncInboxForAccount } from "../dist/application/sync-inbox/sync-inbox.js";
@@ -53,6 +55,7 @@ let draftLifecycle;
 let tokenVault;
 let gmailProvider;
 let microsoftProvider;
+let smtpImapProvider;
 let conversationRepository;
 let inboxViewRepository;
 
@@ -67,6 +70,7 @@ function initServices() {
     tokenVault
   );
   microsoftProvider = new MicrosoftProvider({ clientId: MICROSOFT_CLIENT_ID, scopes: MICROSOFT_SCOPES }, tokenVault);
+  smtpImapProvider = new SmtpImapProvider(tokenVault);
   conversationRepository = new SqliteConversationRepository(db);
   inboxViewRepository = new InboxViewRepository(db);
 }
@@ -74,6 +78,7 @@ function initServices() {
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
 function providerFor(account) {
   if (account.provider === "microsoft") return microsoftProvider;
+  if (account.provider === "smtp_imap") return smtpImapProvider;
   return gmailProvider;
 }
 
@@ -234,6 +239,66 @@ function registerIpcHandlers() {
       provider: "microsoft",
       emailAddress: result.emailAddress,
       displayName: result.displayName,
+      status: "connected"
+    });
+  });
+
+  ipcMain.handle("accounts:connectSmtpImap", async (_event, request) => {
+    const credentials = {
+      smtpHost: request.smtpHost,
+      smtpPort: request.smtpPort,
+      smtpSecure: request.smtpSecure,
+      imapHost: request.imapHost,
+      imapPort: request.imapPort,
+      imapSecure: request.imapSecure,
+      username: request.username,
+      password: request.password
+    };
+
+    const now = new Date();
+    const existing = db
+      .select()
+      .from(accountsTable)
+      .where(eq(accountsTable.emailAddress, request.emailAddress))
+      .get();
+    const accountId = existing?.id ?? generateId();
+
+    // Store first so authenticate() below exercises the exact same TokenVault-backed path a
+    // later send/sync would use; if the real IMAP login fails, roll the stored credentials back
+    // and never touch the accounts table, so a bad password never creates a "connected" account.
+    await tokenVault.store(accountId, serializeSmtpImapCredentials(credentials));
+    try {
+      await smtpImapProvider.authenticate({ accountId, emailAddress: request.emailAddress });
+    } catch (err) {
+      if (!existing) await tokenVault.delete(accountId);
+      throw err;
+    }
+
+    if (existing) {
+      db.update(accountsTable)
+        .set({ displayName: request.displayName, status: "connected", updatedAt: now })
+        .where(eq(accountsTable.id, accountId))
+        .run();
+    } else {
+      db.insert(accountsTable)
+        .values({
+          id: accountId,
+          provider: "smtp_imap",
+          emailAddress: request.emailAddress,
+          displayName: request.displayName,
+          status: "connected",
+          connectedAt: now,
+          createdAt: now,
+          updatedAt: now
+        })
+        .run();
+    }
+
+    return serializeAccount({
+      id: accountId,
+      provider: "smtp_imap",
+      emailAddress: request.emailAddress,
+      displayName: request.displayName,
       status: "connected"
     });
   });

@@ -22,6 +22,18 @@ export function ComposeScreen(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const [showSmtpImapForm, setShowSmtpImapForm] = useState(false);
+  const [smtpImapEmail, setSmtpImapEmail] = useState("");
+  const [smtpImapDisplayName, setSmtpImapDisplayName] = useState("");
+  const [smtpImapUsername, setSmtpImapUsername] = useState("");
+  const [smtpImapPassword, setSmtpImapPassword] = useState("");
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("587");
+  const [smtpSecure, setSmtpSecure] = useState(false);
+  const [imapHost, setImapHost] = useState("");
+  const [imapPort, setImapPort] = useState("993");
+  const [imapSecure, setImapSecure] = useState(true);
+
   useEffect(() => {
     window.outboundly
       .listAccounts()
@@ -54,6 +66,32 @@ export function ComposeScreen(): JSX.Element {
       const account = await window.outboundly.connectMicrosoftAccount();
       setAccounts((prev) => [...prev, account]);
       setSelectedAccountId(account.id);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConnectSmtpImap(): Promise<void> {
+    setError(null);
+    setBusy(true);
+    try {
+      const account = await window.outboundly.connectSmtpImapAccount({
+        emailAddress: smtpImapEmail,
+        displayName: smtpImapDisplayName || undefined,
+        username: smtpImapUsername || smtpImapEmail,
+        password: smtpImapPassword,
+        smtpHost,
+        smtpPort: Number(smtpPort),
+        smtpSecure,
+        imapHost,
+        imapPort: Number(imapPort),
+        imapSecure
+      });
+      setAccounts((prev) => [...prev, account]);
+      setSelectedAccountId(account.id);
+      setShowSmtpImapForm(false);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -127,6 +165,82 @@ export function ComposeScreen(): JSX.Element {
         <button onClick={handleConnectMicrosoft} disabled={busy} style={{ marginLeft: "0.5rem" }}>
           Sign in with Microsoft
         </button>
+        <button onClick={() => setShowSmtpImapForm((v) => !v)} disabled={busy} style={{ marginLeft: "0.5rem" }}>
+          Other (SMTP/IMAP)
+        </button>
+
+        {showSmtpImapForm && (
+          <div
+            style={{
+              marginTop: "0.75rem",
+              padding: "0.75rem",
+              border: "1px solid #ccc",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.5rem",
+              maxWidth: 360
+            }}
+          >
+            <input
+              placeholder="Email address"
+              value={smtpImapEmail}
+              onChange={(e) => setSmtpImapEmail(e.target.value)}
+            />
+            <input
+              placeholder="Display name (optional)"
+              value={smtpImapDisplayName}
+              onChange={(e) => setSmtpImapDisplayName(e.target.value)}
+            />
+            <input
+              placeholder="Username (defaults to email)"
+              value={smtpImapUsername}
+              onChange={(e) => setSmtpImapUsername(e.target.value)}
+            />
+            <input
+              placeholder="Password"
+              type="password"
+              value={smtpImapPassword}
+              onChange={(e) => setSmtpImapPassword(e.target.value)}
+            />
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                placeholder="SMTP host"
+                value={smtpHost}
+                onChange={(e) => setSmtpHost(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <input
+                placeholder="Port"
+                value={smtpPort}
+                onChange={(e) => setSmtpPort(e.target.value)}
+                style={{ width: 70 }}
+              />
+              <label style={{ whiteSpace: "nowrap" }}>
+                <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} /> TLS
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                placeholder="IMAP host"
+                value={imapHost}
+                onChange={(e) => setImapHost(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <input
+                placeholder="Port"
+                value={imapPort}
+                onChange={(e) => setImapPort(e.target.value)}
+                style={{ width: 70 }}
+              />
+              <label style={{ whiteSpace: "nowrap" }}>
+                <input type="checkbox" checked={imapSecure} onChange={(e) => setImapSecure(e.target.checked)} /> TLS
+              </label>
+            </div>
+            <button onClick={handleConnectSmtpImap} disabled={busy}>
+              Connect
+            </button>
+          </div>
+        )}
       </section>
 
       <section>

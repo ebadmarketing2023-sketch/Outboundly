@@ -52,6 +52,10 @@ export async function sendDraftMessage(params: SendMessageParams): Promise<SendM
   await params.draftLifecycle.recordProviderDraftRef(params.draft.id, draftRef.providerDraftId);
   const sendResult = await params.provider.sendDraft(params.accountRef, draftRef);
 
+  // No-op for Gmail/Graph (they auto-file sent mail server-side); this is where SMTP/IMAP's Sent
+  // folder actually gets written to, since plain SMTP has no server-side notion of "sent" at all.
+  await params.provider.appendToSentFolder(params.accountRef, Buffer.from(built.raw, "utf8"));
+
   const bodies = extractPlainAndHtmlBodies(built.root);
   await ingestMessage(params.conversationRepo, {
     accountId: params.accountRef.accountId,

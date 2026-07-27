@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("outboundly", {
   listAccounts: () => ipcRenderer.invoke("accounts:list"),
   connectGoogleAccount: () => ipcRenderer.invoke("accounts:connectGoogle"),
   connectMicrosoftAccount: () => ipcRenderer.invoke("accounts:connectMicrosoft"),
+  connectSmtpImapAccount: (request) => ipcRenderer.invoke("accounts:connectSmtpImap", request),
   createDraft: (request) => ipcRenderer.invoke("drafts:create", request),
   autosaveDraft: (request) => ipcRenderer.invoke("drafts:autosave", request),
   sendDraft: (request) => ipcRenderer.invoke("drafts:send", request),

@@ -10,9 +10,11 @@ Modern desktop email outreach platform combining authentic composition with powe
   detection via the Message-ID/References header graph, not a flat thread table — wired to Gmail
   inbox sync, Sent Mail Synchronization (every sent message is now recorded so replies have
   something to attach to), a minimal Unified Inbox UI (thread list, archive, star, manual "Sync
-  now"), and a second full MailProvider: Microsoft 365/Outlook.com via MSAL (PKCE) + Graph API
-  (`src/adapters/providers/microsoft/`), reusing the same generic `TokenVault` port as Gmail.
-  SMTP/IMAP adapter and database-at-rest encryption are still open for this phase.
+  now"), a second full MailProvider (Microsoft 365/Outlook.com via MSAL + Graph API,
+  `src/adapters/providers/microsoft/`), and a third: a universal SMTP/IMAP fallback
+  (`src/adapters/providers/smtp-imap/`) for any mailbox that isn't Gmail or Microsoft, using
+  nodemailer for sending and imapflow/mailparser for reading — all three providers share the same
+  generic `TokenVault` port. Database-at-rest encryption is still open for this phase.
 
 Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -38,6 +40,11 @@ To sign in with a Microsoft 365/Outlook.com account instead, see
 ```bash
 MICROSOFT_CLIENT_ID="..." npm run electron:dev
 ```
+
+For any other mailbox, use the "Other (SMTP/IMAP)" option in the compose screen — it asks
+directly for your SMTP/IMAP host, port, username, and password (an app-specific password, for
+providers that require one) rather than an OAuth sign-in, since there's no shared app-wide OAuth
+client for arbitrary mail servers.
 
 > **Native module note:** `better-sqlite3` is a native addon and must be built against whichever
 > runtime is going to load it. `npm run electron:dev` automatically rebuilds it for Electron's

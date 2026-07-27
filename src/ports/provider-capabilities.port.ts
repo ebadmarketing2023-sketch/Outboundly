@@ -43,3 +43,28 @@ export const MICROSOFT_CAPABILITIES: ProviderCapabilities = {
   maxAttachmentSizeBytes: 150 * 1024 * 1024,
   maxRecipientsPerMessage: 500
 };
+
+/**
+ * Universal SMTP/IMAP fallback (Section 12.2): the real, honest capability floor for "any
+ * mailbox," not just what a specific server happens to support. `supportsDrafts` is false — the
+ * adapter fakes a two-step create/send draft lifecycle with an in-memory placeholder (no server
+ * round-trip), which does not survive an app restart between the two steps, so it isn't a real
+ * capability. `supportsIncrementalSyncCursor` is true: IMAP UIDs are monotonically
+ * non-decreasing within a mailbox's UIDVALIDITY epoch (RFC 3501), which is a real, universal
+ * incremental cursor, not an assumption. `supportsNativeThreads`/`supportsLabels` are false since
+ * this adapter doesn't rely on non-universal extensions (THREAD, X-GM-EXT-1) that not every IMAP
+ * server implements. `maxAttachmentSizeBytes`/`maxRecipientsPerMessage` have no protocol-level
+ * universal answer — these are conservative defaults (matching Gmail's own limits), not a
+ * verified guarantee from any specific server.
+ */
+export const SMTP_IMAP_CAPABILITIES: ProviderCapabilities = {
+  supportsDrafts: false,
+  supportsLabels: false,
+  supportsNativeThreads: false,
+  supportsIncrementalSyncCursor: true,
+  supportsPushNotifications: false,
+  supportsAliases: false,
+  supportsSendAs: false,
+  maxAttachmentSizeBytes: 25 * 1024 * 1024,
+  maxRecipientsPerMessage: 500
+};

@@ -100,10 +100,24 @@ export interface SetMessageStarredRequest {
   starred: boolean;
 }
 
+export interface ConnectSmtpImapRequest {
+  emailAddress: string;
+  displayName?: string;
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  imapHost: string;
+  imapPort: number;
+  imapSecure: boolean;
+  username: string;
+  password: string;
+}
+
 export interface OutboundlyRendererApi {
   listAccounts(): Promise<AccountSummary[]>;
   connectGoogleAccount(): Promise<AccountSummary>;
   connectMicrosoftAccount(): Promise<AccountSummary>;
+  connectSmtpImapAccount(request: ConnectSmtpImapRequest): Promise<AccountSummary>;
   createDraft(request: CreateDraftRequest): Promise<DraftSummary>;
   autosaveDraft(request: AutosaveDraftRequest): Promise<DraftSummary>;
   sendDraft(request: SendDraftRequest): Promise<SendDraftResponse>;
