@@ -59,6 +59,12 @@ export function openDatabase(filePath: string, encryptionKey: string): Outboundl
       }
 
       // Confirmed plaintext (pre-encryption install) — convert it in place, then reopen normally.
+      // The pre-encryption openDatabase() always left the file in WAL journal mode, and
+      // SQLCipher's rekey does not support converting a database while it's in WAL mode
+      // (verified for real: reproduces "Rekeying is not supported in WAL journal mode." against
+      // this exact build) — switch to the rollback journal first, rekey, then WAL is restored
+      // below on the final connection.
+      plaintextProbe.pragma("journal_mode = DELETE");
       applyCipherAndKey(plaintextProbe, "rekey", encryptionKey);
       plaintextProbe.close();
       sqlite = new Database(filePath);

@@ -107,9 +107,13 @@ describe("SQLite schema + migrations (Section 5, Section 24.6)", () => {
     const preExistingEmail = "already-connected-before-encryption-shipped@outboundly.app";
 
     // Simulate a real install from before Section 23: a plain, unencrypted better-sqlite3 file
-    // built the exact same way the old (pre-encryption) openDatabase() used to — real schema via
-    // drizzle's migrate(), no key pragmas at all — with real data already in it.
+    // built the exact same way the old (pre-encryption) openDatabase() used to — WAL journal mode,
+    // real schema via drizzle's migrate(), no key pragmas at all — with real data already in it.
+    // The WAL mode is not incidental: SQLCipher's rekey pragma fails against a WAL-mode database
+    // (a real bug this test caught — "Rekeying is not supported in WAL journal mode."), so a
+    // legacy database built without it would not have exercised that failure mode.
     const legacyRawDb = new RawDatabase(dbPath);
+    legacyRawDb.pragma("journal_mode = WAL");
     const legacyDrizzleDb = drizzle(legacyRawDb, { schema });
     migrate(legacyDrizzleDb, { migrationsFolder: join(process.cwd(), "src/adapters/persistence/migrations") });
     const now = new Date();
