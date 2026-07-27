@@ -76,6 +76,9 @@ export interface SyncInboxRequest {
 export interface SyncInboxResponse {
   newMessageCount: number;
   repliesDetected: number;
+  /** Count of messages that failed to sync (deleted/moved since listing, transient API errors,
+   * etc.) without aborting the rest of the sync — see Section 21.3's failure-isolation principle. */
+  failedCount: number;
 }
 
 export interface ListThreadsRequest {

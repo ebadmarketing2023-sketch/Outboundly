@@ -213,12 +213,24 @@ function registerIpcHandlers() {
     if (!account) throw new Error("Account not found");
 
     const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
-    return syncInboxForAccount({
+    const result = await syncInboxForAccount({
       accountId: account.id,
       accountRef,
       provider: gmailProvider,
       repo: conversationRepository
     });
+
+    if (result.failedRefs.length > 0) {
+      // Full details go to the terminal for debugging; the IPC response only exposes a count
+      // (Section 23: don't push raw internal error text into the renderer unnecessarily).
+      console.error("inbox:sync — some messages failed to sync:", result.failedRefs);
+    }
+
+    return {
+      newMessageCount: result.newMessageCount,
+      repliesDetected: result.repliesDetected,
+      failedCount: result.failedRefs.length
+    };
   });
 
   ipcMain.handle("inbox:listThreads", async (_event, request) => {

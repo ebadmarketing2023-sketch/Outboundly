@@ -17,7 +17,10 @@ import type { ConversationState } from "../../src/core/conversation/conversation
 import { asAccountId } from "../../src/core/shared-kernel/ids.js";
 
 class FakeMailProvider implements MailProvider {
-  constructor(private readonly messagesByRef: Record<string, NormalizedMessage>) {}
+  constructor(
+    private readonly messagesByRef: Record<string, NormalizedMessage>,
+    private readonly failingRefs: Set<string> = new Set()
+  ) {}
 
   async authenticate(): Promise<void> {}
   async sendMessage(): Promise<ProviderSendResult> {
@@ -34,6 +37,9 @@ class FakeMailProvider implements MailProvider {
     return { cursor: "cursor-1", newOrChangedMessageRefs: Object.keys(this.messagesByRef) };
   }
   async fetchMessage(_account: AccountRef, providerMessageId: string): Promise<NormalizedMessage> {
+    if (this.failingRefs.has(providerMessageId)) {
+      throw new Error("Requested entity was not found.");
+    }
     return this.messagesByRef[providerMessageId]!;
   }
   async fetchThread(): Promise<NormalizedThread> {
@@ -117,6 +123,46 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
 
     expect(result.newMessageCount).toBe(2);
     expect(result.repliesDetected).toBe(1); // only the attach to thread-1 counts as a reply
+    expect(result.failedRefs).toEqual([]);
+    expect(repo.syncCursors.get("acct-1")).toBe("cursor-1");
+  });
+
+  it("isolates a single message's fetch failure instead of aborting the whole sync (Section 21.3)", async () => {
+    const repo = new InMemoryConversationRepository();
+
+    const provider = new FakeMailProvider(
+      {
+        "msg-ok": {
+          providerMessageId: "msg-ok",
+          messageIdHeader: "<ok@x>",
+          from: "someone@example.com",
+          to: ["me@outboundly.app"],
+          subject: "This one works",
+          date: new Date()
+        },
+        "msg-gone": {
+          providerMessageId: "msg-gone",
+          messageIdHeader: "<gone@x>",
+          from: "someone@example.com",
+          to: ["me@outboundly.app"],
+          subject: "This one was deleted before we could fetch it",
+          date: new Date()
+        }
+      },
+      new Set(["msg-gone"])
+    );
+
+    const result = await syncInboxForAccount({ accountId: "acct-1", accountRef, provider, repo });
+
+    // The failing message doesn't prevent the healthy one from being ingested...
+    expect(result.newMessageCount).toBe(1);
+    expect(repo.messageIdToThreadId.has("<ok@x>")).toBe(true);
+    expect(repo.messageIdToThreadId.has("<gone@x>")).toBe(false);
+
+    // ...the failure is reported, not silently swallowed...
+    expect(result.failedRefs).toEqual([{ ref: "msg-gone", error: "Requested entity was not found." }]);
+
+    // ...and the cursor still advances, so the sync isn't stuck retrying the same batch forever.
     expect(repo.syncCursors.get("acct-1")).toBe("cursor-1");
   });
 });

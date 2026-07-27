@@ -136,7 +136,10 @@ export class GmailProvider implements MailProvider {
         );
         return { cursor: data.historyId ?? cursor.cursor, newOrChangedMessageRefs: refs };
       } catch (err) {
-        const status = (err as { code?: number; response?: { status?: number } })?.response?.status ?? (err as { code?: number })?.code;
+        // GaxiosError (verified against node_modules/gaxios/build/src/common.d.ts) carries the
+        // HTTP status at both `.status` and `.response.status` — never at `.code`, which is a
+        // Node error-code string (e.g. "ECONNRESET"), not an HTTP status number.
+        const status = (err as { status?: number; response?: { status?: number } })?.status ?? (err as { response?: { status?: number } })?.response?.status;
         if (status !== 404) throw err;
         // Gmail's History API documents that a historyId can expire/become invalid, returning
         // 404 ("Requested entity was not found") — and explicitly recommends falling back to a

@@ -20,6 +20,13 @@ export interface SyncInboxParams {
 export interface SyncInboxResult {
   newMessageCount: number;
   repliesDetected: number;
+  /**
+   * Refs that failed to fetch/ingest (message deleted/moved since being listed, a transient
+   * API error, etc.) — Section 21.3's failure-isolation principle applies here exactly as it
+   * does to the send path: one bad message must not abort the rest of the sync. Reported rather
+   * than silently swallowed, per the cross-cutting "explain, don't just flag" rule.
+   */
+  failedRefs: { ref: string; error: string }[];
 }
 
 function isFromAccount(fromHeader: string, accountEmail: string): boolean {
@@ -36,37 +43,44 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
 
   let newMessageCount = 0;
   let repliesDetected = 0;
+  const failedRefs: { ref: string; error: string }[] = [];
 
   for (const ref of changeSet.newOrChangedMessageRefs) {
-    const normalized = await params.provider.fetchMessage(params.accountRef, ref);
-    const direction = isFromAccount(normalized.from, params.accountRef.emailAddress) ? "outbound" : "inbound";
+    try {
+      const normalized = await params.provider.fetchMessage(params.accountRef, ref);
+      const direction = isFromAccount(normalized.from, params.accountRef.emailAddress) ? "outbound" : "inbound";
 
-    const result = await ingestMessage(params.repo, {
-      accountId: params.accountId,
-      direction,
-      providerMessageId: normalized.providerMessageId,
-      providerThreadId: normalized.providerThreadId,
-      messageIdHeader: normalized.messageIdHeader,
-      inReplyToHeader: normalized.inReplyToHeader,
-      referencesHeader: normalized.referencesHeader,
-      from: normalized.from,
-      to: normalized.to,
-      cc: normalized.cc,
-      subject: normalized.subject,
-      bodyHtml: normalized.bodyHtml,
-      bodyText: normalized.bodyText,
-      snippet: normalized.snippet,
-      occurredAt: normalized.date
-    });
+      const result = await ingestMessage(params.repo, {
+        accountId: params.accountId,
+        direction,
+        providerMessageId: normalized.providerMessageId,
+        providerThreadId: normalized.providerThreadId,
+        messageIdHeader: normalized.messageIdHeader,
+        inReplyToHeader: normalized.inReplyToHeader,
+        referencesHeader: normalized.referencesHeader,
+        from: normalized.from,
+        to: normalized.to,
+        cc: normalized.cc,
+        subject: normalized.subject,
+        bodyHtml: normalized.bodyHtml,
+        bodyText: normalized.bodyText,
+        snippet: normalized.snippet,
+        occurredAt: normalized.date
+      });
 
-    if (result.outcome !== "duplicate") {
-      newMessageCount++;
-      if (direction === "inbound" && result.outcome !== "new-thread") {
-        repliesDetected++;
+      if (result.outcome !== "duplicate") {
+        newMessageCount++;
+        if (direction === "inbound" && result.outcome !== "new-thread") {
+          repliesDetected++;
+        }
       }
+    } catch (err) {
+      // One message's failure (deleted/moved since being listed, a transient API error) must not
+      // abort the rest of the sync or lose the cursor advance below — isolate and continue.
+      failedRefs.push({ ref, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
   await params.repo.setSyncCursor(params.accountId, changeSet.cursor);
-  return { newMessageCount, repliesDetected };
+  return { newMessageCount, repliesDetected, failedRefs };
 }
