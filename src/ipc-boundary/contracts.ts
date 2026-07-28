@@ -340,6 +340,21 @@ export interface SetReplyClassificationRequest {
   classification: ReplyClassification;
 }
 
+/** Notifications module (Section 3): "Surface in-app alerts ... most domain events." */
+export interface NotificationSummary {
+  id: string;
+  notificationType: string;
+  severity: string;
+  message: string;
+  relatedAccountId?: string;
+  relatedCampaignId?: string;
+  createdAt: string;
+}
+
+export interface MarkNotificationReadRequest {
+  notificationId: string;
+}
+
 export interface ConnectSmtpImapRequest {
   emailAddress: string;
   displayName?: string;
@@ -389,4 +404,6 @@ export interface OutboundlyRendererApi {
   markConversion(request: MarkConversionRequest): Promise<void>;
   unsubscribeContact(request: UnsubscribeContactRequest): Promise<void>;
   setReplyClassification(request: SetReplyClassificationRequest): Promise<void>;
+  listUnreadNotifications(): Promise<NotificationSummary[]>;
+  markNotificationRead(request: MarkNotificationReadRequest): Promise<void>;
 }

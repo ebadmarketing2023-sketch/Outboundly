@@ -24,6 +24,7 @@ import { SqliteDeliverabilityReportRepository } from "../../src/adapters/persist
 import { SqliteDraftRepository } from "../../src/adapters/persistence/repositories/draft-repository.js";
 import { SqliteEnrollmentRepository } from "../../src/adapters/persistence/repositories/enrollment-repository.js";
 import { SqliteEventRepository } from "../../src/adapters/persistence/repositories/event-repository.js";
+import { SqliteNotificationRepository } from "../../src/adapters/persistence/repositories/notification-repository.js";
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteSubjectVariantRepository } from "../../src/adapters/persistence/repositories/subject-variant-repository.js";
@@ -271,6 +272,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
   let db: OutboundlyDb;
   let deps: FireEnrollmentStepDeps;
   let eventRepository: SqliteEventRepository;
+  let notificationRepository: SqliteNotificationRepository;
   let accountId: string;
   let businessHoursProfileId: string;
 
@@ -318,6 +320,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
       draftLifecycle: new DraftLifecycleService(new SqliteDraftRepository(db), new SystemClock())
     };
     eventRepository = new SqliteEventRepository(db);
+    notificationRepository = new SqliteNotificationRepository(db);
   });
 
   it("stops a reply-eligible step but leaves a stopOnReply:false step running", async () => {
@@ -490,7 +493,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
     const messageRow = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).get();
 
     const stoppedIds = await handleReplyDetected(
-      { ...deps, eventRepository },
+      { ...deps, eventRepository, notificationRepository },
       contact.email,
       { threadId: messageRow!.threadId!, accountId }
     );
@@ -499,16 +502,27 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
 
     const events = await eventRepository.findByCampaignInWindow(campaign.id, new Date(0), new Date(Date.now() + 60_000));
     expect(events.some((e) => e.eventType === "replied")).toBe(true);
+
+    const unread = await notificationRepository.findUnread(10);
+    expect(unread).toHaveLength(1);
+    expect(unread[0]?.notificationType).toBe("reply_arrived");
+    expect(unread[0]?.relatedCampaignId).toBe(campaign.id);
   });
 
   it("handleReplyDetected does not record an event or throw when the reply doesn't correlate to any campaign send", async () => {
     const contact = await deps.contactRepository.upsertByEmail({ email: "unrelated@example.com", source: "manual" });
     const stoppedIds = await handleReplyDetected(
-      { ...deps, eventRepository },
+      { ...deps, eventRepository, notificationRepository },
       contact.email,
       { threadId: "no-such-thread", accountId }
     );
     expect(stoppedIds).toEqual([]); // no active enrollments to stop either
+
+    // A notification still fires (a known contact replied), just without a campaign correlation.
+    const unread = await notificationRepository.findUnread(10);
+    expect(unread).toHaveLength(1);
+    expect(unread[0]?.notificationType).toBe("reply_arrived");
+    expect(unread[0]?.relatedCampaignId).toBeUndefined();
   });
 
   it("unsubscribeContact suppresses the contact, records an event, and stops their active enrollments", async () => {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ComposeScreen } from "./compose/ComposeScreen.js";
 import { InboxScreen } from "./unified-inbox/InboxScreen.js";
 import { AccountHealthScreen } from "./account-health/AccountHealthScreen.js";
@@ -6,12 +6,18 @@ import { DeliverabilityLabScreen } from "./deliverability-lab/DeliverabilityLabS
 import { LeadsScreen } from "./leads/LeadsScreen.js";
 import { CampaignsScreen } from "./campaigns/CampaignsScreen.js";
 import { AnalyticsScreen } from "./analytics/AnalyticsScreen.js";
+import { NotificationsScreen } from "./notifications/NotificationsScreen.js";
 import { BUILT_AT } from "./build-info.js";
 
-type Tab = "compose" | "inbox" | "account-health" | "deliverability-lab" | "leads" | "campaigns" | "analytics";
+type Tab = "compose" | "inbox" | "account-health" | "deliverability-lab" | "leads" | "campaigns" | "analytics" | "notifications";
 
 export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>("compose");
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    window.outboundly.listUnreadNotifications().then((list) => setUnreadCount(list.length)).catch(() => undefined);
+  }, [tab]);
 
   return (
     <div>
@@ -37,6 +43,9 @@ export function App(): JSX.Element {
         <button onClick={() => setTab("analytics")} disabled={tab === "analytics"}>
           Analytics
         </button>
+        <button onClick={() => setTab("notifications")} disabled={tab === "notifications"}>
+          Notifications{unreadCount > 0 ? ` (${unreadCount})` : ""}
+        </button>
         <span style={{ marginLeft: "auto", color: "#888", fontSize: "0.8rem" }}>Build: {BUILT_AT}</span>
       </nav>
       {tab === "compose" && <ComposeScreen />}
@@ -46,6 +55,7 @@ export function App(): JSX.Element {
       {tab === "leads" && <LeadsScreen />}
       {tab === "campaigns" && <CampaignsScreen />}
       {tab === "analytics" && <AnalyticsScreen />}
+      {tab === "notifications" && <NotificationsScreen />}
     </div>
   );
 }

@@ -590,3 +590,26 @@ export const insights = sqliteTable("insights", {
   generatedAt: integer("generated_at", { mode: "timestamp_ms" }).notNull(),
   dismissedAt: integer("dismissed_at", { mode: "timestamp_ms" })
 });
+
+/** Notifications module (Section 3: "Surface in-app alerts (reply arrived, campaign paused,
+ * account health issue) ... most domain events"). A brand-new table, so real FKs on
+ * relatedAccountId/relatedCampaignId are safe (unlike several older nullable columns elsewhere
+ * that predate their target tables). Both are nullable since not every notification type has both
+ * -- a reply-arrived notification always has an account and usually a campaign; a send-failure
+ * notification always has an account but not necessarily a campaign (a manually composed send). */
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    notificationType: text("notification_type").notNull(), // 'reply_arrived' | 'send_failure' | 'account_health_issue'
+    severity: text("severity").notNull(), // 'info' | 'warning' | 'critical'
+    message: text("message").notNull(),
+    relatedAccountId: text("related_account_id").references(() => accounts.id),
+    relatedCampaignId: text("related_campaign_id").references(() => campaigns.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    readAt: integer("read_at", { mode: "timestamp_ms" })
+  },
+  (table) => ({
+    createdAtIdx: index("notifications_created_at_idx").on(table.createdAt)
+  })
+);

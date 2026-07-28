@@ -15,6 +15,7 @@ export type SendQueueId = Brand<string, "SendQueueId">;
 export type LabelId = Brand<string, "LabelId">;
 export type EventId = Brand<string, "EventId">;
 export type InsightId = Brand<string, "InsightId">;
+export type NotificationId = Brand<string, "NotificationId">;
 
 export function asAccountId(id: string): AccountId {
   return id as AccountId;
@@ -57,6 +58,9 @@ export function asEventId(id: string): EventId {
 }
 export function asInsightId(id: string): InsightId {
   return id as InsightId;
+}
+export function asNotificationId(id: string): NotificationId {
+  return id as NotificationId;
 }
 
 /** Generates a v4-shaped UUID without pulling in an external dependency for this narrow need. */

@@ -48,6 +48,7 @@ import { SqliteDelayPolicyConfigRepository } from "../dist/adapters/persistence/
 import { SqliteSendQueueRepository } from "../dist/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteRateLimiter } from "../dist/adapters/persistence/rate-limiter.js";
 import { SqliteEventRepository } from "../dist/adapters/persistence/repositories/event-repository.js";
+import { SqliteNotificationRepository } from "../dist/adapters/persistence/repositories/notification-repository.js";
 import { SqliteCampaignMetricsRollupRepository } from "../dist/adapters/persistence/repositories/campaign-metrics-rollup-repository.js";
 import { SqliteAccountMetricsRollupRepository } from "../dist/adapters/persistence/repositories/account-metrics-rollup-repository.js";
 import { computeRollups } from "../dist/adapters/persistence/compute-rollups.js";
@@ -113,6 +114,7 @@ let sendQueueRepository;
 let rateLimiter;
 let providerSelector;
 let eventRepository;
+let notificationRepository;
 let campaignMetricsRollupRepository;
 let accountMetricsRollupRepository;
 let insightRepository;
@@ -158,6 +160,7 @@ function initServices() {
   rateLimiter = new SqliteRateLimiter(db);
   providerSelector = new SqliteProviderSelector(db, accountHealthRepository, rateLimiter);
   eventRepository = new SqliteEventRepository(db);
+  notificationRepository = new SqliteNotificationRepository(db);
   campaignMetricsRollupRepository = new SqliteCampaignMetricsRollupRepository(db);
   accountMetricsRollupRepository = new SqliteAccountMetricsRollupRepository(db);
   insightRepository = new SqliteInsightRepository(db);
@@ -218,6 +221,7 @@ function startBackgroundWorkers() {
         draftRepository,
         draftLifecycle,
         eventRepository,
+        notificationRepository,
         getProviderForAccount
       },
       new Date()
@@ -554,7 +558,8 @@ function registerIpcHandlers() {
       sequenceRepository,
       contactRepository,
       conversationRepository,
-      eventRepository
+      eventRepository,
+      notificationRepository
     };
     const result = await syncInboxForAccount({
       accountId: account.id,
@@ -611,6 +616,7 @@ function registerIpcHandlers() {
       metricsSource: accountHealthMetricsSource,
       authChecker: domainAuthChecker,
       repository: accountHealthRepository,
+      notificationRepository,
       providerName: account.provider
     });
 
@@ -846,6 +852,23 @@ function registerIpcHandlers() {
 
   ipcMain.handle("inbox:setReplyClassification", async (_event, request) => {
     await labelReply({ conversationRepository, enrollmentRepository, eventRepository }, request.messageId, request.classification);
+  });
+
+  ipcMain.handle("notifications:listUnread", async () => {
+    const list = await notificationRepository.findUnread(50);
+    return list.map((n) => ({
+      id: n.id,
+      notificationType: n.notificationType,
+      severity: n.severity,
+      message: n.message,
+      relatedAccountId: n.relatedAccountId,
+      relatedCampaignId: n.relatedCampaignId,
+      createdAt: n.createdAt.toISOString()
+    }));
+  });
+
+  ipcMain.handle("notifications:markRead", async (_event, request) => {
+    await notificationRepository.markRead(request.notificationId);
   });
 }
 

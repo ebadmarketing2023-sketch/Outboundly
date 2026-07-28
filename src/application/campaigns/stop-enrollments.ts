@@ -6,6 +6,7 @@ import type { ConversationRepository } from "../../ports/conversation-repository
 import type { CampaignEnrollment } from "../../core/campaigns/campaign.js";
 import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
 import type { EventRepository } from "../../ports/event-repository.port.js";
+import type { NotificationRepository } from "../../ports/notification-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
 import type { SuppressionListRepository } from "../../ports/suppression-list.port.js";
 
@@ -64,6 +65,7 @@ export interface HandleReplyDetectedDeps extends StopEnrollmentsDeps {
   contactRepository: ContactRepository;
   conversationRepository: ConversationRepository;
   eventRepository: EventRepository;
+  notificationRepository: NotificationRepository;
 }
 
 /** Resolves an inbound message's From address to a Contact and stops every active enrollment that
@@ -73,7 +75,9 @@ export interface HandleReplyDetectedDeps extends StopEnrollmentsDeps {
  * back to one of our own campaign sends, records a 'replied' event attributed to that specific
  * campaign (Section 20.1) -- a narrower, thread-correlated attribution than the broad per-contact
  * fan-out stopEnrollmentsForContact performs, since accurate reply-rate analytics needs to know
- * which campaign got the reply, not just that this contact should stop hearing from all of them. */
+ * which campaign got the reply, not just that this contact should stop hearing from all of them.
+ * Always surfaces a 'reply_arrived' notification (Section 3) for a known contact, whether or not
+ * the reply correlated to a campaign. */
 export async function handleReplyDetected(
   deps: HandleReplyDetectedDeps,
   fromHeader: string,
@@ -84,9 +88,11 @@ export async function handleReplyDetected(
   if (!contact) return [];
 
   const enrollmentId = await deps.conversationRepository.findCampaignEnrollmentIdForThread(context.threadId);
+  let campaignId: CampaignId | undefined;
   if (enrollmentId) {
     const enrollment = await deps.enrollmentRepository.findById(asEnrollmentId(enrollmentId));
     if (enrollment) {
+      campaignId = enrollment.campaignId;
       await deps.eventRepository.record({
         eventType: "replied",
         campaignId: enrollment.campaignId,
@@ -95,6 +101,15 @@ export async function handleReplyDetected(
       });
     }
   }
+
+  await deps.notificationRepository.record({
+    notificationType: "reply_arrived",
+    severity: "info",
+    message: `${email} replied`,
+    relatedAccountId: asAccountId(context.accountId),
+    relatedCampaignId: campaignId,
+    createdAt: new Date()
+  });
 
   return stopEnrollmentsForContact(deps, contact.id, "stopped_reply");
 }

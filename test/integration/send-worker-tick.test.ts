@@ -19,6 +19,7 @@ import { SqliteDelayPolicyConfigRepository } from "../../src/adapters/persistenc
 import { SqliteDeliverabilityReportRepository } from "../../src/adapters/persistence/repositories/deliverability-report-repository.js";
 import { SqliteDraftRepository } from "../../src/adapters/persistence/repositories/draft-repository.js";
 import { SqliteEnrollmentRepository } from "../../src/adapters/persistence/repositories/enrollment-repository.js";
+import { SqliteNotificationRepository } from "../../src/adapters/persistence/repositories/notification-repository.js";
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteSubjectVariantRepository } from "../../src/adapters/persistence/repositories/subject-variant-repository.js";
@@ -154,6 +155,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       draftRepository,
       draftLifecycle,
       eventRepository: new SqliteEventRepository(db),
+      notificationRepository: new SqliteNotificationRepository(db),
       getProviderForAccount: async () => provider
     };
   });
@@ -265,6 +267,11 @@ describe("runSendWorkerTick (Section 21.1)", () => {
 
     const recordedEvents = await sendWorkerDeps.eventRepository.findByCampaignInWindow(campaignId, new Date(0), new Date(Date.now() + 60_000));
     expect(recordedEvents.map((e) => e.eventType)).toEqual(["bounced"]);
+
+    const unread = await sendWorkerDeps.notificationRepository.findUnread(10);
+    expect(unread).toHaveLength(1);
+    expect(unread[0]?.notificationType).toBe("send_failure");
+    expect(unread[0]?.relatedCampaignId).toBe(campaignId);
   });
 
   it("does not treat a transient (4xx) SMTP error as a bounce -- it retries normally instead", async () => {

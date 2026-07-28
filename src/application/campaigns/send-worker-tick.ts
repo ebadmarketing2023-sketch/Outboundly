@@ -12,6 +12,7 @@ import type { ConversationRepository } from "../../ports/conversation-repository
 import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
 import type { EventRepository } from "../../ports/event-repository.port.js";
 import type { MailProvider } from "../../ports/mail-provider.port.js";
+import type { NotificationRepository } from "../../ports/notification-repository.port.js";
 import type { ProviderSelector } from "../../ports/provider-selector.port.js";
 import type { RateLimiter } from "../../ports/rate-limiter.port.js";
 import type { Repository } from "../../ports/repository.port.js";
@@ -33,6 +34,7 @@ export interface SendWorkerDeps {
   sequenceRepository: SequenceRepository;
   contactRepository: ContactRepository;
   eventRepository: EventRepository;
+  notificationRepository: NotificationRepository;
   draftRepository: Repository<Draft, DraftId>;
   draftLifecycle: DraftLifecycleService;
   /** Concrete MailProvider construction by account/provider type is main-process wiring (Section
@@ -144,6 +146,16 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
       accountId: selection.accountId,
       occurredAt: now,
       metadata: { reason: errorMessage }
+    });
+    // Permanent send failures surface to Notifications (Section 16.4, Section 24.4) rather than
+    // retrying forever -- this is the terminal outcome, so it's the one point that needs surfacing.
+    await deps.notificationRepository.record({
+      notificationType: "send_failure",
+      severity: "warning",
+      message: `A message to ${recipientEmail ?? "a recipient"} failed permanently: ${errorMessage}`,
+      relatedAccountId: selection.accountId,
+      relatedCampaignId: campaignId,
+      createdAt: now
     });
     if (contact) await stopEnrollmentsForContact(deps, contact.id, "stopped_bounce");
     return "bounced";
