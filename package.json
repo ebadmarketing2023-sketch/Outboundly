@@ -25,6 +25,8 @@
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@napi-rs/keyring": "^1.3.0",
     "better-sqlite3-multiple-ciphers": "^12.11.1",
+    "csv-parse": "^7.0.1",
+    "csv-stringify": "^6.8.1",
     "drizzle-orm": "^0.33.0",
     "google-auth-library": "^9.14.1",
     "googleapis": "^144.0.0",
