@@ -32,6 +32,7 @@ import { handleBounceDetected, handleReplyDetected, unsubscribeContact } from ".
 import { recordConversion } from "../dist/application/analytics/record-conversion.js";
 import { labelReply } from "../dist/application/analytics/label-reply.js";
 import { getCampaignAnalytics } from "../dist/adapters/persistence/campaign-analytics-support.js";
+import { getAppPreferences, setAccountSignature, setAppPreferences } from "../dist/adapters/persistence/settings-support.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
 import { generateId } from "../dist/core/shared-kernel/ids.js";
 import { SqliteContactRepository } from "../dist/adapters/persistence/repositories/contact-repository.js";
@@ -269,7 +270,8 @@ function serializeAccount(row) {
     displayName: row.displayName ?? undefined,
     status: row.status,
     dailySendLimit: row.dailySendLimit ?? undefined,
-    hourlySendLimit: row.hourlySendLimit ?? undefined
+    hourlySendLimit: row.hourlySendLimit ?? undefined,
+    signatureText: row.signatureText ?? undefined
   };
 }
 
@@ -759,6 +761,21 @@ function registerIpcHandlers() {
       .run();
     const row = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
     return serializeAccount(row);
+  });
+
+  ipcMain.handle("accounts:updateSignature", async (_event, request) => {
+    setAccountSignature(db, request.accountId, request.signatureText);
+    const row = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
+    return serializeAccount(row);
+  });
+
+  ipcMain.handle("settings:getAppPreferences", async () => {
+    return getAppPreferences(db);
+  });
+
+  ipcMain.handle("settings:updateAppPreferences", async (_event, request) => {
+    setAppPreferences(db, request);
+    return getAppPreferences(db);
   });
 
   ipcMain.handle("campaigns:setStatus", async (_event, request) => {

@@ -42,5 +42,8 @@ contextBridge.exposeInMainWorld("outboundly", {
   unsubscribeContact: (request) => ipcRenderer.invoke("campaigns:unsubscribeContact", request),
   setReplyClassification: (request) => ipcRenderer.invoke("inbox:setReplyClassification", request),
   listUnreadNotifications: () => ipcRenderer.invoke("notifications:listUnread"),
-  markNotificationRead: (request) => ipcRenderer.invoke("notifications:markRead", request)
+  markNotificationRead: (request) => ipcRenderer.invoke("notifications:markRead", request),
+  updateAccountSignature: (request) => ipcRenderer.invoke("accounts:updateSignature", request),
+  getAppPreferences: () => ipcRenderer.invoke("settings:getAppPreferences"),
+  updateAppPreferences: (request) => ipcRenderer.invoke("settings:updateAppPreferences", request)
 });

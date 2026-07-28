@@ -7,9 +7,19 @@ import { LeadsScreen } from "./leads/LeadsScreen.js";
 import { CampaignsScreen } from "./campaigns/CampaignsScreen.js";
 import { AnalyticsScreen } from "./analytics/AnalyticsScreen.js";
 import { NotificationsScreen } from "./notifications/NotificationsScreen.js";
+import { SettingsScreen } from "./settings/SettingsScreen.js";
 import { BUILT_AT } from "./build-info.js";
 
-type Tab = "compose" | "inbox" | "account-health" | "deliverability-lab" | "leads" | "campaigns" | "analytics" | "notifications";
+type Tab =
+  | "compose"
+  | "inbox"
+  | "account-health"
+  | "deliverability-lab"
+  | "leads"
+  | "campaigns"
+  | "analytics"
+  | "notifications"
+  | "settings";
 
 export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>("compose");
@@ -46,6 +56,9 @@ export function App(): JSX.Element {
         <button onClick={() => setTab("notifications")} disabled={tab === "notifications"}>
           Notifications{unreadCount > 0 ? ` (${unreadCount})` : ""}
         </button>
+        <button onClick={() => setTab("settings")} disabled={tab === "settings"}>
+          Settings
+        </button>
         <span style={{ marginLeft: "auto", color: "#888", fontSize: "0.8rem" }}>Build: {BUILT_AT}</span>
       </nav>
       {tab === "compose" && <ComposeScreen />}
@@ -56,6 +69,7 @@ export function App(): JSX.Element {
       {tab === "campaigns" && <CampaignsScreen />}
       {tab === "analytics" && <AnalyticsScreen />}
       {tab === "notifications" && <NotificationsScreen />}
+      {tab === "settings" && <SettingsScreen />}
     </div>
   );
 }

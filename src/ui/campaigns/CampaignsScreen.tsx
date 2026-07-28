@@ -87,6 +87,17 @@ export function CampaignsScreen(): JSX.Element {
 
   useEffect(() => {
     refreshAll();
+    // Settings module (Section 3: "sending defaults") -- pre-fills the create-campaign form only;
+    // doesn't override a selection the user has already made in this session.
+    window.outboundly
+      .getAppPreferences()
+      .then((prefs) => {
+        if (prefs.defaultSendingAccountId) setCampaignAccountId((prev) => prev || prefs.defaultSendingAccountId!);
+        if (prefs.defaultBusinessHoursProfileId) {
+          setCampaignBusinessHoursProfileId((prev) => prev || prefs.defaultBusinessHoursProfileId!);
+        }
+      })
+      .catch((err) => setError(String(err)));
   }, []);
 
   useEffect(() => {

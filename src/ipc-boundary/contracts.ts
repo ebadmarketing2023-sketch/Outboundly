@@ -17,6 +17,9 @@ export interface AccountSummary {
    * directly off the account — undefined means no cap configured. */
   dailySendLimit?: number;
   hourlySendLimit?: number;
+  /** Settings module (Section 3: "signatures-by-account"). Plain text only -- this phase's
+   * compose screen treats the whole body as plain text (Section 8). */
+  signatureText?: string;
 }
 
 export interface UpdateAccountLimitsRequest {
@@ -355,6 +358,25 @@ export interface MarkNotificationReadRequest {
   notificationId: string;
 }
 
+export interface UpdateAccountSignatureRequest {
+  accountId: string;
+  /** undefined/omitted clears the signature. */
+  signatureText?: string;
+}
+
+/** Settings module preferences (Section 3: "sending defaults"): pre-fills for the Campaigns
+ * screen's "create campaign" form rather than a new domain concept -- the referenced business
+ * hours profile/account still have to exist and be chosen the same way either way. */
+export interface AppPreferencesSummary {
+  defaultBusinessHoursProfileId?: string;
+  defaultSendingAccountId?: string;
+}
+
+export interface UpdateAppPreferencesRequest {
+  defaultBusinessHoursProfileId?: string;
+  defaultSendingAccountId?: string;
+}
+
 export interface ConnectSmtpImapRequest {
   emailAddress: string;
   displayName?: string;
@@ -406,4 +428,7 @@ export interface OutboundlyRendererApi {
   setReplyClassification(request: SetReplyClassificationRequest): Promise<void>;
   listUnreadNotifications(): Promise<NotificationSummary[]>;
   markNotificationRead(request: MarkNotificationReadRequest): Promise<void>;
+  updateAccountSignature(request: UpdateAccountSignatureRequest): Promise<AccountSummary>;
+  getAppPreferences(): Promise<AppPreferencesSummary>;
+  updateAppPreferences(request: UpdateAppPreferencesRequest): Promise<AppPreferencesSummary>;
 }

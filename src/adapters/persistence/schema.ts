@@ -21,6 +21,10 @@ export const accounts = sqliteTable("accounts", {
   dailySendLimit: integer("daily_send_limit"),
   hourlySendLimit: integer("hourly_send_limit"),
   warmupMode: integer("warmup_mode", { mode: "boolean" }).notNull().default(false),
+  // Settings module (Section 3: "signatures-by-account"). Plain text only, matching this phase's
+  // compose screen -- it treats the whole body as plain text parsed into the Internal Document
+  // Model (Section 8), so a separate HTML signature field would have no consumer to render it.
+  signatureText: text("signature_text"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
 });
@@ -613,3 +617,15 @@ export const notifications = sqliteTable(
     createdAtIdx: index("notifications_created_at_idx").on(table.createdAt)
   })
 );
+
+/** Settings module (Section 3: "User preferences, sending defaults ... business hours"). A plain
+ * key-value store rather than one column per preference -- Section 3's own list of what belongs
+ * here (defaults, business hours references) is small and app-preference shape tends to grow, so a
+ * generic store avoids a migration for every new preference added later. Values are stored as
+ * their raw string form (a plain id, in the two preferences this phase actually defines); callers
+ * own interpreting them. */
+export const appSettings = sqliteTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
+});

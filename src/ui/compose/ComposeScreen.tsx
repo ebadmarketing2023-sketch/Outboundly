@@ -45,6 +45,16 @@ export function ComposeScreen(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Settings module (Section 3: "signatures-by-account") -- prefill a brand-new, still-untouched
+  // draft's body with the selected account's signature. Only applies before any real drafting has
+  // started, so it never clobbers in-progress edits or a loaded existing draft.
+  useEffect(() => {
+    if (draft || body.trim() !== "") return;
+    const signature = accounts.find((a) => a.id === selectedAccountId)?.signatureText;
+    if (signature) setBody(`\n\n${signature}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAccountId, accounts]);
+
   async function handleConnectGoogle(): Promise<void> {
     setError(null);
     setBusy(true);
