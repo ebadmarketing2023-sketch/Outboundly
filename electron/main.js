@@ -46,6 +46,7 @@ import { SqliteRateLimiter } from "../dist/adapters/persistence/rate-limiter.js"
 import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
+import { importContactsCsv } from "../dist/application/leads/import-contacts-csv.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -103,6 +104,7 @@ let rateLimiter;
 let providerSelector;
 let schedulerTickTimer;
 let sendWorkerTickTimer;
+let defaultBusinessHoursProfileId;
 
 const SCHEDULER_TICK_INTERVAL_MS = 60_000;
 const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
@@ -595,6 +597,136 @@ function registerIpcHandlers() {
         explanation: f.explanation
       }))
     };
+  });
+
+  ipcMain.handle("contacts:importCsv", async (_event, request) => {
+    return importContactsCsv(request.csvText, contactRepository);
+  });
+
+  ipcMain.handle("contacts:list", async () => {
+    const contacts = await contactRepository.list();
+    return contacts.map((c) => ({
+      id: c.id,
+      email: c.email,
+      firstName: c.firstName,
+      lastName: c.lastName,
+      company: c.company,
+      source: c.source
+    }));
+  });
+
+  ipcMain.handle("templates:create", async (_event, request) => {
+    const template = await templateRepository.create({ name: request.name, document: parsePlainTextToDocument(request.bodyText) });
+    return { id: template.id, name: template.name };
+  });
+
+  ipcMain.handle("templates:list", async () => {
+    const templates = await templateRepository.list();
+    return templates.map((t) => ({ id: t.id, name: t.name }));
+  });
+
+  ipcMain.handle("sequences:create", async (_event, request) => {
+    const sequence = await sequenceRepository.create({
+      name: request.name,
+      steps: request.steps.map((s) => ({ delayDays: s.delayDays, delayHours: s.delayHours, templateId: s.templateId }))
+    });
+    for (const [index, step] of sequence.steps.entries()) {
+      await subjectVariantRepository.create({
+        sequenceStepId: step.id,
+        subjectText: request.steps[index].subjectText,
+        weight: 1
+      });
+    }
+    return { id: sequence.id, name: sequence.name, stepCount: sequence.steps.length };
+  });
+
+  ipcMain.handle("sequences:list", async () => {
+    const sequences = await sequenceRepository.list();
+    return sequences.map((s) => ({ id: s.id, name: s.name, stepCount: s.steps.length }));
+  });
+
+  ipcMain.handle("campaigns:create", async (_event, request) => {
+    // A "minimal" Phase 4 UI (Section 14) has no business-hours-profile editor yet -- lazily
+    // provision one always-open UTC default per app session rather than building that screen too.
+    if (!defaultBusinessHoursProfileId) {
+      const profile = await businessHoursProfileRepository.create({
+        name: "Always open (default)",
+        timezone: "UTC",
+        windows: {
+          sunday: [{ start: "00:00", end: "23:59" }],
+          monday: [{ start: "00:00", end: "23:59" }],
+          tuesday: [{ start: "00:00", end: "23:59" }],
+          wednesday: [{ start: "00:00", end: "23:59" }],
+          thursday: [{ start: "00:00", end: "23:59" }],
+          friday: [{ start: "00:00", end: "23:59" }],
+          saturday: [{ start: "00:00", end: "23:59" }]
+        }
+      });
+      defaultBusinessHoursProfileId = profile.id;
+    }
+
+    const campaign = await campaignRepository.create({
+      name: request.name,
+      sequenceId: request.sequenceId,
+      sendingAccountIds: [request.sendingAccountId],
+      businessHoursProfileId: defaultBusinessHoursProfileId
+    });
+    return { id: campaign.id, name: campaign.name, sequenceId: campaign.sequenceId, status: campaign.status };
+  });
+
+  ipcMain.handle("campaigns:list", async () => {
+    const campaigns = await campaignRepository.list();
+    return campaigns.map((c) => ({ id: c.id, name: c.name, sequenceId: c.sequenceId, status: c.status }));
+  });
+
+  ipcMain.handle("campaigns:setStatus", async (_event, request) => {
+    await campaignRepository.setStatus(request.campaignId, request.status);
+  });
+
+  ipcMain.handle("campaigns:enrollContacts", async (_event, request) => {
+    const campaign = await campaignRepository.findById(request.campaignId);
+    if (!campaign) throw new Error("Campaign not found");
+    const sequence = await sequenceRepository.findById(campaign.sequenceId);
+    if (!sequence || sequence.steps.length === 0) throw new Error("Campaign's sequence has no steps");
+    const firstStep = sequence.steps[0];
+
+    let enrolled = 0;
+    const skipped = [];
+    for (const contactId of request.contactIds) {
+      const contact = await contactRepository.findById(contactId);
+      if (!contact) {
+        skipped.push({ contactId, reason: "Contact not found" });
+        continue;
+      }
+      if (await suppressionListRepository.isSuppressed(contact.email)) {
+        skipped.push({ contactId, reason: "Contact is on the suppression list" });
+        continue;
+      }
+      const existing = await enrollmentRepository.findActiveByCampaignAndContact(campaign.id, contactId);
+      if (existing) {
+        skipped.push({ contactId, reason: "Already actively enrolled in this campaign" });
+        continue;
+      }
+      await enrollmentRepository.enroll({
+        campaignId: campaign.id,
+        contactId,
+        currentStepId: firstStep.id,
+        nextSendAt: new Date()
+      });
+      enrolled++;
+    }
+    return { enrolled, skipped };
+  });
+
+  ipcMain.handle("campaigns:listEnrollments", async (_event, request) => {
+    const enrollments = await enrollmentRepository.listByCampaign(request.campaignId);
+    return enrollments.map((e) => ({
+      id: e.id,
+      contactId: e.contactId,
+      status: e.status,
+      nextSendAt: e.nextSendAt ? e.nextSendAt.toISOString() : undefined,
+      enrolledAt: e.enrolledAt.toISOString()
+    }));
   });
 }
 

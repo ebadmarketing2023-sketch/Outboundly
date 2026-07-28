@@ -148,6 +148,93 @@ export interface LabAnalysisResponse {
   findings: Array<{ ruleId: string; category: string; severity: string; message: string; explanation: string }>;
 }
 
+/** Leads/Contacts (Section 5.5) and the Campaign Engine's minimal Phase 4 UI (Section 14). */
+export interface ImportContactsCsvRequest {
+  csvText: string;
+}
+
+export interface ImportContactsCsvResponse {
+  imported: number;
+  skipped: Array<{ row: number; reason: string }>;
+}
+
+export interface ContactSummary {
+  id: string;
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  company?: string;
+  source: string;
+}
+
+export interface CreateTemplateRequest {
+  name: string;
+  bodyText: string;
+}
+
+export interface TemplateSummary {
+  id: string;
+  name: string;
+}
+
+export interface CreateSequenceStepRequest {
+  delayDays: number;
+  delayHours: number;
+  templateId: string;
+  subjectText: string;
+}
+
+export interface CreateSequenceRequest {
+  name: string;
+  steps: CreateSequenceStepRequest[];
+}
+
+export interface SequenceSummary {
+  id: string;
+  name: string;
+  stepCount: number;
+}
+
+export interface CreateCampaignRequest {
+  name: string;
+  sequenceId: string;
+  sendingAccountId: string;
+}
+
+export interface CampaignSummary {
+  id: string;
+  name: string;
+  sequenceId: string;
+  status: string;
+}
+
+export interface SetCampaignStatusRequest {
+  campaignId: string;
+  status: string;
+}
+
+export interface EnrollContactsRequest {
+  campaignId: string;
+  contactIds: string[];
+}
+
+export interface EnrollContactsResponse {
+  enrolled: number;
+  skipped: Array<{ contactId: string; reason: string }>;
+}
+
+export interface ListEnrollmentsRequest {
+  campaignId: string;
+}
+
+export interface EnrollmentSummary {
+  id: string;
+  contactId: string;
+  status: string;
+  nextSendAt?: string;
+  enrolledAt: string;
+}
+
 export interface ConnectSmtpImapRequest {
   emailAddress: string;
   displayName?: string;
@@ -177,4 +264,15 @@ export interface OutboundlyRendererApi {
   computeAccountHealth(request: AccountHealthRequest): Promise<AccountHealthSnapshotSummary>;
   getLatestAccountHealth(request: AccountHealthRequest): Promise<AccountHealthSnapshotSummary | undefined>;
   runLabAnalysis(request: RunLabAnalysisRequest): Promise<LabAnalysisResponse>;
+  importContactsCsv(request: ImportContactsCsvRequest): Promise<ImportContactsCsvResponse>;
+  listContacts(): Promise<ContactSummary[]>;
+  createTemplate(request: CreateTemplateRequest): Promise<TemplateSummary>;
+  listTemplates(): Promise<TemplateSummary[]>;
+  createSequence(request: CreateSequenceRequest): Promise<SequenceSummary>;
+  listSequences(): Promise<SequenceSummary[]>;
+  createCampaign(request: CreateCampaignRequest): Promise<CampaignSummary>;
+  listCampaigns(): Promise<CampaignSummary[]>;
+  setCampaignStatus(request: SetCampaignStatusRequest): Promise<void>;
+  enrollContacts(request: EnrollContactsRequest): Promise<EnrollContactsResponse>;
+  listEnrollments(request: ListEnrollmentsRequest): Promise<EnrollmentSummary[]>;
 }
