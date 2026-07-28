@@ -1,4 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import electronUpdaterPkg from "electron-updater";
+// electron-updater ships as CommonJS with a getter-based `autoUpdater` export that Node's ESM
+// interop can't statically pick up as a named import (verified for real: `import { autoUpdater }`
+// throws "Named export 'autoUpdater' not found") -- the default-import-then-destructure form works.
+const { autoUpdater } = electronUpdaterPkg;
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -939,6 +944,16 @@ app.whenReady().then(() => {
   registerIpcHandlers();
   startBackgroundWorkers();
   createWindow();
+
+  // Auto-update (Section 27): only meaningful for an actual packaged/installed build checking
+  // GitHub Releases (electron-builder.yml's `publish` config) -- running from source in
+  // development has no installed artifact to update in place, and electron-updater itself expects
+  // an app-update.yml file that only exists in a packaged build, so this would just error out.
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error("[auto-update] check failed:", err);
+    });
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

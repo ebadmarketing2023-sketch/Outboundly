@@ -1,0 +1,67 @@
+# Packaging & auto-update (Section 27: "The Electron ecosystem's standard builder + updater
+# tooling, with code signing/notarization on every platform"). See docs/packaging-and-releases.md
+# for what's real here vs. what still needs the user's own signing credentials supplied via
+# environment variables before a `release` build is a genuinely trustworthy, signed artifact --
+# this config alone only produces UNSIGNED local builds.
+appId: com.outboundly.app
+productName: Outboundly
+copyright: Copyright © Outboundly
+
+directories:
+  output: release
+  buildResources: build-resources
+
+files:
+  - electron/**/*
+  - dist/**/*
+  - package.json
+  - "!electron/renderer/**/*.map"
+
+# better-sqlite3-multiple-ciphers ships a native .node binary -- it must live outside the asar
+# archive (Node's native addon loader can't dlopen from inside an asar) or the packaged app fails
+# to start with a "cannot find module" error the moment the database is opened.
+asarUnpack:
+  - "**/node_modules/better-sqlite3-multiple-ciphers/**/*"
+  - "**/node_modules/@napi-rs/keyring*/**/*"
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - dmg
+    - zip
+  # Real code signing/notarization needs a paid Apple Developer ID certificate and an
+  # app-specific password -- neither of which this environment has or can generate. Supplying
+  # CSC_LINK/CSC_KEY_PASSWORD (electron-builder's standard env vars) and
+  # APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID turns this into a real signed+notarized
+  # build; without them electron-builder produces an unsigned build that macOS Gatekeeper will
+  # warn about, which is fine for local testing but not for distribution.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+
+win:
+  target:
+    - nsis
+  # Real code signing needs a purchased Windows code-signing certificate -- supplying
+  # CSC_LINK/CSC_KEY_PASSWORD turns this into a real signed build (same env vars as macOS,
+  # electron-builder picks the right one per target platform); without them the build is unsigned
+  # and triggers a Windows SmartScreen warning on first run.
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
+  # Linux has no equivalent OS-level code-signing/notarization gate, so there's nothing missing
+  # here the way there is for mac/win -- an AppImage/deb from this config is already a complete,
+  # distributable artifact.
+
+# Auto-update (Section 21.1's future "check for updates" concern, Section 27): GitHub Releases as
+# the update feed, matching this project's real repository -- electron-updater checks this repo's
+# releases for a newer published version. Publishing a real release additionally needs a
+# GH_TOKEN with repo write access (electron-builder's standard env var for the "github" provider).
+publish:
+  provider: github
+  owner: ebadmarketing2023-sketch
+  repo: outboundly
