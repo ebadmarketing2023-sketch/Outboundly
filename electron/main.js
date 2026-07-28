@@ -45,6 +45,9 @@ import { SqliteDelayPolicyConfigRepository } from "../dist/adapters/persistence/
 import { SqliteSendQueueRepository } from "../dist/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteRateLimiter } from "../dist/adapters/persistence/rate-limiter.js";
 import { SqliteEventRepository } from "../dist/adapters/persistence/repositories/event-repository.js";
+import { SqliteCampaignMetricsRollupRepository } from "../dist/adapters/persistence/repositories/campaign-metrics-rollup-repository.js";
+import { SqliteAccountMetricsRollupRepository } from "../dist/adapters/persistence/repositories/account-metrics-rollup-repository.js";
+import { computeRollups } from "../dist/adapters/persistence/compute-rollups.js";
 import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
@@ -105,11 +108,15 @@ let sendQueueRepository;
 let rateLimiter;
 let providerSelector;
 let eventRepository;
+let campaignMetricsRollupRepository;
+let accountMetricsRollupRepository;
 let schedulerTickTimer;
 let sendWorkerTickTimer;
+let rollupTickTimer;
 
 const SCHEDULER_TICK_INTERVAL_MS = 60_000;
 const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
+const ROLLUP_TICK_INTERVAL_MS = 60 * 60 * 1000;
 
 function initServices() {
   const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -145,6 +152,8 @@ function initServices() {
   rateLimiter = new SqliteRateLimiter(db);
   providerSelector = new SqliteProviderSelector(db, accountHealthRepository, rateLimiter);
   eventRepository = new SqliteEventRepository(db);
+  campaignMetricsRollupRepository = new SqliteCampaignMetricsRollupRepository(db);
+  accountMetricsRollupRepository = new SqliteAccountMetricsRollupRepository(db);
 }
 
 /** Dependencies shared by both the Scheduler tick and fireEnrollmentStep's own callers (Section
@@ -175,9 +184,10 @@ async function getProviderForAccount(accountId) {
   return providerFor(account);
 }
 
-/** Background workers (Section 21.1): fixed-interval Scheduler tick and Send worker, coordinated
- * purely through the database (Section 21.2) -- each tick's own failure isolation (Section 21.3)
- * means a bad interval run is logged and skipped, never left to crash the process or the timer. */
+/** Background workers (Section 21.1): fixed-interval Scheduler tick, Send worker, and Analytics
+ * rollup, coordinated purely through the database (Section 21.2) -- each tick's own failure
+ * isolation (Section 21.3) means a bad interval run is logged and skipped, never left to crash
+ * the process or the timer. */
 function startBackgroundWorkers() {
   schedulerTickTimer = setInterval(() => {
     runSchedulerTick(campaignEngineDeps(), new Date()).catch((err) => {
@@ -207,11 +217,21 @@ function startBackgroundWorkers() {
       console.error("[send-worker-tick] failed:", err);
     });
   }, SEND_WORKER_TICK_INTERVAL_MS);
+
+  rollupTickTimer = setInterval(() => {
+    computeRollups(
+      { db, campaignRepository, eventRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository },
+      new Date()
+    ).catch((err) => {
+      console.error("[rollup-tick] failed:", err);
+    });
+  }, ROLLUP_TICK_INTERVAL_MS);
 }
 
 function stopBackgroundWorkers() {
   clearInterval(schedulerTickTimer);
   clearInterval(sendWorkerTickTimer);
+  clearInterval(rollupTickTimer);
 }
 
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */

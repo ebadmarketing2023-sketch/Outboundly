@@ -1,4 +1,4 @@
-import { and, eq, gte, lt } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import { asAccountId, asCampaignId, asEventId, asMessageId, generateId } from "../../../core/shared-kernel/ids.js";
 import type { AccountId, CampaignId } from "../../../core/shared-kernel/ids.js";
 import type { EventRecord, EventRepository, EventType, RecordEventInput } from "../../../ports/event-repository.port.js";
@@ -45,7 +45,7 @@ export class SqliteEventRepository implements EventRepository {
     return this.db
       .select()
       .from(events)
-      .where(and(eq(events.campaignId, campaignId), gte(events.occurredAt, since), lt(events.occurredAt, until)))
+      .where(and(eq(events.campaignId, campaignId), gte(events.occurredAt, since), lte(events.occurredAt, until)))
       .all()
       .map(toDomain);
   }
@@ -54,7 +54,7 @@ export class SqliteEventRepository implements EventRepository {
     return this.db
       .select()
       .from(events)
-      .where(and(eq(events.accountId, accountId), gte(events.occurredAt, since), lt(events.occurredAt, until)))
+      .where(and(eq(events.accountId, accountId), gte(events.occurredAt, since), lte(events.occurredAt, until)))
       .all()
       .map(toDomain);
   }
