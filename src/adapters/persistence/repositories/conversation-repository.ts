@@ -162,6 +162,8 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
         status: input.status,
         campaignEnrollmentId: input.campaignEnrollmentId,
         draftId: input.draftId,
+        templateId: input.templateId,
+        subjectVariantId: input.subjectVariantId,
         createdAt: now,
         updatedAt: now
       })
@@ -185,7 +187,9 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
       accountId: row.accountId,
       toAddresses: row.toAddresses,
       campaignEnrollmentId: row.campaignEnrollmentId ?? undefined,
-      draftId: row.draftId ?? undefined
+      draftId: row.draftId ?? undefined,
+      templateId: row.templateId ?? undefined,
+      subjectVariantId: row.subjectVariantId ?? undefined
     };
   }
 

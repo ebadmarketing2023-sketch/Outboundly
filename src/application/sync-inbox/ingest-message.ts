@@ -34,6 +34,8 @@ export interface IngestMessageInput {
   status?: string;
   campaignEnrollmentId?: string;
   draftId?: string;
+  templateId?: string;
+  subjectVariantId?: string;
 }
 
 export interface IngestMessageResult {
@@ -113,7 +115,9 @@ export async function ingestMessage(
     receivedAt: input.direction === "inbound" ? occurredAt : undefined,
     status,
     campaignEnrollmentId: input.campaignEnrollmentId,
-    draftId: input.draftId
+    draftId: input.draftId,
+    templateId: input.templateId,
+    subjectVariantId: input.subjectVariantId
   });
 
   await repo.insertReferenceEdges(messageId, ancestorChain);

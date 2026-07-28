@@ -92,7 +92,8 @@ export async function fireEnrollmentStep(
 
   const subjectVariants = await deps.subjectVariantRepository.findByStepId(step.id);
   if (subjectVariants.length === 0) throw new Error(`Sequence step ${step.id} has no subject line configured`);
-  const subjectText = selectWeightedVariant(subjectVariants).subjectText;
+  const selectedSubjectVariant = selectWeightedVariant(subjectVariants);
+  const subjectText = selectedSubjectVariant.subjectText;
 
   const templateVariants = await deps.templateVariantRepository.findByTemplateId(template.id);
   const document: Document =
@@ -176,6 +177,8 @@ export async function fireEnrollmentStep(
     status: "queued",
     campaignEnrollmentId: enrollment.id,
     draftId: draft.id,
+    templateId: template.id,
+    subjectVariantId: selectedSubjectVariant.id,
     occurredAt: now
   });
 

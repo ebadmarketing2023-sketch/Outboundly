@@ -27,6 +27,11 @@ export interface NewMessageInput {
    * re-fetch the original Draft and rebuild its MIME with the final dispatch account, which can
    * differ from the Scheduler's original proposal (Section 16.3's Provider Selector substitution). */
   draftId?: string;
+  /** Snapshotted at fire time (Section 14.3) since campaign_enrollments.current_step_id has
+   * already advanced past this step's template/subject by the time the message is actually sent
+   * — needed for template/subject-level analytics rollups (Section 5.9, Section 20.5). */
+  templateId?: string;
+  subjectVariantId?: string;
 }
 
 export interface StoredMessageSummary {
@@ -35,6 +40,8 @@ export interface StoredMessageSummary {
   toAddresses: string[];
   campaignEnrollmentId?: string;
   draftId?: string;
+  templateId?: string;
+  subjectVariantId?: string;
 }
 
 /**

@@ -44,6 +44,7 @@ import { SqliteWarmupProfileRepository } from "../dist/adapters/persistence/repo
 import { SqliteDelayPolicyConfigRepository } from "../dist/adapters/persistence/repositories/delay-policy-config-repository.js";
 import { SqliteSendQueueRepository } from "../dist/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteRateLimiter } from "../dist/adapters/persistence/rate-limiter.js";
+import { SqliteEventRepository } from "../dist/adapters/persistence/repositories/event-repository.js";
 import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
@@ -103,6 +104,7 @@ let delayPolicyConfigRepository;
 let sendQueueRepository;
 let rateLimiter;
 let providerSelector;
+let eventRepository;
 let schedulerTickTimer;
 let sendWorkerTickTimer;
 
@@ -142,6 +144,7 @@ function initServices() {
   sendQueueRepository = new SqliteSendQueueRepository(db);
   rateLimiter = new SqliteRateLimiter(db);
   providerSelector = new SqliteProviderSelector(db, accountHealthRepository, rateLimiter);
+  eventRepository = new SqliteEventRepository(db);
 }
 
 /** Dependencies shared by both the Scheduler tick and fireEnrollmentStep's own callers (Section
@@ -196,6 +199,7 @@ function startBackgroundWorkers() {
         contactRepository,
         draftRepository,
         draftLifecycle,
+        eventRepository,
         getProviderForAccount
       },
       new Date()
@@ -508,16 +512,23 @@ function registerIpcHandlers() {
     if (!account) throw new Error("Account not found");
 
     const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
-    const stopEnrollmentDeps = { enrollmentRepository, campaignRepository, sequenceRepository, contactRepository, conversationRepository };
+    const stopEnrollmentDeps = {
+      enrollmentRepository,
+      campaignRepository,
+      sequenceRepository,
+      contactRepository,
+      conversationRepository,
+      eventRepository
+    };
     const result = await syncInboxForAccount({
       accountId: account.id,
       accountRef,
       provider: providerFor(account),
       repo: conversationRepository,
-      onReplyDetected: (fromAddress) =>
-        handleReplyDetected(stopEnrollmentDeps, fromAddress).then(() => undefined),
+      onReplyDetected: (fromAddress, threadId) =>
+        handleReplyDetected(stopEnrollmentDeps, fromAddress, { threadId, accountId: account.id }).then(() => undefined),
       onBounceDetected: (threadId) =>
-        handleBounceDetected(stopEnrollmentDeps, threadId).then(() => undefined)
+        handleBounceDetected(stopEnrollmentDeps, threadId, account.id).then(() => undefined)
     });
 
     if (result.failedRefs.length > 0) {

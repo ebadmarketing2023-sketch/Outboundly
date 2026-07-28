@@ -5,11 +5,12 @@ import { contactToPersonalizationValues } from "../../core/campaigns/personalize
 import type { Draft } from "../../core/drafts/draft.js";
 import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js";
 import { EmailAddress, parseNamedAddress, type NamedEmailAddress } from "../../core/shared-kernel/email-address.js";
-import { asDraftId, asEnrollmentId, type AccountId, type CampaignId, type DraftId, type SendQueueId } from "../../core/shared-kernel/ids.js";
+import { asDraftId, asEnrollmentId, asMessageId, type AccountId, type CampaignId, type DraftId, type SendQueueId } from "../../core/shared-kernel/ids.js";
 import type { CampaignRepository } from "../../ports/campaign-repository.port.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
 import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
+import type { EventRepository } from "../../ports/event-repository.port.js";
 import type { MailProvider } from "../../ports/mail-provider.port.js";
 import type { ProviderSelector } from "../../ports/provider-selector.port.js";
 import type { RateLimiter } from "../../ports/rate-limiter.port.js";
@@ -31,6 +32,7 @@ export interface SendWorkerDeps {
   campaignRepository: CampaignRepository;
   sequenceRepository: SequenceRepository;
   contactRepository: ContactRepository;
+  eventRepository: EventRepository;
   draftRepository: Repository<Draft, DraftId>;
   draftLifecycle: DraftLifecycleService;
   /** Concrete MailProvider construction by account/provider type is main-process wiring (Section
@@ -135,12 +137,31 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
 
     const errorMessage = err instanceof Error ? err.message : String(err);
     await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: true, now });
+    await deps.eventRepository.record({
+      eventType: "bounced",
+      messageId: asMessageId(message.id),
+      campaignId,
+      accountId: selection.accountId,
+      occurredAt: now,
+      metadata: { reason: errorMessage }
+    });
     if (contact) await stopEnrollmentsForContact(deps, contact.id, "stopped_bounce");
     return "bounced";
   }
 
   await deps.conversationRepository.markMessageSent(message.id, { sentAt: now, providerMessageId: sendResult.providerMessageId });
   await deps.sendQueueRepository.markSent(claimed.id);
+  await deps.eventRepository.record({
+    eventType: "sent",
+    messageId: asMessageId(message.id),
+    campaignId,
+    accountId: selection.accountId,
+    occurredAt: now,
+    metadata:
+      message.templateId || message.subjectVariantId
+        ? { templateId: message.templateId, subjectVariantId: message.subjectVariantId }
+        : undefined
+  });
   return "sent";
 }
 

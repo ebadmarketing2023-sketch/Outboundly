@@ -28,6 +28,7 @@ import { SqliteTemplateVariantRepository } from "../../src/adapters/persistence/
 import { SqliteWarmupProfileRepository } from "../../src/adapters/persistence/repositories/warmup-profile-repository.js";
 import { SqliteProviderSelector } from "../../src/adapters/persistence/provider-selector.js";
 import { SqliteRateLimiter } from "../../src/adapters/persistence/rate-limiter.js";
+import { SqliteEventRepository } from "../../src/adapters/persistence/repositories/event-repository.js";
 import { accounts, messages, sendQueue } from "../../src/adapters/persistence/schema.js";
 import { asAccountId, generateId } from "../../src/core/shared-kernel/ids.js";
 import type { AccountRef, ChangeSet, MailProvider, NormalizedMessage, NormalizedThread, ProviderDraftRef, ProviderSendResult, SyncCursor } from "../../src/ports/mail-provider.port.js";
@@ -152,6 +153,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       contactRepository,
       draftRepository,
       draftLifecycle,
+      eventRepository: new SqliteEventRepository(db),
       getProviderForAccount: async () => provider
     };
   });
@@ -187,7 +189,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
 
     const fireResult = await fireEnrollmentStep(fireStepDeps, enrollment, new Date());
     if (fireResult.outcome !== "enqueued") throw new Error(`setup failed: ${fireResult.outcome}`);
-    return { ...fireResult, enrollmentId: enrollment.id, contactId: contact.id };
+    return { ...fireResult, enrollmentId: enrollment.id, contactId: contact.id, campaignId: campaign.id };
   }
 
   it("dispatches a claimed message end-to-end: provider calls happen, message and queue row are marked sent", async () => {
@@ -206,6 +208,15 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     const messageRow = db.select().from(messages).all().find((m) => m.campaignEnrollmentId);
     expect(messageRow?.status).toBe("sent");
     expect(messageRow?.providerMessageId).toBe("fake-message-1");
+
+    const recordedEvents = await sendWorkerDeps.eventRepository.findByCampaignInWindow(
+      fireResult.campaignId,
+      new Date(0),
+      new Date(Date.now() + 60_000)
+    );
+    expect(recordedEvents).toHaveLength(1);
+    expect(recordedEvents[0]?.eventType).toBe("sent");
+    expect(recordedEvents[0]?.metadata).toMatchObject({ templateId: expect.any(String), subjectVariantId: expect.any(String) });
   });
 
   it("releases the row back to pending (not a failure) when the account is over its rate limit", async () => {
@@ -240,7 +251,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
   it("treats a permanent (5xx) SMTP rejection as a bounce: fails the row terminally and stops the enrollment", async () => {
     provider = new FakeMailProvider(false, 550);
     sendWorkerDeps.getProviderForAccount = async () => provider;
-    const { enrollmentId } = await enqueueOneCampaignMessage();
+    const { enrollmentId, campaignId } = await enqueueOneCampaignMessage();
 
     const result = await runSendWorkerTick(sendWorkerDeps, new Date());
     expect(result).toEqual({ claimed: 1, sent: 0, retried: 0, failed: 0, bounced: 1, failures: [] });
@@ -251,6 +262,9 @@ describe("runSendWorkerTick (Section 21.1)", () => {
 
     const enrollment = await fireStepDeps.enrollmentRepository.findById(enrollmentId);
     expect(enrollment?.status).toBe("stopped_bounce");
+
+    const recordedEvents = await sendWorkerDeps.eventRepository.findByCampaignInWindow(campaignId, new Date(0), new Date(Date.now() + 60_000));
+    expect(recordedEvents.map((e) => e.eventType)).toEqual(["bounced"]);
   });
 
   it("does not treat a transient (4xx) SMTP error as a bounce -- it retries normally instead", async () => {

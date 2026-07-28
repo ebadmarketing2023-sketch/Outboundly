@@ -1,11 +1,13 @@
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
-import { asEnrollmentId, type EnrollmentId } from "../../core/shared-kernel/ids.js";
+import { asAccountId, asEnrollmentId, type CampaignId, type ContactId, type EnrollmentId } from "../../core/shared-kernel/ids.js";
 import type { CampaignRepository } from "../../ports/campaign-repository.port.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
 import type { CampaignEnrollment } from "../../core/campaigns/campaign.js";
 import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
+import type { EventRepository } from "../../ports/event-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
+import type { SuppressionListRepository } from "../../ports/suppression-list.port.js";
 
 export type StopReason = "stopped_reply" | "stopped_bounce" | "stopped_manual" | "stopped_suppressed";
 
@@ -60,32 +62,97 @@ async function shouldStepStop(
 
 export interface HandleReplyDetectedDeps extends StopEnrollmentsDeps {
   contactRepository: ContactRepository;
+  conversationRepository: ConversationRepository;
+  eventRepository: EventRepository;
 }
 
 /** Resolves an inbound message's From address to a Contact and stops every active enrollment that
  * respects stopOnReply, wired to the real reply signal the Conversation Engine already produces
  * (sync-inbox.ts's onReplyDetected, Section 11). Silently a no-op for a From address that isn't a
- * known contact — not every reply comes from an enrolled lead. */
-export async function handleReplyDetected(deps: HandleReplyDetectedDeps, fromHeader: string): Promise<EnrollmentId[]> {
+ * known contact — not every reply comes from an enrolled lead. Separately, if the reply threaded
+ * back to one of our own campaign sends, records a 'replied' event attributed to that specific
+ * campaign (Section 20.1) -- a narrower, thread-correlated attribution than the broad per-contact
+ * fan-out stopEnrollmentsForContact performs, since accurate reply-rate analytics needs to know
+ * which campaign got the reply, not just that this contact should stop hearing from all of them. */
+export async function handleReplyDetected(
+  deps: HandleReplyDetectedDeps,
+  fromHeader: string,
+  context: { threadId: string; accountId: string }
+): Promise<EnrollmentId[]> {
   const email = parseNamedAddress(fromHeader).address.toString();
   const contact = await deps.contactRepository.findByEmail(email);
   if (!contact) return [];
+
+  const enrollmentId = await deps.conversationRepository.findCampaignEnrollmentIdForThread(context.threadId);
+  if (enrollmentId) {
+    const enrollment = await deps.enrollmentRepository.findById(asEnrollmentId(enrollmentId));
+    if (enrollment) {
+      await deps.eventRepository.record({
+        eventType: "replied",
+        campaignId: enrollment.campaignId,
+        accountId: asAccountId(context.accountId),
+        occurredAt: new Date()
+      });
+    }
+  }
+
   return stopEnrollmentsForContact(deps, contact.id, "stopped_reply");
 }
 
 export interface HandleBounceDetectedDeps extends StopEnrollmentsDeps {
   conversationRepository: ConversationRepository;
+  eventRepository: EventRepository;
 }
 
 /** Resolves a bounce notification's thread back to the campaign-originated message it's a
  * delivery-failure report for (via ConversationRepository.findCampaignEnrollmentIdForThread,
- * which relies on the notification having threaded correctly to one of our own sends) and stops
- * every active enrollment that respects stopOnBounce for that contact. A no-op when the bounce
- * didn't thread back to anything of ours, or wasn't for a campaign-originated message at all. */
-export async function handleBounceDetected(deps: HandleBounceDetectedDeps, threadId: string): Promise<EnrollmentId[]> {
+ * which relies on the notification having threaded correctly to one of our own sends), records a
+ * 'bounced' event for that campaign (Section 20.1), and stops every active enrollment that
+ * respects stopOnBounce for that contact. A no-op when the bounce didn't thread back to anything
+ * of ours, or wasn't for a campaign-originated message at all. */
+export async function handleBounceDetected(
+  deps: HandleBounceDetectedDeps,
+  threadId: string,
+  accountId: string
+): Promise<EnrollmentId[]> {
   const enrollmentId = await deps.conversationRepository.findCampaignEnrollmentIdForThread(threadId);
   if (!enrollmentId) return [];
   const enrollment = await deps.enrollmentRepository.findById(asEnrollmentId(enrollmentId));
   if (!enrollment) return [];
+
+  await deps.eventRepository.record({
+    eventType: "bounced",
+    campaignId: enrollment.campaignId,
+    accountId: asAccountId(accountId),
+    occurredAt: new Date()
+  });
+
   return stopEnrollmentsForContact(deps, enrollment.contactId, "stopped_bounce");
+}
+
+export interface UnsubscribeContactDeps extends StopEnrollmentsDeps {
+  contactRepository: ContactRepository;
+  suppressionListRepository: SuppressionListRepository;
+  eventRepository: EventRepository;
+}
+
+/** Manual unsubscribe (Section 20.2, Section 22.3's suppression-aware enrollment) -- there is no
+ * real unsubscribe-link infrastructure in this codebase (a click-tracked link needs a publicly
+ * reachable server this local desktop app doesn't have), so this is the only real trigger point:
+ * a user action, typically from the campaign whose email they clicked "unsubscribe" on, which is
+ * why campaignId is accepted here for event attribution even though the resulting suppression is
+ * global (Section 5.5) -- once suppressed, every campaign's own enrollment check skips them. */
+export async function unsubscribeContact(
+  deps: UnsubscribeContactDeps,
+  contactId: ContactId,
+  campaignId?: CampaignId,
+  now: Date = new Date()
+): Promise<EnrollmentId[]> {
+  const contact = await deps.contactRepository.findById(contactId);
+  if (!contact) throw new Error(`Contact ${contactId} not found`);
+
+  await deps.suppressionListRepository.add(contact.email, "unsubscribed");
+  await deps.eventRepository.record({ eventType: "unsubscribed", campaignId, occurredAt: now, metadata: { contactId } });
+
+  return stopEnrollmentsForContact(deps, contactId, "stopped_suppressed");
 }

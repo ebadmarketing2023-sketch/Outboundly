@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { fireEnrollmentStep, type FireEnrollmentStepDeps } from "../../src/application/campaigns/fire-enrollment-step.js";
-import { handleBounceDetected, stopEnrollmentsForContact } from "../../src/application/campaigns/stop-enrollments.js";
+import {
+  handleBounceDetected,
+  handleReplyDetected,
+  stopEnrollmentsForContact,
+  unsubscribeContact
+} from "../../src/application/campaigns/stop-enrollments.js";
+import { recordConversion } from "../../src/application/analytics/record-conversion.js";
 import { DraftLifecycleService } from "../../src/core/drafts/draft-lifecycle.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
 import { SystemClock } from "../../src/ports/clock.port.js";
@@ -17,6 +23,7 @@ import { SqliteDelayPolicyConfigRepository } from "../../src/adapters/persistenc
 import { SqliteDeliverabilityReportRepository } from "../../src/adapters/persistence/repositories/deliverability-report-repository.js";
 import { SqliteDraftRepository } from "../../src/adapters/persistence/repositories/draft-repository.js";
 import { SqliteEnrollmentRepository } from "../../src/adapters/persistence/repositories/enrollment-repository.js";
+import { SqliteEventRepository } from "../../src/adapters/persistence/repositories/event-repository.js";
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteSubjectVariantRepository } from "../../src/adapters/persistence/repositories/subject-variant-repository.js";
@@ -263,6 +270,7 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
 describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
   let db: OutboundlyDb;
   let deps: FireEnrollmentStepDeps;
+  let eventRepository: SqliteEventRepository;
   let accountId: string;
   let businessHoursProfileId: string;
 
@@ -309,6 +317,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
       conversationRepository: new SqliteConversationRepository(db),
       draftLifecycle: new DraftLifecycleService(new SqliteDraftRepository(db), new SystemClock())
     };
+    eventRepository = new SqliteEventRepository(db);
   });
 
   it("stops a reply-eligible step but leaves a stopOnReply:false step running", async () => {
@@ -434,12 +443,120 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
     const messageRow = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).get();
     expect(messageRow?.threadId).toBeDefined();
 
-    const stoppedIds = await handleBounceDetected(deps, messageRow!.threadId!);
+    const stoppedIds = await handleBounceDetected({ ...deps, eventRepository }, messageRow!.threadId!, accountId);
     expect(stoppedIds).toEqual([enrollment.id]);
     expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_bounce");
+
+    const events = await eventRepository.findByCampaignInWindow(campaign.id, new Date(0), new Date(Date.now() + 60_000));
+    expect(events.some((e) => e.eventType === "bounced")).toBe(true);
   });
 
   it("handleBounceDetected is a no-op for a thread with no campaign-originated message", async () => {
-    expect(await handleBounceDetected(deps, "some-unrelated-thread-id")).toEqual([]);
+    expect(await handleBounceDetected({ ...deps, eventRepository }, "some-unrelated-thread-id", accountId)).toEqual([]);
+  });
+
+  it("handleReplyDetected records a 'replied' event for the thread-correlated campaign and stops the contact's enrollments", async () => {
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
+    // Two steps, not one: firing the only step of a single-step sequence already completes the
+    // enrollment (Section 14.3), leaving no "active" enrollment left for stopEnrollmentsForContact
+    // to find -- a two-step sequence leaves it active after the first step, which is what this
+    // test actually needs to exercise (a reply arriving before the follow-up fires).
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
+    });
+    await deps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Subject 1", weight: 1 });
+    await deps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "Subject 2", weight: 1 });
+    const campaign = await deps.campaignRepository.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await deps.contactRepository.upsertByEmail({ email: "replier@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const fireResult = await fireEnrollmentStep(deps, enrollment, new Date());
+    expect(fireResult.outcome).toBe("enqueued");
+
+    const messageRow = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).get();
+
+    const stoppedIds = await handleReplyDetected(
+      { ...deps, eventRepository },
+      contact.email,
+      { threadId: messageRow!.threadId!, accountId }
+    );
+    expect(stoppedIds).toEqual([enrollment.id]);
+    expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_reply");
+
+    const events = await eventRepository.findByCampaignInWindow(campaign.id, new Date(0), new Date(Date.now() + 60_000));
+    expect(events.some((e) => e.eventType === "replied")).toBe(true);
+  });
+
+  it("handleReplyDetected does not record an event or throw when the reply doesn't correlate to any campaign send", async () => {
+    const contact = await deps.contactRepository.upsertByEmail({ email: "unrelated@example.com", source: "manual" });
+    const stoppedIds = await handleReplyDetected(
+      { ...deps, eventRepository },
+      contact.email,
+      { threadId: "no-such-thread", accountId }
+    );
+    expect(stoppedIds).toEqual([]); // no active enrollments to stop either
+  });
+
+  it("unsubscribeContact suppresses the contact, records an event, and stops their active enrollments", async () => {
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await deps.campaignRepository.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await deps.contactRepository.upsertByEmail({ email: "unsub@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date()
+    });
+
+    const stoppedIds = await unsubscribeContact({ ...deps, eventRepository }, contact.id, campaign.id);
+    expect(stoppedIds).toEqual([enrollment.id]);
+    expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_suppressed");
+    expect(await deps.suppressionListRepository.isSuppressed(contact.email)).toBe(true);
+
+    const events = await eventRepository.findByCampaignInWindow(campaign.id, new Date(0), new Date(Date.now() + 60_000));
+    expect(events.map((e) => e.eventType)).toEqual(["unsubscribed"]);
+  });
+
+  it("recordConversion records a conversion event scoped to the campaign", async () => {
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [] } });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await deps.campaignRepository.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await deps.contactRepository.upsertByEmail({ email: "converted@example.com", source: "manual" });
+
+    await recordConversion(eventRepository, campaign.id, contact.id);
+
+    const events = await eventRepository.findByCampaignInWindow(campaign.id, new Date(0), new Date(Date.now() + 60_000));
+    expect(events.map((e) => e.eventType)).toEqual(["conversion"]);
   });
 });

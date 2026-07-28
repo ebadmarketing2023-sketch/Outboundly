@@ -102,6 +102,13 @@ export const messages = sqliteTable("messages", {
   // re-fetch the original Draft and rebuild its MIME with the final dispatch account, which can
   // differ from the Scheduler's original proposal (Section 16.3's Provider Selector substitution).
   draftId: text("draft_id").references(() => drafts.id),
+  // Snapshotted at fire time (Section 14.3), not derivable later: by the time a message is
+  // actually sent, campaign_enrollments.current_step_id has already advanced past the step that
+  // produced this message (Section 14.3's "on successful queuing, next_send_at advances"), so
+  // there is no other way to recover which template/subject a historical sent message used --
+  // needed for template/subject rollups (Section 5.9, Section 20.5).
+  templateId: text("template_id").references(() => templates.id),
+  subjectVariantId: text("subject_variant_id").references(() => subjectVariants.id),
   // User-applied label (Section 20.2) -- only meaningful on an inbound reply message. Null means
   // "not labeled yet", distinct from any classification value; there is no automatic classifier.
   replyClassification: text("reply_classification"), // 'interested' | 'not_interested' | 'out_of_office'
