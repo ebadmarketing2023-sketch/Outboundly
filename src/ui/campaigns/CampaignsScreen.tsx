@@ -24,8 +24,9 @@ const WEEKDAY_LABELS: Record<string, string> = {
  * The Phase 4 "minimal" Campaign UI (Section 14): sending-account limits, business hours
  * profiles, template/sequence/campaign creation, and enrollment monitoring — proves the Campaign
  * Engine end-to-end (Scheduler tick + Send worker pick this up automatically once contacts are
- * enrolled). A single-step sequence builder here; weighted A/B variants are authorable only via
- * the underlying repositories today, not this screen. Business hours profiles apply one shared
+ * enrolled). Sequences support any number of steps, each with its own delay/template/subject;
+ * weighted A/B variants (multiple subject/content options per step) are authorable only via the
+ * underlying repositories today, not this screen. Business hours profiles apply one shared
  * start/end window to every selected day, not the full per-weekday/multi-window data model.
  */
 export function CampaignsScreen(): JSX.Element {
@@ -49,9 +50,9 @@ export function CampaignsScreen(): JSX.Element {
   const [templateBody, setTemplateBody] = useState("Hi {{first_name}},\n\nJust checking in.\n\nBest,\nMe");
 
   const [sequenceName, setSequenceName] = useState("");
-  const [sequenceTemplateId, setSequenceTemplateId] = useState("");
-  const [sequenceSubject, setSequenceSubject] = useState("Quick question");
-  const [sequenceDelayDays, setSequenceDelayDays] = useState("0");
+  const [sequenceSteps, setSequenceSteps] = useState<
+    Array<{ delayDays: string; delayHours: string; templateId: string; subjectText: string }>
+  >([{ delayDays: "0", delayHours: "0", templateId: "", subjectText: "Quick question" }]);
 
   const [campaignName, setCampaignName] = useState("");
   const [campaignSequenceId, setCampaignSequenceId] = useState("");
@@ -151,21 +152,32 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
+  function addSequenceStep(): void {
+    setSequenceSteps((prev) => [...prev, { delayDays: "1", delayHours: "0", templateId: "", subjectText: "" }]);
+  }
+
+  function removeSequenceStep(index: number): void {
+    setSequenceSteps((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function updateSequenceStep(index: number, patch: Partial<(typeof sequenceSteps)[number]>): void {
+    setSequenceSteps((prev) => prev.map((step, i) => (i === index ? { ...step, ...patch } : step)));
+  }
+
   async function handleCreateSequence(): Promise<void> {
     setError(null);
     try {
       await window.outboundly.createSequence({
         name: sequenceName,
-        steps: [
-          {
-            delayDays: Number(sequenceDelayDays) || 0,
-            delayHours: 0,
-            templateId: sequenceTemplateId,
-            subjectText: sequenceSubject
-          }
-        ]
+        steps: sequenceSteps.map((step) => ({
+          delayDays: Number(step.delayDays) || 0,
+          delayHours: Number(step.delayHours) || 0,
+          templateId: step.templateId,
+          subjectText: step.subjectText
+        }))
       });
       setSequenceName("");
+      setSequenceSteps([{ delayDays: "0", delayHours: "0", templateId: "", subjectText: "Quick question" }]);
       refreshAll();
     } catch (err) {
       setError(String(err));
@@ -348,30 +360,57 @@ export function CampaignsScreen(): JSX.Element {
           onChange={(e) => setSequenceName(e.target.value)}
           style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
         />
-        <select value={sequenceTemplateId} onChange={(e) => setSequenceTemplateId(e.target.value)} style={{ marginRight: "0.5rem" }}>
-          <option value="">Select template...</option>
-          {templates.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-        <input
-          placeholder="Subject"
-          value={sequenceSubject}
-          onChange={(e) => setSequenceSubject(e.target.value)}
-          style={{ marginRight: "0.5rem" }}
-        />
-        <input
-          type="number"
-          min={0}
-          placeholder="Delay (days)"
-          value={sequenceDelayDays}
-          onChange={(e) => setSequenceDelayDays(e.target.value)}
-          style={{ width: "6rem", marginRight: "0.5rem" }}
-        />
-        <button onClick={handleCreateSequence} disabled={!sequenceName || !sequenceTemplateId}>
-          Create single-step sequence
+        {sequenceSteps.map((step, index) => (
+          <div key={index} style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+            <strong style={{ width: "3.5rem" }}>Step {index + 1}</strong>
+            <select value={step.templateId} onChange={(e) => updateSequenceStep(index, { templateId: e.target.value })}>
+              <option value="">Select template...</option>
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <input
+              placeholder="Subject"
+              value={step.subjectText}
+              onChange={(e) => updateSequenceStep(index, { subjectText: e.target.value })}
+            />
+            <label>
+              Wait
+              <input
+                type="number"
+                min={0}
+                value={step.delayDays}
+                onChange={(e) => updateSequenceStep(index, { delayDays: e.target.value })}
+                style={{ width: "4rem", margin: "0 0.25rem" }}
+              />
+              day(s)
+            </label>
+            <label>
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={step.delayHours}
+                onChange={(e) => updateSequenceStep(index, { delayHours: e.target.value })}
+                style={{ width: "4rem", margin: "0 0.25rem" }}
+              />
+              hour(s) after the previous step
+            </label>
+            <button onClick={() => removeSequenceStep(index)} disabled={sequenceSteps.length === 1}>
+              Remove
+            </button>
+          </div>
+        ))}
+        <div style={{ marginBottom: "0.5rem" }}>
+          <button onClick={addSequenceStep}>+ Add another step</button>
+        </div>
+        <button
+          onClick={handleCreateSequence}
+          disabled={!sequenceName || sequenceSteps.some((s) => !s.templateId || !s.subjectText)}
+        >
+          Create sequence ({sequenceSteps.length} step{sequenceSteps.length === 1 ? "" : "s"})
         </button>
         <ul>
           {sequences.map((s) => (
