@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * Phase 1 subset of the logical schema in Section 5 — just enough to support a single
@@ -92,6 +92,10 @@ export const messages = sqliteTable("messages", {
   sentAt: integer("sent_at", { mode: "timestamp_ms" }),
   receivedAt: integer("received_at", { mode: "timestamp_ms" }),
   status: text("status").notNull(), // draft|queued|sending|sent|failed|bounced
+  // Still no FK, even though campaign_enrollments now exists (Section 5.6, Phase 4): SQLite has
+  // no ALTER TABLE ADD CONSTRAINT — adding a FK to an already-existing column requires recreating
+  // the whole table, which isn't worth the risk against real installs' existing data for a
+  // referential-integrity nicety. Nullable, since a manually composed message never has one.
   campaignEnrollmentId: text("campaign_enrollment_id"),
   policyTraceJson: text("policy_trace_json", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
@@ -119,8 +123,9 @@ export const conversationParticipants = sqliteTable("conversation_participants",
   threadId: text("thread_id")
     .notNull()
     .references(() => threads.id),
-  // No FK to a contacts table yet — Leads/Contacts (Section 5.5) is a later phase; this column
-  // is nullable and unconstrained until that module exists to reconcile against.
+  // Still no FK, even though contacts now exists (Section 5.5, Phase 4) — same reason as
+  // messages.campaignEnrollmentId above (SQLite can't add a FK to an existing column without
+  // recreating the table). Nullable: not every participant has been reconciled into a Contact.
   contactId: text("contact_id"),
   emailAddress: text("email_address").notNull(),
   displayName: text("display_name"),
@@ -182,9 +187,10 @@ export const accountHealthFindings = sqliteTable("account_health_findings", {
 });
 
 /**
- * Deliverability Engine + Lab storage (Section 5.8, Section 17, Section 18). campaignId has no FK
- * yet — Campaigns (Section 5.6) don't exist until Phase 4 — matching the same nullable,
- * unconstrained pattern already used for messages.campaignEnrollmentId above.
+ * Deliverability Engine + Lab storage (Section 5.8, Section 17, Section 18). campaignId still has
+ * no FK, even though campaigns now exists (Phase 4) — same reason as messages.campaignEnrollmentId
+ * above: SQLite can't add a FK to an already-existing column without recreating the table. Nullable
+ * regardless, since message/account-scoped reports have no campaign at all.
  */
 export const deliverabilityReports = sqliteTable("deliverability_reports", {
   id: text("id").primaryKey(),
@@ -216,3 +222,238 @@ export interface DeliverabilityFindingRecord {
   severity: string;
   explanation: string;
 }
+
+/**
+ * Leads / Contacts (Section 5.5, Phase 4) — the recipient side of a campaign, independent of the
+ * Conversation Engine's own participant tracking (conversation_participants above still exists
+ * for thread-level "who's on this email," while a Contact is a durable, campaign-addressable
+ * record with its own lifecycle).
+ */
+export const contacts = sqliteTable(
+  "contacts",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    company: text("company"),
+    title: text("title"),
+    timezone: text("timezone"),
+    customFields: text("custom_fields", { mode: "json" }).$type<Record<string, string>>(),
+    source: text("source").notNull(), // 'csv_import' | 'manual' | 'reply'
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
+  },
+  (table) => ({
+    emailIdx: uniqueIndex("contacts_email_idx").on(table.email)
+  })
+);
+
+export const contactNotes = sqliteTable("contact_notes", {
+  id: text("id").primaryKey(),
+  contactId: text("contact_id")
+    .notNull()
+    .references(() => contacts.id),
+  body: text("body").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull()
+});
+
+export const suppressionList = sqliteTable("suppression_list", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  reason: text("reason").notNull(), // 'unsubscribed' | 'bounced_hard' | 'manual' | 'complaint'
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull()
+});
+
+export const labels = sqliteTable("labels", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  color: text("color")
+});
+
+export const contactLabels = sqliteTable(
+  "contact_labels",
+  {
+    id: text("id").primaryKey(),
+    contactId: text("contact_id")
+      .notNull()
+      .references(() => contacts.id),
+    labelId: text("label_id")
+      .notNull()
+      .references(() => labels.id)
+  },
+  (table) => ({
+    uniqueAssignment: uniqueIndex("contact_labels_contact_label_idx").on(table.contactId, table.labelId)
+  })
+);
+
+/**
+ * Templates & Sequences (Section 5.6, Phase 4) — the reusable content/step definitions a
+ * Campaign later binds to a set of contacts and accounts.
+ */
+export const templates = sqliteTable("templates", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  // The Internal Document Model (Section 8.1), same shape drafts.document_model_json uses.
+  documentModelJson: text("document_model_json").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
+});
+
+export const templateVariants = sqliteTable("template_variants", {
+  id: text("id").primaryKey(),
+  templateId: text("template_id")
+    .notNull()
+    .references(() => templates.id),
+  variantLabel: text("variant_label").notNull(),
+  weight: integer("weight").notNull(),
+  documentModelOverrideJson: text("document_model_override_json")
+});
+
+export const sequences = sqliteTable("sequences", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("draft"), // 'draft' | 'active' | 'archived'
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull()
+});
+
+export const sequenceSteps = sqliteTable("sequence_steps", {
+  id: text("id").primaryKey(),
+  sequenceId: text("sequence_id")
+    .notNull()
+    .references(() => sequences.id),
+  stepOrder: integer("step_order").notNull(),
+  delayDays: integer("delay_days").notNull().default(0),
+  delayHours: integer("delay_hours").notNull().default(0),
+  templateId: text("template_id")
+    .notNull()
+    .references(() => templates.id),
+  stopOnReply: integer("stop_on_reply", { mode: "boolean" }).notNull().default(true),
+  stopOnBounce: integer("stop_on_bounce", { mode: "boolean" }).notNull().default(true),
+  conditionJson: text("condition_json", { mode: "json" })
+});
+
+/**
+ * Weighting for subject-line A/B/n testing, scoped to a sequence step's template (not a running
+ * campaign instance) — the same weighted-variant selection applies to every campaign that reuses
+ * this sequence, matching Section 5.6's grouping of templates/variants/sequences as one reusable
+ * content layer, separate from the running-instance state campaigns/enrollments own below.
+ */
+export const subjectVariants = sqliteTable("subject_variants", {
+  id: text("id").primaryKey(),
+  sequenceStepId: text("sequence_step_id")
+    .notNull()
+    .references(() => sequenceSteps.id),
+  subjectText: text("subject_text").notNull(),
+  weight: integer("weight").notNull()
+});
+
+/**
+ * Scheduling Policies (Section 5.7, backs Section 15) — configuration the Scheduling Policy
+ * Engine's policy objects read from, not the policy logic itself (that's pure core logic, kept
+ * out of the persistence layer entirely).
+ */
+export const businessHoursProfiles = sqliteTable("business_hours_profiles", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  timezone: text("timezone").notNull(),
+  // Per-weekday start/end windows, e.g. { mon: [{start:"09:00", end:"17:00"}], ... }.
+  windowsJson: text("windows_json", { mode: "json" }).notNull().$type<Record<string, { start: string; end: string }[]>>()
+});
+
+export const warmupProfiles = sqliteTable("warmup_profiles", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id")
+    .notNull()
+    .references(() => accounts.id),
+  startDate: integer("start_date", { mode: "timestamp_ms" }).notNull(),
+  // Day-offset-from-start -> daily cap, e.g. { "0": 5, "7": 10, "14": 20 }.
+  rampScheduleJson: text("ramp_schedule_json", { mode: "json" }).notNull().$type<Record<string, number>>(),
+  currentDailyCap: integer("current_daily_cap").notNull()
+});
+
+export const delayPolicyConfigs = sqliteTable("delay_policy_configs", {
+  id: text("id").primaryKey(),
+  campaignId: text("campaign_id").references(() => campaigns.id),
+  minDelaySeconds: integer("min_delay_seconds").notNull(),
+  maxDelaySeconds: integer("max_delay_seconds").notNull(),
+  jitterStrategy: text("jitter_strategy").notNull().default("uniform")
+});
+
+/** Campaigns (Section 5.6, Section 14.1) — a running instance of a sequence bound to contacts,
+ * sending accounts, and scheduling policy configuration. */
+export const campaigns = sqliteTable("campaigns", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  sequenceId: text("sequence_id")
+    .notNull()
+    .references(() => sequences.id),
+  sendingAccountIds: text("sending_account_ids", { mode: "json" }).notNull().$type<string[]>(),
+  businessHoursProfileId: text("business_hours_profile_id")
+    .notNull()
+    .references(() => businessHoursProfiles.id),
+  warmupProfileId: text("warmup_profile_id").references(() => warmupProfiles.id),
+  // No FK constraint here (unlike the other two): delay_policy_configs.campaign_id already
+  // expresses the same relationship in the other direction (Section 5.7), and a real FK on both
+  // sides would make these two tables' column types circularly dependent on each other, which
+  // TypeScript can't infer without manual type annotations drizzle's own docs advise against
+  // relying on. This column stays for the doc's documented shape; delay_policy_configs.campaign_id
+  // is the constrained, authoritative side of the relationship.
+  delayPolicyId: text("delay_policy_id"),
+  status: text("status").notNull().default("draft"), // 'draft' | 'running' | 'paused' | 'completed'
+  dailyLimitOverride: integer("daily_limit_override"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull()
+});
+
+/** Enrollment state machine (Section 14.2) — one contact's progress through one campaign. */
+export const campaignEnrollments = sqliteTable(
+  "campaign_enrollments",
+  {
+    id: text("id").primaryKey(),
+    campaignId: text("campaign_id")
+      .notNull()
+      .references(() => campaigns.id),
+    contactId: text("contact_id")
+      .notNull()
+      .references(() => contacts.id),
+    currentStepId: text("current_step_id").references(() => sequenceSteps.id),
+    // 'active' | 'stopped_reply' | 'stopped_bounce' | 'stopped_manual' | 'stopped_suppressed' | 'completed'
+    status: text("status").notNull().default("active"),
+    nextSendAt: integer("next_send_at", { mode: "timestamp_ms" }),
+    enrolledAt: integer("enrolled_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
+  },
+  (table) => ({
+    statusNextSendIdx: index("campaign_enrollments_status_next_send_idx").on(table.status, table.nextSendAt)
+  })
+);
+
+/**
+ * The single outbound queue (Section 5.8, Section 16.2) — durable, ordered storage only; rate
+ * limiting and account resolution are separate concerns handled at dispatch time, not modeled as
+ * queue-row state.
+ */
+export const sendQueue = sqliteTable(
+  "send_queue",
+  {
+    id: text("id").primaryKey(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    priority: text("priority").notNull(), // 'manual' | 'campaign'
+    earliestSendAt: integer("earliest_send_at", { mode: "timestamp_ms" }).notNull(),
+    status: text("status").notNull().default("pending"), // 'pending' | 'claimed' | 'sent' | 'failed' | 'cancelled'
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastError: text("last_error"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull()
+  },
+  (table) => ({
+    statusEarliestSendIdx: index("send_queue_status_earliest_send_idx").on(table.status, table.earliestSendAt),
+    idempotencyKeyIdx: uniqueIndex("send_queue_idempotency_key_idx").on(table.idempotencyKey)
+  })
+);
