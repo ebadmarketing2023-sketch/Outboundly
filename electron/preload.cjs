@@ -45,5 +45,7 @@ contextBridge.exposeInMainWorld("outboundly", {
   markNotificationRead: (request) => ipcRenderer.invoke("notifications:markRead", request),
   updateAccountSignature: (request) => ipcRenderer.invoke("accounts:updateSignature", request),
   getAppPreferences: () => ipcRenderer.invoke("settings:getAppPreferences"),
-  updateAppPreferences: (request) => ipcRenderer.invoke("settings:updateAppPreferences", request)
+  updateAppPreferences: (request) => ipcRenderer.invoke("settings:updateAppPreferences", request),
+  exportBackup: (request) => ipcRenderer.invoke("backup:export", request),
+  restoreBackup: (request) => ipcRenderer.invoke("backup:restore", request)
 });

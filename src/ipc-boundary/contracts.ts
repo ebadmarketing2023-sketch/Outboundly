@@ -377,6 +377,27 @@ export interface UpdateAppPreferencesRequest {
   defaultSendingAccountId?: string;
 }
 
+/** Backup/restore (Section 23: "Exported backups are encrypted with a user-supplied passphrase
+ * separate from the app's own at-rest key"). The main process owns the file picker (Section 23's
+ * "no raw DB or filesystem access from UI" -- the renderer never sees or chooses a raw path, only
+ * a passphrase and whether the user completed or cancelled the native dialog. */
+export interface ExportBackupRequest {
+  passphrase: string;
+}
+
+export interface ExportBackupResponse {
+  exported: boolean;
+  filePath?: string;
+}
+
+export interface RestoreBackupRequest {
+  passphrase: string;
+}
+
+export interface RestoreBackupResponse {
+  restored: boolean;
+}
+
 export interface ConnectSmtpImapRequest {
   emailAddress: string;
   displayName?: string;
@@ -431,4 +452,6 @@ export interface OutboundlyRendererApi {
   updateAccountSignature(request: UpdateAccountSignatureRequest): Promise<AccountSummary>;
   getAppPreferences(): Promise<AppPreferencesSummary>;
   updateAppPreferences(request: UpdateAppPreferencesRequest): Promise<AppPreferencesSummary>;
+  exportBackup(request: ExportBackupRequest): Promise<ExportBackupResponse>;
+  restoreBackup(request: RestoreBackupRequest): Promise<RestoreBackupResponse>;
 }

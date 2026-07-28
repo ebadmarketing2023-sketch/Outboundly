@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -33,6 +33,7 @@ import { recordConversion } from "../dist/application/analytics/record-conversio
 import { labelReply } from "../dist/application/analytics/label-reply.js";
 import { getCampaignAnalytics } from "../dist/adapters/persistence/campaign-analytics-support.js";
 import { getAppPreferences, setAccountSignature, setAppPreferences } from "../dist/adapters/persistence/settings-support.js";
+import { exportEncryptedBackup, restoreEncryptedBackup } from "../dist/adapters/persistence/backup-restore.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
 import { generateId } from "../dist/core/shared-kernel/ids.js";
 import { SqliteContactRepository } from "../dist/adapters/persistence/repositories/contact-repository.js";
@@ -87,6 +88,7 @@ const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
 const MICROSOFT_SCOPES = ["Mail.Send", "Mail.ReadWrite"];
 
 let db;
+let dbPath;
 let draftRepository;
 let draftLifecycle;
 let tokenVault;
@@ -128,7 +130,7 @@ const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
 const ROLLUP_TICK_INTERVAL_MS = 60 * 60 * 1000;
 
 function initServices() {
-  const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
+  dbPath = join(app.getPath("userData"), "outboundly.sqlite");
   db = openDatabase(dbPath, getOrCreateDatabaseEncryptionKey());
   draftRepository = new SqliteDraftRepository(db);
   draftLifecycle = new DraftLifecycleService(draftRepository, new SystemClock());
@@ -776,6 +778,35 @@ function registerIpcHandlers() {
   ipcMain.handle("settings:updateAppPreferences", async (_event, request) => {
     setAppPreferences(db, request);
     return getAppPreferences(db);
+  });
+
+  ipcMain.handle("backup:export", async (_event, request) => {
+    const result = await dialog.showSaveDialog({
+      title: "Export Outboundly Backup",
+      defaultPath: `outboundly-backup-${new Date().toISOString().slice(0, 10)}.sqlite`,
+      filters: [{ name: "Outboundly Backup", extensions: ["sqlite"] }]
+    });
+    if (result.canceled || !result.filePath) return { exported: false };
+
+    exportEncryptedBackup(dbPath, getOrCreateDatabaseEncryptionKey(), result.filePath, request.passphrase);
+    return { exported: true, filePath: result.filePath };
+  });
+
+  ipcMain.handle("backup:restore", async (_event, request) => {
+    const result = await dialog.showOpenDialog({
+      title: "Restore Outboundly Backup",
+      properties: ["openFile"],
+      filters: [{ name: "Outboundly Backup", extensions: ["sqlite"] }]
+    });
+    if (result.canceled || result.filePaths.length === 0) return { restored: false };
+
+    // Replaces the live db file on disk -- the renderer already confirmed this destructive action
+    // before invoking this handler. A restart is required so a fresh openDatabase() picks up the
+    // replaced file instead of every already-constructed repository continuing to hold the old one.
+    restoreEncryptedBackup(result.filePaths[0], request.passphrase, getOrCreateDatabaseEncryptionKey(), dbPath);
+    app.relaunch();
+    app.exit(0);
+    return { restored: true };
   });
 
   ipcMain.handle("campaigns:setStatus", async (_event, request) => {
