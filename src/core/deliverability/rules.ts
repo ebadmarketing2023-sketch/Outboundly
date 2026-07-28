@@ -194,7 +194,9 @@ const spfConfigured: DeliverabilityRule = {
   category: "auth",
   severity: "warning",
   evaluate(ctx) {
-    if (!ctx.authStatus || ctx.authStatus.spf === "pass") return [];
+    // "unknown" (checker has no reliable way to verify this domain/provider combination — see
+    // DnsDomainAuthChecker) is deliberately silent, distinct from "none"/"fail".
+    if (!ctx.authStatus || ctx.authStatus.spf === "pass" || ctx.authStatus.spf === "unknown") return [];
     return [
       finding(
         spfConfigured,
@@ -211,7 +213,7 @@ const dkimConfigured: DeliverabilityRule = {
   category: "auth",
   severity: "warning",
   evaluate(ctx) {
-    if (!ctx.authStatus || ctx.authStatus.dkim === "pass") return [];
+    if (!ctx.authStatus || ctx.authStatus.dkim === "pass" || ctx.authStatus.dkim === "unknown") return [];
     return [
       finding(
         dkimConfigured,

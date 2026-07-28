@@ -1,11 +1,21 @@
 import { resolveCname, resolveTxt } from "node:dns/promises";
 import type { AuthStatus, DomainAuthChecker, DomainAuthStatus } from "../../ports/domain-auth-checker.port.js";
 
+// Consumer mailbox domains owned by the provider itself, not by the account holder — DKIM there
+// is entirely Google's/Microsoft's own internal setup, signed with an unpublished, rotating
+// selector (verified for real: a live query for google._domainkey.gmail.com returns ENOTFOUND,
+// even though Gmail-sent mail genuinely does pass DKIM — the selector convention Workspace
+// documents simply doesn't apply here). There is no selector name to check, so this isn't "none",
+// it's "unknown" — checking would just be guessing.
+const GOOGLE_CONSUMER_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
+const MICROSOFT_CONSUMER_DOMAINS = new Set(["outlook.com", "hotmail.com", "live.com", "msn.com"]);
+
 /**
  * Real DNS-based SPF/DKIM/DMARC posture checker (Section 19.2), backing the DomainAuthChecker
- * port. Any DNS resolution failure — no record found (ENOTFOUND/ENODATA) or a transient
- * network/timeout error — is reported as "none": this checker has no fourth "couldn't verify"
- * state to distinguish those cases, so both collapse to the same conservative answer.
+ * port. A DNS resolution failure that means "no record here" (ENOTFOUND/ENODATA) is reported as
+ * "none" — a real, actionable gap. A domain/provider combination this checker has no reliable way
+ * to check at all (see GOOGLE_CONSUMER_DOMAINS/MICROSOFT_CONSUMER_DOMAINS above) is reported as
+ * "unknown" instead, so callers don't mistake "can't check this" for "checked and it's missing".
  */
 export class DnsDomainAuthChecker implements DomainAuthChecker {
   async check(domain: string, provider: string): Promise<DomainAuthStatus> {
@@ -50,14 +60,18 @@ export class DnsDomainAuthChecker implements DomainAuthChecker {
     // DKIM selectors are provider-specific and not discoverable via DNS alone — checking the
     // wrong selector name would just be guessing, which this app's "no guesswork" stance rules
     // out. Only Google Workspace's and Microsoft 365's own documented *default* selectors are
-    // checked; a custom selector on either provider, or any selector at all on a generic
-    // SMTP/IMAP provider, is honestly unknown to this checker and reported as "none".
+    // checked, and only for a custom domain routed through that provider; a custom selector on
+    // either provider, the provider's own consumer domain (gmail.com, outlook.com, etc. — see the
+    // module-level comment), or any selector at all on a generic SMTP/IMAP provider, is honestly
+    // "unknown" to this checker rather than guessed.
     if (provider === "google") {
+      if (GOOGLE_CONSUMER_DOMAINS.has(domain.toLowerCase())) return "unknown";
       const records = await this.lookupTxtRecords(`google._domainkey.${domain}`);
       if (!records) return "none";
       return records.some((r) => r.includes("p=") && !r.includes("p=;")) ? "pass" : "fail";
     }
     if (provider === "microsoft") {
+      if (MICROSOFT_CONSUMER_DOMAINS.has(domain.toLowerCase())) return "unknown";
       try {
         const cname = await resolveCname(`selector1._domainkey.${domain}`);
         return cname.length > 0 ? "pass" : "fail";
@@ -65,6 +79,6 @@ export class DnsDomainAuthChecker implements DomainAuthChecker {
         return "none";
       }
     }
-    return "none";
+    return "unknown";
   }
 }

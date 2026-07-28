@@ -1,4 +1,11 @@
-export type AuthStatus = "pass" | "fail" | "none";
+/**
+ * "unknown" is distinct from "none": "none" means this checker looked for a record in the right
+ * place and found nothing (a real, actionable gap); "unknown" means this checker has no reliable
+ * way to check at all for this domain/provider combination (e.g. DKIM on a consumer @gmail.com
+ * address — see DnsDomainAuthChecker's docblock) and is deliberately not guessing. Findings code
+ * must not treat "unknown" the same as "none".
+ */
+export type AuthStatus = "pass" | "fail" | "none" | "unknown";
 
 export interface DomainAuthStatus {
   spf: AuthStatus;

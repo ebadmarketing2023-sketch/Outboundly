@@ -34,7 +34,10 @@ export function computeAccountHealth(input: AccountHealthInput): AccountHealthRe
     });
   }
 
-  if (input.authStatus.spf !== "pass") {
+  // "unknown" (e.g. DKIM on a consumer @gmail.com/@outlook.com address, where the real selector
+  // isn't discoverable — see DnsDomainAuthChecker) deliberately raises no finding at all: it means
+  // this checker has no reliable way to verify the record, not that one is missing.
+  if (input.authStatus.spf === "fail" || input.authStatus.spf === "none") {
     penalty += PENALTY.spfNotConfigured;
     findings.push({
       findingType: "spf_not_configured",
@@ -45,7 +48,7 @@ export function computeAccountHealth(input: AccountHealthInput): AccountHealthRe
     });
   }
 
-  if (input.authStatus.dkim !== "pass") {
+  if (input.authStatus.dkim === "fail" || input.authStatus.dkim === "none") {
     penalty += PENALTY.dkimNotConfigured;
     findings.push({
       findingType: "dkim_not_configured",

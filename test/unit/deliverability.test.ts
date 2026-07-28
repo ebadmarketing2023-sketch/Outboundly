@@ -117,4 +117,12 @@ describe("Deliverability Engine (Section 17)", () => {
     expect(withFailingAuth.findings.some((f) => f.ruleId === "auth-dkim-configured")).toBe(true);
     expect(withFailingAuth.findings.some((f) => f.ruleId === "auth-dmarc-configured")).toBe(true);
   });
+
+  it("treats 'unknown' auth status as silent, distinct from 'none'/'fail' (e.g. DKIM on a consumer @gmail.com address)", () => {
+    const message = buildMessage();
+    const report = evaluateDeliverability(
+      contextFor(message, { authStatus: { spf: "pass", dkim: "unknown", dmarc: "pass" } })
+    );
+    expect(report.findings.some((f) => f.category === "auth")).toBe(false);
+  });
 });

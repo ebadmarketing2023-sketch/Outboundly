@@ -1,5 +1,6 @@
 import type { BuiltMimeMessage } from "../mime/types.js";
 import type { CompatibilityReport } from "../gmail-compatibility/types.js";
+import type { DomainAuthStatus } from "../../ports/domain-auth-checker.port.js";
 
 /**
  * Section 17: "Will this email / this account perform well?" — deliberately broader and less
@@ -47,11 +48,7 @@ export interface MessageContext {
   authenticatedAccountEmail: string;
   bodyHtml?: string;
   bodyText?: string;
-  authStatus?: {
-    spf: "pass" | "fail" | "none";
-    dkim: "pass" | "fail" | "none";
-    dmarc: "pass" | "fail" | "none";
-  };
+  authStatus?: DomainAuthStatus;
 }
 
 export interface DeliverabilityRule {

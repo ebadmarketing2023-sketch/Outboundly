@@ -55,6 +55,20 @@ describe("Account Health Engine (Section 19)", () => {
     expect(noData.findings.some((f) => f.findingType === "inconsistent_sending_volume")).toBe(false);
   });
 
+  it("does not flag or penalize 'unknown' auth status (e.g. DKIM on a consumer @gmail.com address, where no selector is discoverable) the way it does 'none'/'fail'", () => {
+    const withUnknown = computeAccountHealth(
+      baseInput({ authStatus: { spf: "pass", dkim: "unknown", dmarc: "pass" } })
+    );
+    expect(withUnknown.findings).toEqual([]);
+    expect(withUnknown.healthScore).toBe(100);
+
+    const withGenuinelyMissing = computeAccountHealth(
+      baseInput({ authStatus: { spf: "pass", dkim: "none", dmarc: "pass" } })
+    );
+    expect(withGenuinelyMissing.findings.some((f) => f.findingType === "dkim_not_configured")).toBe(true);
+    expect(withGenuinelyMissing.healthScore).toBeLessThan(100);
+  });
+
   it("maps score ranges to the documented risk levels (Section 19.3)", () => {
     expect(computeAccountHealth(baseInput()).riskLevel).toBe("healthy");
     expect(
