@@ -102,6 +102,9 @@ export const messages = sqliteTable("messages", {
   // re-fetch the original Draft and rebuild its MIME with the final dispatch account, which can
   // differ from the Scheduler's original proposal (Section 16.3's Provider Selector substitution).
   draftId: text("draft_id").references(() => drafts.id),
+  // User-applied label (Section 20.2) -- only meaningful on an inbound reply message. Null means
+  // "not labeled yet", distinct from any classification value; there is no automatic classifier.
+  replyClassification: text("reply_classification"), // 'interested' | 'not_interested' | 'out_of_office'
   policyTraceJson: text("policy_trace_json", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
@@ -462,3 +465,121 @@ export const sendQueue = sqliteTable(
     idempotencyKeyIdx: uniqueIndex("send_queue_idempotency_key_idx").on(table.idempotencyKey)
   })
 );
+
+/**
+ * Analytics & Insights (Section 5.9, Section 20) — an immutable event log as the write side;
+ * dashboards never query it directly for aggregates, only the rollup tables below, which a
+ * background worker recomputes periodically and can always safely regenerate from this log.
+ * campaignId/accountId/messageId are all brand-new columns on a brand-new table, so real FKs are
+ * safe here (unlike the several older nullable columns elsewhere in this file that predate their
+ * target tables and can't gain a constraint without a full table rebuild).
+ */
+export const events = sqliteTable(
+  "events",
+  {
+    id: text("id").primaryKey(),
+    // 'sent' | 'bounced' | 'replied' | 'positive_reply' | 'unsubscribed' | 'conversion' |
+    // 'opened' | 'clicked' -- the last two have no emitter (Section 20's docblock in
+    // analytics/events.ts explains why), kept only so the event type space matches the doc.
+    eventType: text("event_type").notNull(),
+    messageId: text("message_id").references(() => messages.id),
+    campaignId: text("campaign_id").references(() => campaigns.id),
+    accountId: text("account_id").references(() => accounts.id),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+    metadataJson: text("metadata_json", { mode: "json" })
+  },
+  (table) => ({
+    campaignEventOccurredIdx: index("events_campaign_event_occurred_idx").on(table.campaignId, table.eventType, table.occurredAt),
+    accountEventOccurredIdx: index("events_account_event_occurred_idx").on(table.accountId, table.eventType, table.occurredAt)
+  })
+);
+
+/** Shared metric-count shape across all four rollup tables below (Section 5.9) -- one row per
+ * scope per UTC calendar-day bucket, fully recomputable from the events log at any time. */
+const rollupMetricColumns = {
+  sentCount: integer("sent_count").notNull().default(0),
+  bouncedCount: integer("bounced_count").notNull().default(0),
+  repliedCount: integer("replied_count").notNull().default(0),
+  positiveReplyCount: integer("positive_reply_count").notNull().default(0),
+  unsubscribedCount: integer("unsubscribed_count").notNull().default(0),
+  conversionCount: integer("conversion_count").notNull().default(0),
+  openedCount: integer("opened_count").notNull().default(0),
+  clickedCount: integer("clicked_count").notNull().default(0),
+  computedAt: integer("computed_at", { mode: "timestamp_ms" }).notNull()
+};
+
+export const campaignMetricsRollup = sqliteTable(
+  "campaign_metrics_rollup",
+  {
+    id: text("id").primaryKey(),
+    campaignId: text("campaign_id")
+      .notNull()
+      .references(() => campaigns.id),
+    periodStart: integer("period_start", { mode: "timestamp_ms" }).notNull(),
+    ...rollupMetricColumns
+  },
+  (table) => ({
+    campaignPeriodIdx: uniqueIndex("campaign_metrics_rollup_campaign_period_idx").on(table.campaignId, table.periodStart)
+  })
+);
+
+export const templateMetricsRollup = sqliteTable(
+  "template_metrics_rollup",
+  {
+    id: text("id").primaryKey(),
+    templateId: text("template_id")
+      .notNull()
+      .references(() => templates.id),
+    periodStart: integer("period_start", { mode: "timestamp_ms" }).notNull(),
+    ...rollupMetricColumns
+  },
+  (table) => ({
+    templatePeriodIdx: uniqueIndex("template_metrics_rollup_template_period_idx").on(table.templateId, table.periodStart)
+  })
+);
+
+export const subjectMetricsRollup = sqliteTable(
+  "subject_metrics_rollup",
+  {
+    id: text("id").primaryKey(),
+    subjectVariantId: text("subject_variant_id")
+      .notNull()
+      .references(() => subjectVariants.id),
+    periodStart: integer("period_start", { mode: "timestamp_ms" }).notNull(),
+    ...rollupMetricColumns
+  },
+  (table) => ({
+    subjectPeriodIdx: uniqueIndex("subject_metrics_rollup_subject_period_idx").on(table.subjectVariantId, table.periodStart)
+  })
+);
+
+export const accountMetricsRollup = sqliteTable(
+  "account_metrics_rollup",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    periodStart: integer("period_start", { mode: "timestamp_ms" }).notNull(),
+    ...rollupMetricColumns
+  },
+  (table) => ({
+    accountPeriodIdx: uniqueIndex("account_metrics_rollup_account_period_idx").on(table.accountId, table.periodStart)
+  })
+);
+
+/** Insights Engine output (Section 5.9, Section 20.3) -- scopeId is nullable since a 'global'-scope
+ * insight (e.g. "reply rates are down across every active campaign this week") has no single
+ * campaign/account it belongs to. */
+export const insights = sqliteTable("insights", {
+  id: text("id").primaryKey(),
+  scope: text("scope").notNull(), // 'campaign' | 'account' | 'global'
+  scopeId: text("scope_id"),
+  insightType: text("insight_type").notNull(),
+  severity: text("severity").notNull(), // 'info' | 'warning' | 'critical'
+  message: text("message").notNull(),
+  explanation: text("explanation").notNull(),
+  recommendedAction: text("recommended_action"),
+  generatedAt: integer("generated_at", { mode: "timestamp_ms" }).notNull(),
+  dismissedAt: integer("dismissed_at", { mode: "timestamp_ms" })
+});
