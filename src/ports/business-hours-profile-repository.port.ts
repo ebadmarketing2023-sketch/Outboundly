@@ -11,4 +11,5 @@ export interface NewBusinessHoursProfileInput {
 export interface BusinessHoursProfileRepository {
   create(input: NewBusinessHoursProfileInput): Promise<BusinessHoursProfile>;
   findById(id: string): Promise<BusinessHoursProfile | undefined>;
+  list(): Promise<BusinessHoursProfile[]>;
 }

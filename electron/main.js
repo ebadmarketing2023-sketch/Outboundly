@@ -104,7 +104,6 @@ let rateLimiter;
 let providerSelector;
 let schedulerTickTimer;
 let sendWorkerTickTimer;
-let defaultBusinessHoursProfileId;
 
 const SCHEDULER_TICK_INTERVAL_MS = 60_000;
 const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
@@ -222,7 +221,9 @@ function serializeAccount(row) {
     provider: row.provider,
     emailAddress: row.emailAddress,
     displayName: row.displayName ?? undefined,
-    status: row.status
+    status: row.status,
+    dailySendLimit: row.dailySendLimit ?? undefined,
+    hourlySendLimit: row.hourlySendLimit ?? undefined
   };
 }
 
@@ -646,37 +647,57 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("campaigns:create", async (_event, request) => {
-    // A "minimal" Phase 4 UI (Section 14) has no business-hours-profile editor yet -- lazily
-    // provision one always-open UTC default per app session rather than building that screen too.
-    if (!defaultBusinessHoursProfileId) {
-      const profile = await businessHoursProfileRepository.create({
-        name: "Always open (default)",
-        timezone: "UTC",
-        windows: {
-          sunday: [{ start: "00:00", end: "23:59" }],
-          monday: [{ start: "00:00", end: "23:59" }],
-          tuesday: [{ start: "00:00", end: "23:59" }],
-          wednesday: [{ start: "00:00", end: "23:59" }],
-          thursday: [{ start: "00:00", end: "23:59" }],
-          friday: [{ start: "00:00", end: "23:59" }],
-          saturday: [{ start: "00:00", end: "23:59" }]
-        }
-      });
-      defaultBusinessHoursProfileId = profile.id;
-    }
-
     const campaign = await campaignRepository.create({
       name: request.name,
       sequenceId: request.sequenceId,
       sendingAccountIds: [request.sendingAccountId],
-      businessHoursProfileId: defaultBusinessHoursProfileId
+      businessHoursProfileId: request.businessHoursProfileId
     });
-    return { id: campaign.id, name: campaign.name, sequenceId: campaign.sequenceId, status: campaign.status };
+    return {
+      id: campaign.id,
+      name: campaign.name,
+      sequenceId: campaign.sequenceId,
+      status: campaign.status,
+      businessHoursProfileId: campaign.businessHoursProfileId
+    };
   });
 
   ipcMain.handle("campaigns:list", async () => {
     const campaigns = await campaignRepository.list();
-    return campaigns.map((c) => ({ id: c.id, name: c.name, sequenceId: c.sequenceId, status: c.status }));
+    return campaigns.map((c) => ({
+      id: c.id,
+      name: c.name,
+      sequenceId: c.sequenceId,
+      status: c.status,
+      businessHoursProfileId: c.businessHoursProfileId
+    }));
+  });
+
+  ipcMain.handle("businessHoursProfiles:create", async (_event, request) => {
+    const windows = {};
+    for (const day of request.days) {
+      windows[day] = [{ start: request.start, end: request.end }];
+    }
+    const profile = await businessHoursProfileRepository.create({
+      name: request.name,
+      timezone: request.timezone,
+      windows
+    });
+    return { id: profile.id, name: profile.name, timezone: profile.timezone, windows: profile.windows };
+  });
+
+  ipcMain.handle("businessHoursProfiles:list", async () => {
+    const profiles = await businessHoursProfileRepository.list();
+    return profiles.map((p) => ({ id: p.id, name: p.name, timezone: p.timezone, windows: p.windows }));
+  });
+
+  ipcMain.handle("accounts:updateLimits", async (_event, request) => {
+    db.update(accountsTable)
+      .set({ dailySendLimit: request.dailySendLimit ?? null, hourlySendLimit: request.hourlySendLimit ?? null })
+      .where(eq(accountsTable.id, request.accountId))
+      .run();
+    const row = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
+    return serializeAccount(row);
   });
 
   ipcMain.handle("campaigns:setStatus", async (_event, request) => {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type {
   AccountSummary,
+  BusinessHoursProfileSummary,
   CampaignSummary,
   ContactSummary,
   EnrollmentSummary,
@@ -8,12 +9,24 @@ import type {
   TemplateSummary
 } from "../../ipc-boundary/contracts.js";
 
+const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const WEEKDAY_LABELS: Record<string, string> = {
+  monday: "Mon",
+  tuesday: "Tue",
+  wednesday: "Wed",
+  thursday: "Thu",
+  friday: "Fri",
+  saturday: "Sat",
+  sunday: "Sun"
+};
+
 /**
- * The Phase 4 "minimal" Campaign UI (Section 14): template/sequence/campaign creation and
- * enrollment monitoring — proves the Campaign Engine end-to-end (Scheduler tick + Send worker
- * pick this up automatically once contacts are enrolled). A single-step sequence builder here;
- * multi-step sequences and weighted A/B variants are authorable only via the underlying
- * repositories today, not this screen.
+ * The Phase 4 "minimal" Campaign UI (Section 14): sending-account limits, business hours
+ * profiles, template/sequence/campaign creation, and enrollment monitoring — proves the Campaign
+ * Engine end-to-end (Scheduler tick + Send worker pick this up automatically once contacts are
+ * enrolled). A single-step sequence builder here; weighted A/B variants are authorable only via
+ * the underlying repositories today, not this screen. Business hours profiles apply one shared
+ * start/end window to every selected day, not the full per-weekday/multi-window data model.
  */
 export function CampaignsScreen(): JSX.Element {
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -21,7 +34,16 @@ export function CampaignsScreen(): JSX.Element {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [sequences, setSequences] = useState<SequenceSummary[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
+  const [businessHoursProfiles, setBusinessHoursProfiles] = useState<BusinessHoursProfileSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const [accountLimitDrafts, setAccountLimitDrafts] = useState<Record<string, { daily: string; hourly: string }>>({});
+
+  const [bhpName, setBhpName] = useState("");
+  const [bhpTimezone, setBhpTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+  const [bhpDays, setBhpDays] = useState<Set<string>>(new Set(["monday", "tuesday", "wednesday", "thursday", "friday"]));
+  const [bhpStart, setBhpStart] = useState("09:00");
+  const [bhpEnd, setBhpEnd] = useState("17:00");
 
   const [templateName, setTemplateName] = useState("");
   const [templateBody, setTemplateBody] = useState("Hi {{first_name}},\n\nJust checking in.\n\nBest,\nMe");
@@ -34,16 +56,32 @@ export function CampaignsScreen(): JSX.Element {
   const [campaignName, setCampaignName] = useState("");
   const [campaignSequenceId, setCampaignSequenceId] = useState("");
   const [campaignAccountId, setCampaignAccountId] = useState("");
+  const [campaignBusinessHoursProfileId, setCampaignBusinessHoursProfileId] = useState("");
 
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [enrollments, setEnrollments] = useState<EnrollmentSummary[]>([]);
 
   function refreshAll(): void {
-    window.outboundly.listAccounts().then(setAccounts).catch((err) => setError(String(err)));
+    window.outboundly
+      .listAccounts()
+      .then((list) => {
+        setAccounts(list);
+        setAccountLimitDrafts((prev) => {
+          const next = { ...prev };
+          for (const a of list) {
+            if (!next[a.id]) {
+              next[a.id] = { daily: a.dailySendLimit?.toString() ?? "", hourly: a.hourlySendLimit?.toString() ?? "" };
+            }
+          }
+          return next;
+        });
+      })
+      .catch((err) => setError(String(err)));
     window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err)));
     window.outboundly.listTemplates().then(setTemplates).catch((err) => setError(String(err)));
     window.outboundly.listSequences().then(setSequences).catch((err) => setError(String(err)));
     window.outboundly.listCampaigns().then(setCampaigns).catch((err) => setError(String(err)));
+    window.outboundly.listBusinessHoursProfiles().then(setBusinessHoursProfiles).catch((err) => setError(String(err)));
   }
 
   useEffect(() => {
@@ -60,6 +98,47 @@ export function CampaignsScreen(): JSX.Element {
       .then(setEnrollments)
       .catch((err) => setError(String(err)));
   }, [selectedCampaignId]);
+
+  function toggleBhpDay(day: string): void {
+    setBhpDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(day)) next.delete(day);
+      else next.add(day);
+      return next;
+    });
+  }
+
+  async function handleSaveAccountLimits(accountId: string): Promise<void> {
+    setError(null);
+    const draft = accountLimitDrafts[accountId] ?? { daily: "", hourly: "" };
+    try {
+      const updated = await window.outboundly.updateAccountLimits({
+        accountId,
+        dailySendLimit: draft.daily.trim() === "" ? undefined : Number(draft.daily),
+        hourlySendLimit: draft.hourly.trim() === "" ? undefined : Number(draft.hourly)
+      });
+      setAccounts((prev) => prev.map((a) => (a.id === accountId ? updated : a)));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleCreateBusinessHoursProfile(): Promise<void> {
+    setError(null);
+    try {
+      await window.outboundly.createBusinessHoursProfile({
+        name: bhpName,
+        timezone: bhpTimezone,
+        days: [...bhpDays],
+        start: bhpStart,
+        end: bhpEnd
+      });
+      setBhpName("");
+      refreshAll();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
 
   async function handleCreateTemplate(): Promise<void> {
     setError(null);
@@ -99,7 +178,8 @@ export function CampaignsScreen(): JSX.Element {
       await window.outboundly.createCampaign({
         name: campaignName,
         sequenceId: campaignSequenceId,
-        sendingAccountId: campaignAccountId
+        sendingAccountId: campaignAccountId,
+        businessHoursProfileId: campaignBusinessHoursProfileId
       });
       setCampaignName("");
       refreshAll();
@@ -142,7 +222,102 @@ export function CampaignsScreen(): JSX.Element {
       )}
 
       <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>1. Templates ({templates.length})</h2>
+        <h2>1. Sending accounts &amp; limits</h2>
+        <p style={{ color: "#666", fontSize: "0.85rem" }}>
+          Caps applied per account by the Rate Limit Policy and the authoritative Rate Limiter — leave blank for no limit.
+        </p>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+              <th>Account</th>
+              <th>Daily limit</th>
+              <th>Hourly limit</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((a) => {
+              const draft = accountLimitDrafts[a.id] ?? { daily: "", hourly: "" };
+              return (
+                <tr key={a.id} style={{ borderBottom: "1px solid #eee" }}>
+                  <td>{a.emailAddress}</td>
+                  <td>
+                    <input
+                      type="number"
+                      min={0}
+                      value={draft.daily}
+                      onChange={(e) =>
+                        setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, daily: e.target.value } }))
+                      }
+                      style={{ width: "6rem" }}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      min={0}
+                      value={draft.hourly}
+                      onChange={(e) =>
+                        setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, hourly: e.target.value } }))
+                      }
+                      style={{ width: "6rem" }}
+                    />
+                  </td>
+                  <td>
+                    <button onClick={() => handleSaveAccountLimits(a.id)}>Save</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {accounts.length === 0 && <p>No accounts connected yet.</p>}
+      </section>
+
+      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
+        <h2>2. Business hours profiles ({businessHoursProfiles.length})</h2>
+        <p style={{ color: "#666", fontSize: "0.85rem" }}>
+          When a campaign bound to this profile is allowed to send, in the profile's own timezone.
+        </p>
+        <input
+          placeholder="Profile name"
+          value={bhpName}
+          onChange={(e) => setBhpName(e.target.value)}
+          style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
+        />
+        <input
+          placeholder="IANA timezone, e.g. America/New_York"
+          value={bhpTimezone}
+          onChange={(e) => setBhpTimezone(e.target.value)}
+          style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
+        />
+        <div style={{ marginBottom: "0.5rem" }}>
+          {WEEKDAYS.map((day) => (
+            <label key={day} style={{ marginRight: "0.75rem" }}>
+              <input type="checkbox" checked={bhpDays.has(day)} onChange={() => toggleBhpDay(day)} /> {WEEKDAY_LABELS[day]}
+            </label>
+          ))}
+        </div>
+        <label style={{ marginRight: "0.5rem" }}>
+          From <input type="time" value={bhpStart} onChange={(e) => setBhpStart(e.target.value)} />
+        </label>
+        <label style={{ marginRight: "0.5rem" }}>
+          To <input type="time" value={bhpEnd} onChange={(e) => setBhpEnd(e.target.value)} />
+        </label>
+        <button onClick={handleCreateBusinessHoursProfile} disabled={!bhpName || !bhpTimezone || bhpDays.size === 0}>
+          Create profile
+        </button>
+        <ul>
+          {businessHoursProfiles.map((p) => (
+            <li key={p.id}>
+              {p.name} — {p.timezone}, {Object.keys(p.windows).length} day(s) active
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
+        <h2>3. Templates ({templates.length})</h2>
         <input
           placeholder="Template name"
           value={templateName}
@@ -166,7 +341,7 @@ export function CampaignsScreen(): JSX.Element {
       </section>
 
       <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>2. Sequences ({sequences.length})</h2>
+        <h2>4. Sequences ({sequences.length})</h2>
         <input
           placeholder="Sequence name"
           value={sequenceName}
@@ -208,7 +383,7 @@ export function CampaignsScreen(): JSX.Element {
       </section>
 
       <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>3. Campaigns ({campaigns.length})</h2>
+        <h2>5. Campaigns ({campaigns.length})</h2>
         <input
           placeholder="Campaign name"
           value={campaignName}
@@ -231,7 +406,22 @@ export function CampaignsScreen(): JSX.Element {
             </option>
           ))}
         </select>
-        <button onClick={handleCreateCampaign} disabled={!campaignName || !campaignSequenceId || !campaignAccountId}>
+        <select
+          value={campaignBusinessHoursProfileId}
+          onChange={(e) => setCampaignBusinessHoursProfileId(e.target.value)}
+          style={{ marginRight: "0.5rem" }}
+        >
+          <option value="">Select business hours...</option>
+          {businessHoursProfiles.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={handleCreateCampaign}
+          disabled={!campaignName || !campaignSequenceId || !campaignAccountId || !campaignBusinessHoursProfileId}
+        >
           Create campaign
         </button>
 
@@ -240,6 +430,7 @@ export function CampaignsScreen(): JSX.Element {
             <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
               <th>Name</th>
               <th>Status</th>
+              <th>Business hours</th>
               <th></th>
             </tr>
           </thead>
@@ -252,6 +443,7 @@ export function CampaignsScreen(): JSX.Element {
                   </button>
                 </td>
                 <td>{c.status}</td>
+                <td>{businessHoursProfiles.find((p) => p.id === c.businessHoursProfileId)?.name ?? "—"}</td>
                 <td>
                   {c.status === "draft" && <button onClick={() => handleStartCampaign(c.id)}>Start</button>}
                   <button onClick={() => handleEnrollAll(c.id)} disabled={contacts.length === 0}>

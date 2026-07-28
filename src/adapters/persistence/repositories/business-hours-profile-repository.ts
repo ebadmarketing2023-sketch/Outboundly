@@ -32,4 +32,8 @@ export class SqliteBusinessHoursProfileRepository implements BusinessHoursProfil
     const row = this.db.select().from(businessHoursProfiles).where(eq(businessHoursProfiles.id, id)).get();
     return row ? toDomain(row) : undefined;
   }
+
+  async list(): Promise<BusinessHoursProfile[]> {
+    return this.db.select().from(businessHoursProfiles).all().map(toDomain);
+  }
 }

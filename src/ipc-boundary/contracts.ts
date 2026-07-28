@@ -13,6 +13,18 @@ export interface AccountSummary {
   emailAddress: string;
   displayName?: string;
   status: string;
+  /** Section 15.2's Rate Limit Policy / Section 16.2's authoritative RateLimiter both read these
+   * directly off the account — undefined means no cap configured. */
+  dailySendLimit?: number;
+  hourlySendLimit?: number;
+}
+
+export interface UpdateAccountLimitsRequest {
+  accountId: string;
+  /** undefined/omitted clears the limit (no cap); the renderer always sends both fields so an
+   * emptied input actually clears rather than leaving the previous value untouched. */
+  dailySendLimit?: number;
+  hourlySendLimit?: number;
 }
 
 export interface DraftSummary {
@@ -195,10 +207,31 @@ export interface SequenceSummary {
   stepCount: number;
 }
 
+/** Business Hours Profiles (Section 5.7): when a campaign is allowed to send, in the profile's
+ * own timezone. The UI applies one shared start/end window to every selected day rather than
+ * exposing the underlying per-weekday/multi-window data model directly -- picking several
+ * different windows per day isn't supported by this screen. */
+export interface CreateBusinessHoursProfileRequest {
+  name: string;
+  timezone: string;
+  /** Lowercase full weekday names ("monday".."sunday") this profile is active on. */
+  days: string[];
+  start: string; // "HH:MM", 24-hour
+  end: string;
+}
+
+export interface BusinessHoursProfileSummary {
+  id: string;
+  name: string;
+  timezone: string;
+  windows: Record<string, { start: string; end: string }[]>;
+}
+
 export interface CreateCampaignRequest {
   name: string;
   sequenceId: string;
   sendingAccountId: string;
+  businessHoursProfileId: string;
 }
 
 export interface CampaignSummary {
@@ -206,6 +239,7 @@ export interface CampaignSummary {
   name: string;
   sequenceId: string;
   status: string;
+  businessHoursProfileId: string;
 }
 
 export interface SetCampaignStatusRequest {
@@ -275,4 +309,7 @@ export interface OutboundlyRendererApi {
   setCampaignStatus(request: SetCampaignStatusRequest): Promise<void>;
   enrollContacts(request: EnrollContactsRequest): Promise<EnrollContactsResponse>;
   listEnrollments(request: ListEnrollmentsRequest): Promise<EnrollmentSummary[]>;
+  createBusinessHoursProfile(request: CreateBusinessHoursProfileRequest): Promise<BusinessHoursProfileSummary>;
+  listBusinessHoursProfiles(): Promise<BusinessHoursProfileSummary[]>;
+  updateAccountLimits(request: UpdateAccountLimitsRequest): Promise<AccountSummary>;
 }
