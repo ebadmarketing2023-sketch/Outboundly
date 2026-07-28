@@ -23,6 +23,18 @@ export interface NewMessageInput {
    * explains why), used to detect a reply against every active enrollment a contact has, not just
    * the one this specific message belongs to (Section 14.3's fan-out). */
   campaignEnrollmentId?: string;
+  /** Set alongside campaignEnrollmentId (Section 14.3) so the Send worker (Section 21.1) can
+   * re-fetch the original Draft and rebuild its MIME with the final dispatch account, which can
+   * differ from the Scheduler's original proposal (Section 16.3's Provider Selector substitution). */
+  draftId?: string;
+}
+
+export interface StoredMessageSummary {
+  id: string;
+  accountId: string;
+  toAddresses: string[];
+  campaignEnrollmentId?: string;
+  draftId?: string;
 }
 
 /**
@@ -46,4 +58,12 @@ export interface ConversationRepository {
   insertMessage(input: NewMessageInput): Promise<string>;
   insertReferenceEdges(messageId: string, ancestorChain: string[]): Promise<void>;
   upsertParticipants(threadId: string, participants: DerivedParticipant[]): Promise<void>;
+  /** Transitions a queued campaign message (Section 14.3) to its final delivered state once the
+   * Send worker (Section 21.1) actually dispatches it -- the row already exists (created "queued"
+   * at enqueue time), so this updates it in place rather than inserting a second row. */
+  markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string }): Promise<void>;
+  /** The minimal fields the Send worker (Section 21.1) needs to dispatch a queued message it
+   * didn't create itself -- which account it was queued against, its recipient (to resolve the
+   * contact for live personalization), and the Draft/enrollment it was built from. */
+  findMessageById(messageId: string): Promise<StoredMessageSummary | undefined>;
 }

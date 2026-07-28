@@ -50,6 +50,10 @@ class InMemoryConversationRepository implements ConversationRepository {
   }
   async insertReferenceEdges(): Promise<void> {}
   async upsertParticipants(): Promise<void> {}
+  async markMessageSent(): Promise<void> {}
+  async findMessageById(): Promise<undefined> {
+    return undefined;
+  }
 }
 
 class InMemoryDeliverabilityReportRepository implements DeliverabilityReportRepository {

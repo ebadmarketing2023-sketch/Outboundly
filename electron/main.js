@@ -30,6 +30,22 @@ import { sendDraftMessage } from "../dist/application/send-message/send-message.
 import { syncInboxForAccount } from "../dist/application/sync-inbox/sync-inbox.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
 import { generateId } from "../dist/core/shared-kernel/ids.js";
+import { SqliteContactRepository } from "../dist/adapters/persistence/repositories/contact-repository.js";
+import { SqliteSuppressionListRepository } from "../dist/adapters/persistence/repositories/suppression-list-repository.js";
+import { SqliteEnrollmentRepository } from "../dist/adapters/persistence/repositories/enrollment-repository.js";
+import { SqliteCampaignRepository } from "../dist/adapters/persistence/repositories/campaign-repository.js";
+import { SqliteSequenceRepository } from "../dist/adapters/persistence/repositories/sequence-repository.js";
+import { SqliteTemplateRepository } from "../dist/adapters/persistence/repositories/template-repository.js";
+import { SqliteTemplateVariantRepository } from "../dist/adapters/persistence/repositories/template-variant-repository.js";
+import { SqliteSubjectVariantRepository } from "../dist/adapters/persistence/repositories/subject-variant-repository.js";
+import { SqliteBusinessHoursProfileRepository } from "../dist/adapters/persistence/repositories/business-hours-profile-repository.js";
+import { SqliteWarmupProfileRepository } from "../dist/adapters/persistence/repositories/warmup-profile-repository.js";
+import { SqliteDelayPolicyConfigRepository } from "../dist/adapters/persistence/repositories/delay-policy-config-repository.js";
+import { SqliteSendQueueRepository } from "../dist/adapters/persistence/repositories/send-queue-repository.js";
+import { SqliteRateLimiter } from "../dist/adapters/persistence/rate-limiter.js";
+import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
+import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
+import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -71,6 +87,25 @@ let accountHealthMetricsSource;
 let accountHealthRepository;
 let domainAuthChecker;
 let labReportRepository;
+let contactRepository;
+let suppressionListRepository;
+let enrollmentRepository;
+let campaignRepository;
+let sequenceRepository;
+let templateRepository;
+let templateVariantRepository;
+let subjectVariantRepository;
+let businessHoursProfileRepository;
+let warmupProfileRepository;
+let delayPolicyConfigRepository;
+let sendQueueRepository;
+let rateLimiter;
+let providerSelector;
+let schedulerTickTimer;
+let sendWorkerTickTimer;
+
+const SCHEDULER_TICK_INTERVAL_MS = 60_000;
+const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
 
 function initServices() {
   const dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -91,6 +126,85 @@ function initServices() {
   accountHealthRepository = new SqliteAccountHealthRepository(db);
   domainAuthChecker = new DnsDomainAuthChecker();
   labReportRepository = new SqliteLabReportRepository(db);
+  contactRepository = new SqliteContactRepository(db);
+  suppressionListRepository = new SqliteSuppressionListRepository(db);
+  enrollmentRepository = new SqliteEnrollmentRepository(db);
+  campaignRepository = new SqliteCampaignRepository(db);
+  sequenceRepository = new SqliteSequenceRepository(db);
+  templateRepository = new SqliteTemplateRepository(db);
+  templateVariantRepository = new SqliteTemplateVariantRepository(db);
+  subjectVariantRepository = new SqliteSubjectVariantRepository(db);
+  businessHoursProfileRepository = new SqliteBusinessHoursProfileRepository(db);
+  warmupProfileRepository = new SqliteWarmupProfileRepository(db);
+  delayPolicyConfigRepository = new SqliteDelayPolicyConfigRepository(db);
+  sendQueueRepository = new SqliteSendQueueRepository(db);
+  rateLimiter = new SqliteRateLimiter(db);
+  providerSelector = new SqliteProviderSelector(db, accountHealthRepository, rateLimiter);
+}
+
+/** Dependencies shared by both the Scheduler tick and fireEnrollmentStep's own callers (Section
+ * 14.3, Section 21.1). */
+function campaignEngineDeps() {
+  return {
+    db,
+    businessHoursProfileRepository,
+    warmupProfileRepository,
+    delayPolicyConfigRepository,
+    campaignRepository,
+    sequenceRepository,
+    templateRepository,
+    templateVariantRepository,
+    subjectVariantRepository,
+    contactRepository,
+    suppressionListRepository,
+    enrollmentRepository,
+    sendQueueRepository,
+    deliverabilityReportRepository,
+    conversationRepository,
+    draftLifecycle
+  };
+}
+
+async function getProviderForAccount(accountId) {
+  const account = db.select().from(accountsTable).where(eq(accountsTable.id, accountId)).get();
+  return providerFor(account);
+}
+
+/** Background workers (Section 21.1): fixed-interval Scheduler tick and Send worker, coordinated
+ * purely through the database (Section 21.2) -- each tick's own failure isolation (Section 21.3)
+ * means a bad interval run is logged and skipped, never left to crash the process or the timer. */
+function startBackgroundWorkers() {
+  schedulerTickTimer = setInterval(() => {
+    runSchedulerTick(campaignEngineDeps(), new Date()).catch((err) => {
+      console.error("[scheduler-tick] failed:", err);
+    });
+  }, SCHEDULER_TICK_INTERVAL_MS);
+
+  sendWorkerTickTimer = setInterval(() => {
+    runSendWorkerTick(
+      {
+        db,
+        sendQueueRepository,
+        rateLimiter,
+        providerSelector,
+        conversationRepository,
+        enrollmentRepository,
+        campaignRepository,
+        contactRepository,
+        draftRepository,
+        draftLifecycle,
+        getProviderForAccount
+      },
+      new Date()
+    ).catch((err) => {
+      console.error("[send-worker-tick] failed:", err);
+    });
+  }, SEND_WORKER_TICK_INTERVAL_MS);
+}
+
+function stopBackgroundWorkers() {
+  clearInterval(schedulerTickTimer);
+  clearInterval(sendWorkerTickTimer);
 }
 
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
@@ -501,6 +615,7 @@ function createWindow() {
 app.whenReady().then(() => {
   initServices();
   registerIpcHandlers();
+  startBackgroundWorkers();
   createWindow();
 
   app.on("activate", () => {
@@ -510,4 +625,8 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  stopBackgroundWorkers();
 });

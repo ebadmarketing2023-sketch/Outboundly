@@ -135,4 +135,8 @@ export class SqliteSendQueueRepository implements SendQueueRepository {
   async markCancelled(id: SendQueueId): Promise<void> {
     this.db.update(sendQueue).set({ status: "cancelled" }).where(eq(sendQueue.id, id)).run();
   }
+
+  async releaseForRetry(id: SendQueueId, earliestSendAt: Date): Promise<void> {
+    this.db.update(sendQueue).set({ status: "pending", earliestSendAt }).where(eq(sendQueue.id, id)).run();
+  }
 }

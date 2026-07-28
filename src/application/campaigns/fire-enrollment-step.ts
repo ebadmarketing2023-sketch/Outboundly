@@ -175,6 +175,7 @@ export async function fireEnrollmentStep(
     bodyText: bodies.text,
     status: "queued",
     campaignEnrollmentId: enrollment.id,
+    draftId: draft.id,
     occurredAt: now
   });
 

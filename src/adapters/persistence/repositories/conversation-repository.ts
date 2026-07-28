@@ -4,7 +4,8 @@ import type { DerivedParticipant } from "../../../core/conversation/participants
 import type { ConversationState } from "../../../core/conversation/conversation-engine.js";
 import type {
   ConversationRepository as ConversationRepositoryPort,
-  NewMessageInput
+  NewMessageInput,
+  StoredMessageSummary
 } from "../../../ports/conversation-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
 import {
@@ -160,11 +161,32 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
         receivedAt: input.receivedAt,
         status: input.status,
         campaignEnrollmentId: input.campaignEnrollmentId,
+        draftId: input.draftId,
         createdAt: now,
         updatedAt: now
       })
       .run();
     return id;
+  }
+
+  async markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string }): Promise<void> {
+    this.db
+      .update(messages)
+      .set({ status: "sent", sentAt: input.sentAt, providerMessageId: input.providerMessageId, updatedAt: new Date() })
+      .where(eq(messages.id, messageId))
+      .run();
+  }
+
+  async findMessageById(messageId: string): Promise<StoredMessageSummary | undefined> {
+    const row = this.db.select().from(messages).where(eq(messages.id, messageId)).get();
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      accountId: row.accountId,
+      toAddresses: row.toAddresses,
+      campaignEnrollmentId: row.campaignEnrollmentId ?? undefined,
+      draftId: row.draftId ?? undefined
+    };
   }
 
   async insertReferenceEdges(messageId: string, ancestorChain: string[]): Promise<void> {

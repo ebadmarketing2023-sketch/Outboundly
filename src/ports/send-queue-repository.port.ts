@@ -43,4 +43,8 @@ export interface SendQueueRepository {
    * the max-attempt ceiling is reached (Section 16.4). */
   markFailed(id: SendQueueId, error: string, options: { permanent: boolean; now: Date }): Promise<void>;
   markCancelled(id: SendQueueId): Promise<void>;
+  /** Releases a claimed row back to pending for a later retry without touching attemptCount or
+   * lastError -- for the Rate Limiter's retryAfter (Section 16.2) or a momentarily-ineligible
+   * Provider Selector result (Section 16.3), neither of which is a failure of the send itself. */
+  releaseForRetry(id: SendQueueId, earliestSendAt: Date): Promise<void>;
 }

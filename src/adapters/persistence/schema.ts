@@ -97,6 +97,11 @@ export const messages = sqliteTable("messages", {
   // the whole table, which isn't worth the risk against real installs' existing data for a
   // referential-integrity nicety. Nullable, since a manually composed message never has one.
   campaignEnrollmentId: text("campaign_enrollment_id"),
+  // A brand-new column (unlike campaignEnrollmentId above) so a real FK is safe to add here --
+  // set for a queued-but-not-yet-sent message (Section 14.3) so the Send worker (Section 21.1) can
+  // re-fetch the original Draft and rebuild its MIME with the final dispatch account, which can
+  // differ from the Scheduler's original proposal (Section 16.3's Provider Selector substitution).
+  draftId: text("draft_id").references(() => drafts.id),
   policyTraceJson: text("policy_trace_json", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()

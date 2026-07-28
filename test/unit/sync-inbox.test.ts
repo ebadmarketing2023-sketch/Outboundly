@@ -87,6 +87,10 @@ class InMemoryConversationRepository implements ConversationRepository {
   }
   async insertReferenceEdges() {}
   async upsertParticipants(_threadId: string, _participants: DerivedParticipant[]) {}
+  async markMessageSent() {}
+  async findMessageById() {
+    return undefined;
+  }
 }
 
 describe("syncInboxForAccount (Section 11 orchestration)", () => {

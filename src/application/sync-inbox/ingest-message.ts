@@ -33,6 +33,7 @@ export interface IngestMessageInput {
    * 21.1) updates it to "sent" once delivery actually completes. */
   status?: string;
   campaignEnrollmentId?: string;
+  draftId?: string;
 }
 
 export interface IngestMessageResult {
@@ -111,7 +112,8 @@ export async function ingestMessage(
     sentAt: input.direction === "outbound" && status === "sent" ? occurredAt : undefined,
     receivedAt: input.direction === "inbound" ? occurredAt : undefined,
     status,
-    campaignEnrollmentId: input.campaignEnrollmentId
+    campaignEnrollmentId: input.campaignEnrollmentId,
+    draftId: input.draftId
   });
 
   await repo.insertReferenceEdges(messageId, ancestorChain);
