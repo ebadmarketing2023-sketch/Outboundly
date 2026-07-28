@@ -1,4 +1,4 @@
-import { and, eq, gte, lt } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import type { DailyRollupBucket } from "../../../core/analytics/rollup.js";
 import { asAccountId, generateId, type AccountId } from "../../../core/shared-kernel/ids.js";
 import type { AccountMetricsRollupRepository, AccountMetricsRollupRow } from "../../../ports/account-metrics-rollup.port.js";
@@ -56,7 +56,7 @@ export class SqliteAccountMetricsRollupRepository implements AccountMetricsRollu
         and(
           eq(accountMetricsRollup.accountId, accountId),
           gte(accountMetricsRollup.periodStart, since),
-          lt(accountMetricsRollup.periodStart, until)
+          lte(accountMetricsRollup.periodStart, until)
         )
       )
       .all()

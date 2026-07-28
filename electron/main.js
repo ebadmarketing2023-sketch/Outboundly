@@ -48,6 +48,8 @@ import { SqliteEventRepository } from "../dist/adapters/persistence/repositories
 import { SqliteCampaignMetricsRollupRepository } from "../dist/adapters/persistence/repositories/campaign-metrics-rollup-repository.js";
 import { SqliteAccountMetricsRollupRepository } from "../dist/adapters/persistence/repositories/account-metrics-rollup-repository.js";
 import { computeRollups } from "../dist/adapters/persistence/compute-rollups.js";
+import { SqliteInsightRepository } from "../dist/adapters/persistence/repositories/insight-repository.js";
+import { computeInsights } from "../dist/adapters/persistence/compute-insights.js";
 import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
@@ -110,6 +112,7 @@ let providerSelector;
 let eventRepository;
 let campaignMetricsRollupRepository;
 let accountMetricsRollupRepository;
+let insightRepository;
 let schedulerTickTimer;
 let sendWorkerTickTimer;
 let rollupTickTimer;
@@ -154,6 +157,7 @@ function initServices() {
   eventRepository = new SqliteEventRepository(db);
   campaignMetricsRollupRepository = new SqliteCampaignMetricsRollupRepository(db);
   accountMetricsRollupRepository = new SqliteAccountMetricsRollupRepository(db);
+  insightRepository = new SqliteInsightRepository(db);
 }
 
 /** Dependencies shared by both the Scheduler tick and fireEnrollmentStep's own callers (Section
@@ -184,10 +188,11 @@ async function getProviderForAccount(accountId) {
   return providerFor(account);
 }
 
-/** Background workers (Section 21.1): fixed-interval Scheduler tick, Send worker, and Analytics
- * rollup, coordinated purely through the database (Section 21.2) -- each tick's own failure
- * isolation (Section 21.3) means a bad interval run is logged and skipped, never left to crash
- * the process or the timer. */
+/** Background workers (Section 21.1): fixed-interval Scheduler tick, Send worker, and the
+ * Analytics rollup + Insights worker pair (the latter chained onto the former's tick, since
+ * insights are meant to run "after rollups"), coordinated purely through the database (Section
+ * 21.2) -- each tick's own failure isolation (Section 21.3) means a bad interval run is logged and
+ * skipped, never left to crash the process or the timer. */
 function startBackgroundWorkers() {
   schedulerTickTimer = setInterval(() => {
     runSchedulerTick(campaignEngineDeps(), new Date()).catch((err) => {
@@ -219,12 +224,20 @@ function startBackgroundWorkers() {
   }, SEND_WORKER_TICK_INTERVAL_MS);
 
   rollupTickTimer = setInterval(() => {
-    computeRollups(
-      { db, campaignRepository, eventRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository },
-      new Date()
-    ).catch((err) => {
-      console.error("[rollup-tick] failed:", err);
-    });
+    const now = new Date();
+    computeRollups({ db, campaignRepository, eventRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository }, now)
+      .then(() =>
+        // Insights worker (Section 21.1): "Fixed interval, after rollups" -- chained onto the same
+        // tick rather than its own timer so it always reads rollups this tick just recomputed, never
+        // a stale prior run.
+        computeInsights(
+          { db, campaignRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository, insightRepository },
+          now
+        )
+      )
+      .catch((err) => {
+        console.error("[rollup-tick] failed:", err);
+      });
   }, ROLLUP_TICK_INTERVAL_MS);
 }
 
