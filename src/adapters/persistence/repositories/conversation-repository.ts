@@ -5,6 +5,7 @@ import type { ConversationState } from "../../../core/conversation/conversation-
 import type {
   ConversationRepository as ConversationRepositoryPort,
   NewMessageInput,
+  ReplyClassification,
   StoredMessageSummary
 } from "../../../ports/conversation-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
@@ -185,12 +186,17 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
     return {
       id: row.id,
       accountId: row.accountId,
+      threadId: row.threadId ?? undefined,
       toAddresses: row.toAddresses,
       campaignEnrollmentId: row.campaignEnrollmentId ?? undefined,
       draftId: row.draftId ?? undefined,
       templateId: row.templateId ?? undefined,
       subjectVariantId: row.subjectVariantId ?? undefined
     };
+  }
+
+  async setMessageReplyClassification(messageId: string, classification: ReplyClassification): Promise<void> {
+    this.db.update(messages).set({ replyClassification: classification, updatedAt: new Date() }).where(eq(messages.id, messageId)).run();
   }
 
   async findCampaignEnrollmentIdForThread(threadId: string): Promise<string | undefined> {

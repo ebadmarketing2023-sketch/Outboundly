@@ -28,7 +28,10 @@ import { serializeSmtpImapCredentials } from "../dist/adapters/providers/smtp-im
 import { NativeKeychainTokenVault } from "../dist/adapters/credential-vault/native-keychain-token-vault.js";
 import { sendDraftMessage } from "../dist/application/send-message/send-message.js";
 import { syncInboxForAccount } from "../dist/application/sync-inbox/sync-inbox.js";
-import { handleBounceDetected, handleReplyDetected } from "../dist/application/campaigns/stop-enrollments.js";
+import { handleBounceDetected, handleReplyDetected, unsubscribeContact } from "../dist/application/campaigns/stop-enrollments.js";
+import { recordConversion } from "../dist/application/analytics/record-conversion.js";
+import { labelReply } from "../dist/application/analytics/label-reply.js";
+import { getCampaignAnalytics } from "../dist/adapters/persistence/campaign-analytics-support.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
 import { generateId } from "../dist/core/shared-kernel/ids.js";
 import { SqliteContactRepository } from "../dist/adapters/persistence/repositories/contact-repository.js";
@@ -800,6 +803,49 @@ function registerIpcHandlers() {
       nextSendAt: e.nextSendAt ? e.nextSendAt.toISOString() : undefined,
       enrolledAt: e.enrolledAt.toISOString()
     }));
+  });
+
+  ipcMain.handle("analytics:getCampaignAnalytics", async (_event, request) => {
+    return getCampaignAnalytics(
+      { db, campaignRepository, sequenceRepository, enrollmentRepository, campaignMetricsRollupRepository },
+      request.campaignId,
+      new Date()
+    );
+  });
+
+  ipcMain.handle("insights:listActive", async () => {
+    const list = await insightRepository.findActiveFeed(50);
+    return list.map((i) => ({
+      id: i.id,
+      scope: i.scope,
+      scopeId: i.scopeId,
+      insightType: i.insightType,
+      severity: i.severity,
+      message: i.message,
+      explanation: i.explanation,
+      recommendedAction: i.recommendedAction,
+      generatedAt: i.generatedAt.toISOString()
+    }));
+  });
+
+  ipcMain.handle("insights:dismiss", async (_event, request) => {
+    await insightRepository.dismiss(request.insightId);
+  });
+
+  ipcMain.handle("analytics:markConversion", async (_event, request) => {
+    await recordConversion(eventRepository, request.campaignId, request.contactId);
+  });
+
+  ipcMain.handle("campaigns:unsubscribeContact", async (_event, request) => {
+    await unsubscribeContact(
+      { enrollmentRepository, campaignRepository, sequenceRepository, contactRepository, suppressionListRepository, eventRepository },
+      request.contactId,
+      request.campaignId
+    );
+  });
+
+  ipcMain.handle("inbox:setReplyClassification", async (_event, request) => {
+    await labelReply({ conversationRepository, enrollmentRepository, eventRepository }, request.messageId, request.classification);
   });
 }
 

@@ -270,6 +270,76 @@ export interface EnrollmentSummary {
   enrolledAt: string;
 }
 
+/** Campaign dashboard (Section 20.5): primary metrics (Section 20.2) from the materialized rollup
+ * tables, plus a per-step funnel and stop-reason breakdown. */
+export interface CampaignAnalyticsRequest {
+  campaignId: string;
+}
+
+export interface StepFunnelEntrySummary {
+  stepOrder: number;
+  templateId: string;
+  sentCount: number;
+}
+
+export interface StopReasonBreakdownSummary {
+  active: number;
+  completed: number;
+  stopped_reply: number;
+  stopped_bounce: number;
+  stopped_manual: number;
+  stopped_suppressed: number;
+}
+
+export interface CampaignAnalyticsSummary {
+  sentCount: number;
+  bouncedCount: number;
+  repliedCount: number;
+  positiveReplyCount: number;
+  unsubscribedCount: number;
+  conversionCount: number;
+  replyRate?: number;
+  positiveReplyRate?: number;
+  bounceRate?: number;
+  deliveryRate?: number;
+  stepFunnel: StepFunnelEntrySummary[];
+  stopReasonBreakdown: StopReasonBreakdownSummary;
+}
+
+/** Insights feed (Section 20.3, Section 20.5). */
+export interface InsightSummary {
+  id: string;
+  scope: string;
+  scopeId?: string;
+  insightType: string;
+  severity: string;
+  message: string;
+  explanation: string;
+  recommendedAction?: string;
+  generatedAt: string;
+}
+
+export interface DismissInsightRequest {
+  insightId: string;
+}
+
+export interface MarkConversionRequest {
+  campaignId: string;
+  contactId: string;
+}
+
+export interface UnsubscribeContactRequest {
+  contactId: string;
+  campaignId?: string;
+}
+
+export type ReplyClassification = "interested" | "not_interested" | "out_of_office";
+
+export interface SetReplyClassificationRequest {
+  messageId: string;
+  classification: ReplyClassification;
+}
+
 export interface ConnectSmtpImapRequest {
   emailAddress: string;
   displayName?: string;
@@ -313,4 +383,10 @@ export interface OutboundlyRendererApi {
   createBusinessHoursProfile(request: CreateBusinessHoursProfileRequest): Promise<BusinessHoursProfileSummary>;
   listBusinessHoursProfiles(): Promise<BusinessHoursProfileSummary[]>;
   updateAccountLimits(request: UpdateAccountLimitsRequest): Promise<AccountSummary>;
+  getCampaignAnalytics(request: CampaignAnalyticsRequest): Promise<CampaignAnalyticsSummary>;
+  listActiveInsights(): Promise<InsightSummary[]>;
+  dismissInsight(request: DismissInsightRequest): Promise<void>;
+  markConversion(request: MarkConversionRequest): Promise<void>;
+  unsubscribeContact(request: UnsubscribeContactRequest): Promise<void>;
+  setReplyClassification(request: SetReplyClassificationRequest): Promise<void>;
 }

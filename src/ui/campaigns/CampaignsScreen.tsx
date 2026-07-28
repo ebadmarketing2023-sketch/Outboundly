@@ -223,6 +223,25 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
+  async function handleMarkConversion(campaignId: string, contactId: string): Promise<void> {
+    setError(null);
+    try {
+      await window.outboundly.markConversion({ campaignId, contactId });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleUnsubscribe(campaignId: string, contactId: string): Promise<void> {
+    setError(null);
+    try {
+      await window.outboundly.unsubscribeContact({ campaignId, contactId });
+      window.outboundly.listEnrollments({ campaignId }).then(setEnrollments);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   return (
     <div style={{ fontFamily: "sans-serif", maxWidth: 900, margin: "2rem auto" }}>
       <h1>Outboundly — Campaigns (Phase 4)</h1>
@@ -507,6 +526,7 @@ export function CampaignsScreen(): JSX.Element {
                   <th>Status</th>
                   <th>Next send</th>
                   <th>Enrolled</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -516,6 +536,12 @@ export function CampaignsScreen(): JSX.Element {
                     <td>{e.status}</td>
                     <td>{e.nextSendAt ?? "—"}</td>
                     <td>{e.enrolledAt}</td>
+                    <td>
+                      <button onClick={() => handleMarkConversion(selectedCampaignId, e.contactId)}>Mark converted</button>
+                      <button onClick={() => handleUnsubscribe(selectedCampaignId, e.contactId)} style={{ marginLeft: "0.25rem" }}>
+                        Unsubscribe
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

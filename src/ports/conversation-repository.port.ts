@@ -37,12 +37,15 @@ export interface NewMessageInput {
 export interface StoredMessageSummary {
   id: string;
   accountId: string;
+  threadId?: string;
   toAddresses: string[];
   campaignEnrollmentId?: string;
   draftId?: string;
   templateId?: string;
   subjectVariantId?: string;
 }
+
+export type ReplyClassification = "interested" | "not_interested" | "out_of_office";
 
 /**
  * The database-facing half of the Conversation Engine (Section 11) as a port, so the pure
@@ -77,4 +80,7 @@ export interface ConversationRepository {
    * correlate a bounce notification that threaded back to one of our own sends (Section 14.2's
    * ReplyDetected/BounceDetected fan-out reuses the same thread-placement machinery). */
   findCampaignEnrollmentIdForThread(threadId: string): Promise<string | undefined>;
+  /** User-applied label on an inbound reply message (Section 20.2) -- there is no automatic
+   * classifier; "interested" is what feeds the Positive Reply Rate primary metric. */
+  setMessageReplyClassification(messageId: string, classification: ReplyClassification): Promise<void>;
 }

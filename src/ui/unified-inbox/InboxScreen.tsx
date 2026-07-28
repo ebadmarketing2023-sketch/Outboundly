@@ -89,6 +89,14 @@ export function InboxScreen(): JSX.Element {
     }
   }
 
+  async function handleLabelReply(messageId: string, classification: "interested" | "not_interested" | "out_of_office"): Promise<void> {
+    try {
+      await window.outboundly.setReplyClassification({ messageId, classification });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   return (
     <div style={{ fontFamily: "sans-serif", maxWidth: 800, margin: "2rem auto" }}>
       <h1>Outboundly — Unified Inbox (Phase 2)</h1>
@@ -153,6 +161,17 @@ export function InboxScreen(): JSX.Element {
               </div>
               <div style={{ margin: "0.4rem 0" }}>{m.bodyText}</div>
               <button onClick={() => handleStar(m.id, !m.starred)}>{m.starred ? "Unstar" : "Star"}</button>
+              {m.direction === "inbound" && (
+                <span style={{ marginLeft: "0.5rem" }}>
+                  <button onClick={() => handleLabelReply(m.id, "interested")}>Interested</button>
+                  <button onClick={() => handleLabelReply(m.id, "not_interested")} style={{ marginLeft: "0.25rem" }}>
+                    Not interested
+                  </button>
+                  <button onClick={() => handleLabelReply(m.id, "out_of_office")} style={{ marginLeft: "0.25rem" }}>
+                    Out of office
+                  </button>
+                </span>
+              )}
             </div>
           ))}
         </div>

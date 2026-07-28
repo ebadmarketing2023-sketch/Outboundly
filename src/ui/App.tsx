@@ -5,9 +5,10 @@ import { AccountHealthScreen } from "./account-health/AccountHealthScreen.js";
 import { DeliverabilityLabScreen } from "./deliverability-lab/DeliverabilityLabScreen.js";
 import { LeadsScreen } from "./leads/LeadsScreen.js";
 import { CampaignsScreen } from "./campaigns/CampaignsScreen.js";
+import { AnalyticsScreen } from "./analytics/AnalyticsScreen.js";
 import { BUILT_AT } from "./build-info.js";
 
-type Tab = "compose" | "inbox" | "account-health" | "deliverability-lab" | "leads" | "campaigns";
+type Tab = "compose" | "inbox" | "account-health" | "deliverability-lab" | "leads" | "campaigns" | "analytics";
 
 export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>("compose");
@@ -33,6 +34,9 @@ export function App(): JSX.Element {
         <button onClick={() => setTab("campaigns")} disabled={tab === "campaigns"}>
           Campaigns
         </button>
+        <button onClick={() => setTab("analytics")} disabled={tab === "analytics"}>
+          Analytics
+        </button>
         <span style={{ marginLeft: "auto", color: "#888", fontSize: "0.8rem" }}>Build: {BUILT_AT}</span>
       </nav>
       {tab === "compose" && <ComposeScreen />}
@@ -41,6 +45,7 @@ export function App(): JSX.Element {
       {tab === "deliverability-lab" && <DeliverabilityLabScreen />}
       {tab === "leads" && <LeadsScreen />}
       {tab === "campaigns" && <CampaignsScreen />}
+      {tab === "analytics" && <AnalyticsScreen />}
     </div>
   );
 }

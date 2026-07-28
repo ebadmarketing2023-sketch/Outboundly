@@ -34,5 +34,11 @@ contextBridge.exposeInMainWorld("outboundly", {
   listEnrollments: (request) => ipcRenderer.invoke("campaigns:listEnrollments", request),
   createBusinessHoursProfile: (request) => ipcRenderer.invoke("businessHoursProfiles:create", request),
   listBusinessHoursProfiles: () => ipcRenderer.invoke("businessHoursProfiles:list"),
-  updateAccountLimits: (request) => ipcRenderer.invoke("accounts:updateLimits", request)
+  updateAccountLimits: (request) => ipcRenderer.invoke("accounts:updateLimits", request),
+  getCampaignAnalytics: (request) => ipcRenderer.invoke("analytics:getCampaignAnalytics", request),
+  listActiveInsights: () => ipcRenderer.invoke("insights:listActive"),
+  dismissInsight: (request) => ipcRenderer.invoke("insights:dismiss", request),
+  markConversion: (request) => ipcRenderer.invoke("analytics:markConversion", request),
+  unsubscribeContact: (request) => ipcRenderer.invoke("campaigns:unsubscribeContact", request),
+  setReplyClassification: (request) => ipcRenderer.invoke("inbox:setReplyClassification", request)
 });

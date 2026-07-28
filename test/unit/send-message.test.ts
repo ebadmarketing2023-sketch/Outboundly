@@ -57,6 +57,7 @@ class InMemoryConversationRepository implements ConversationRepository {
   async findCampaignEnrollmentIdForThread(): Promise<undefined> {
     return undefined;
   }
+  async setMessageReplyClassification(): Promise<void> {}
 }
 
 class InMemoryDeliverabilityReportRepository implements DeliverabilityReportRepository {
