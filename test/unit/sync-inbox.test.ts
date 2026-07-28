@@ -165,4 +165,43 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
     // ...and the cursor still advances, so the sync isn't stuck retrying the same batch forever.
     expect(repo.syncCursors.get("acct-1")).toBe("cursor-1");
   });
+
+  it("invokes onReplyDetected only for a genuine reply, not a new/cold conversation (Section 14.3)", async () => {
+    const repo = new InMemoryConversationRepository();
+    repo.messageIdToThreadId.set("<m1@x>", "thread-1");
+
+    const provider = new FakeMailProvider({
+      "msg-reply": {
+        providerMessageId: "msg-reply",
+        messageIdHeader: "<m2@x>",
+        inReplyToHeader: "<m1@x>",
+        referencesHeader: "<m1@x>",
+        from: "them@example.com",
+        to: ["me@outboundly.app"],
+        subject: "Re: Hello",
+        date: new Date()
+      },
+      "msg-new": {
+        providerMessageId: "msg-new",
+        messageIdHeader: "<m3@x>",
+        from: "someone-else@example.com",
+        to: ["me@outboundly.app"],
+        subject: "New conversation",
+        date: new Date()
+      }
+    });
+
+    const detectedFrom: string[] = [];
+    await syncInboxForAccount({
+      accountId: "acct-1",
+      accountRef,
+      provider,
+      repo,
+      onReplyDetected: async (from) => {
+        detectedFrom.push(from);
+      }
+    });
+
+    expect(detectedFrom).toEqual(["them@example.com"]);
+  });
 });

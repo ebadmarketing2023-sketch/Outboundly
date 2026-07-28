@@ -27,6 +27,12 @@ export interface IngestMessageInput {
   bodyText?: string;
   snippet?: string;
   occurredAt?: Date;
+  /** Defaults to "sent" — the existing behavior for manual compose (Section 9.5) and inbound sync
+   * (Section 11). A campaign step queues its message before it's actually dispatched (Section
+   * 14.3), so it ingests here with status "queued" and no sentAt yet; the Send worker (Section
+   * 21.1) updates it to "sent" once delivery actually completes. */
+  status?: string;
+  campaignEnrollmentId?: string;
 }
 
 export interface IngestMessageResult {
@@ -86,6 +92,7 @@ export async function ingestMessage(
   }
 
   const occurredAt = input.occurredAt ?? new Date();
+  const status = input.status ?? "sent";
   const messageId = await repo.insertMessage({
     accountId: input.accountId,
     threadId,
@@ -101,12 +108,10 @@ export async function ingestMessage(
     bodyHtml: input.bodyHtml,
     bodyText: input.bodyText,
     snippet: input.snippet,
-    sentAt: input.direction === "outbound" ? occurredAt : undefined,
+    sentAt: input.direction === "outbound" && status === "sent" ? occurredAt : undefined,
     receivedAt: input.direction === "inbound" ? occurredAt : undefined,
-    // Both directions land here as "sent": for outbound it means the send pipeline completed,
-    // for inbound it simply means "fully resident" — there's no distinct queued/sending phase
-    // for a message that already arrived. Revisit if a more specific inbound status is ever needed.
-    status: "sent"
+    status,
+    campaignEnrollmentId: input.campaignEnrollmentId
   });
 
   await repo.insertReferenceEdges(messageId, ancestorChain);

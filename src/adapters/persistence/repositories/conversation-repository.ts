@@ -159,6 +159,7 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
         sentAt: input.sentAt,
         receivedAt: input.receivedAt,
         status: input.status,
+        campaignEnrollmentId: input.campaignEnrollmentId,
         createdAt: now,
         updatedAt: now
       })

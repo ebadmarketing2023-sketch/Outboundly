@@ -19,6 +19,10 @@ export interface NewMessageInput {
   sentAt?: Date;
   receivedAt?: Date;
   status: string;
+  /** Set for campaign-originated messages (Section 14.3) — no FK (Section 5.3's schema comment
+   * explains why), used to detect a reply against every active enrollment a contact has, not just
+   * the one this specific message belongs to (Section 14.3's fan-out). */
+  campaignEnrollmentId?: string;
 }
 
 /**

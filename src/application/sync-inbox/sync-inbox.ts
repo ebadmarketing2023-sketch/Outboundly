@@ -15,6 +15,12 @@ export interface SyncInboxParams {
   accountRef: AccountRef;
   provider: MailProvider;
   repo: ConversationRepository;
+  /** Invoked for a genuine reply — an inbound message attached to an existing thread, not a
+   * cold/new one — so the Campaign Engine can stop matching active enrollments (Section 14.3's
+   * ReplyDetected event). Composed in by the caller so this stays decoupled from the Campaign
+   * Engine's own repositories; wrapped in the same per-message failure isolation as ingestion
+   * itself, so a stop-condition failure can't abort the rest of the sync. */
+  onReplyDetected?: (fromAddress: string) => Promise<void>;
 }
 
 export interface SyncInboxResult {
@@ -72,6 +78,7 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
         newMessageCount++;
         if (direction === "inbound" && result.outcome !== "new-thread") {
           repliesDetected++;
+          await params.onReplyDetected?.(normalized.from);
         }
       }
     } catch (err) {
