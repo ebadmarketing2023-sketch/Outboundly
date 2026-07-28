@@ -1,3 +1,4 @@
+import { looksLikeBounceNotification } from "../../core/campaigns/bounce-detection.js";
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
 import type { AccountRef, MailProvider } from "../../ports/mail-provider.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
@@ -21,11 +22,18 @@ export interface SyncInboxParams {
    * Engine's own repositories; wrapped in the same per-message failure isolation as ingestion
    * itself, so a stop-condition failure can't abort the rest of the sync. */
   onReplyDetected?: (fromAddress: string) => Promise<void>;
+  /** Invoked for an inbound message that looks like an automated delivery-failure notice (Section
+   * 14.2's BounceDetected event) and threaded back to an existing conversation — a DSN that
+   * doesn't thread back to one of our own sends can't be correlated to anything and is silently
+   * not detected (see bounce-detection.ts's docblock). Mutually exclusive with onReplyDetected:
+   * an automated bounce is never counted as a genuine reply. */
+  onBounceDetected?: (threadId: string) => Promise<void>;
 }
 
 export interface SyncInboxResult {
   newMessageCount: number;
   repliesDetected: number;
+  bouncesDetected: number;
   /**
    * Refs that failed to fetch/ingest (message deleted/moved since being listed, a transient
    * API error, etc.) — Section 21.3's failure-isolation principle applies here exactly as it
@@ -49,6 +57,7 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
 
   let newMessageCount = 0;
   let repliesDetected = 0;
+  let bouncesDetected = 0;
   const failedRefs: { ref: string; error: string }[] = [];
 
   for (const ref of changeSet.newOrChangedMessageRefs) {
@@ -77,8 +86,13 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
       if (result.outcome !== "duplicate") {
         newMessageCount++;
         if (direction === "inbound" && result.outcome !== "new-thread") {
-          repliesDetected++;
-          await params.onReplyDetected?.(normalized.from);
+          if (looksLikeBounceNotification(normalized.from, normalized.subject)) {
+            bouncesDetected++;
+            await params.onBounceDetected?.(result.threadId);
+          } else {
+            repliesDetected++;
+            await params.onReplyDetected?.(normalized.from);
+          }
         }
       }
     } catch (err) {
@@ -89,5 +103,5 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
   }
 
   await params.repo.setSyncCursor(params.accountId, changeSet.cursor);
-  return { newMessageCount, repliesDetected, failedRefs };
+  return { newMessageCount, repliesDetected, bouncesDetected, failedRefs };
 }

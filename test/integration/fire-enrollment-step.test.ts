@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { fireEnrollmentStep, type FireEnrollmentStepDeps } from "../../src/application/campaigns/fire-enrollment-step.js";
-import { stopEnrollmentsForContact } from "../../src/application/campaigns/stop-enrollments.js";
+import { handleBounceDetected, stopEnrollmentsForContact } from "../../src/application/campaigns/stop-enrollments.js";
 import { DraftLifecycleService } from "../../src/core/drafts/draft-lifecycle.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
 import { SystemClock } from "../../src/ports/clock.port.js";
@@ -24,7 +24,7 @@ import { SqliteSuppressionListRepository } from "../../src/adapters/persistence/
 import { SqliteTemplateRepository } from "../../src/adapters/persistence/repositories/template-repository.js";
 import { SqliteTemplateVariantRepository } from "../../src/adapters/persistence/repositories/template-variant-repository.js";
 import { SqliteWarmupProfileRepository } from "../../src/adapters/persistence/repositories/warmup-profile-repository.js";
-import { accounts, sendQueue } from "../../src/adapters/persistence/schema.js";
+import { accounts, messages, sendQueue } from "../../src/adapters/persistence/schema.js";
 import { asAccountId, generateId } from "../../src/core/shared-kernel/ids.js";
 import { eq } from "drizzle-orm";
 
@@ -401,5 +401,45 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
     const stoppedIds = await stopEnrollmentsForContact(deps, contact.id, "stopped_manual");
     expect(stoppedIds).toEqual([enrollment.id]);
     expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_manual");
+  });
+
+  it("handleBounceDetected correlates a bounce's thread back to the enrollment it belongs to and stops it", async () => {
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
+    });
+    await deps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Subject 1", weight: 1 });
+    await deps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "Subject 2", weight: 1 });
+    const campaign = await deps.campaignRepository.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await deps.contactRepository.upsertByEmail({ email: "bounced-lead@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const fireResult = await fireEnrollmentStep(deps, enrollment, new Date());
+    expect(fireResult.outcome).toBe("enqueued");
+
+    const messageRow = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).get();
+    expect(messageRow?.threadId).toBeDefined();
+
+    const stoppedIds = await handleBounceDetected(deps, messageRow!.threadId!);
+    expect(stoppedIds).toEqual([enrollment.id]);
+    expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_bounce");
+  });
+
+  it("handleBounceDetected is a no-op for a thread with no campaign-originated message", async () => {
+    expect(await handleBounceDetected(deps, "some-unrelated-thread-id")).toEqual([]);
   });
 });

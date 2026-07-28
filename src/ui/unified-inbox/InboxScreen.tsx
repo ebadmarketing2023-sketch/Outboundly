@@ -47,7 +47,10 @@ export function InboxScreen(): JSX.Element {
     try {
       const result = await window.outboundly.syncInbox({ accountId: selectedAccountId });
       const failedNote = result.failedCount > 0 ? `, ${result.failedCount} message(s) failed to sync` : "";
-      setSyncSummary(`${result.newMessageCount} new message(s), ${result.repliesDetected} reply/replies detected${failedNote}`);
+      const bounceNote = result.bouncesDetected > 0 ? `, ${result.bouncesDetected} bounce(s) detected` : "";
+      setSyncSummary(
+        `${result.newMessageCount} new message(s), ${result.repliesDetected} reply/replies detected${bounceNote}${failedNote}`
+      );
       await loadThreads(selectedAccountId);
     } catch (err) {
       setError(String(err));

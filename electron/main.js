@@ -28,6 +28,7 @@ import { serializeSmtpImapCredentials } from "../dist/adapters/providers/smtp-im
 import { NativeKeychainTokenVault } from "../dist/adapters/credential-vault/native-keychain-token-vault.js";
 import { sendDraftMessage } from "../dist/application/send-message/send-message.js";
 import { syncInboxForAccount } from "../dist/application/sync-inbox/sync-inbox.js";
+import { handleBounceDetected, handleReplyDetected } from "../dist/application/campaigns/stop-enrollments.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
 import { generateId } from "../dist/core/shared-kernel/ids.js";
 import { SqliteContactRepository } from "../dist/adapters/persistence/repositories/contact-repository.js";
@@ -191,6 +192,7 @@ function startBackgroundWorkers() {
         conversationRepository,
         enrollmentRepository,
         campaignRepository,
+        sequenceRepository,
         contactRepository,
         draftRepository,
         draftLifecycle,
@@ -506,11 +508,16 @@ function registerIpcHandlers() {
     if (!account) throw new Error("Account not found");
 
     const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
+    const stopEnrollmentDeps = { enrollmentRepository, campaignRepository, sequenceRepository, contactRepository, conversationRepository };
     const result = await syncInboxForAccount({
       accountId: account.id,
       accountRef,
       provider: providerFor(account),
-      repo: conversationRepository
+      repo: conversationRepository,
+      onReplyDetected: (fromAddress) =>
+        handleReplyDetected(stopEnrollmentDeps, fromAddress).then(() => undefined),
+      onBounceDetected: (threadId) =>
+        handleBounceDetected(stopEnrollmentDeps, threadId).then(() => undefined)
     });
 
     if (result.failedRefs.length > 0) {
@@ -522,6 +529,7 @@ function registerIpcHandlers() {
     return {
       newMessageCount: result.newMessageCount,
       repliesDetected: result.repliesDetected,
+      bouncesDetected: result.bouncesDetected,
       failedCount: result.failedRefs.length
     };
   });

@@ -37,13 +37,22 @@ class FakeMailProvider implements MailProvider {
   createdDrafts: { account: AccountRef }[] = [];
   sentDrafts: ProviderDraftRef[] = [];
   appended: Buffer[] = [];
-  constructor(private readonly failCreateDraft = false) {}
+  constructor(
+    private readonly failCreateDraft = false,
+    /** Simulates a real nodemailer SMTP rejection (responseCode attached to the thrown error). */
+    private readonly smtpResponseCode?: number
+  ) {}
 
   async authenticate(): Promise<void> {}
   async sendMessage(): Promise<ProviderSendResult> {
     return { providerMessageId: "unused" };
   }
   async createDraft(account: AccountRef): Promise<ProviderDraftRef> {
+    if (this.smtpResponseCode !== undefined) {
+      const err = new Error(`${this.smtpResponseCode} SMTP rejection (simulated)`);
+      (err as Error & { responseCode: number }).responseCode = this.smtpResponseCode;
+      throw err;
+    }
     if (this.failCreateDraft) throw new Error("provider unavailable");
     this.createdDrafts.push({ account });
     return { providerDraftId: "fake-draft-1" };
@@ -105,6 +114,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     const conversationRepository = new SqliteConversationRepository(db);
     const enrollmentRepository = new SqliteEnrollmentRepository(db);
     const campaignRepository = new SqliteCampaignRepository(db);
+    const sequenceRepository = new SqliteSequenceRepository(db);
     const contactRepository = new SqliteContactRepository(db);
     const draftRepository = new SqliteDraftRepository(db);
     const draftLifecycle = new DraftLifecycleService(draftRepository, new SystemClock());
@@ -116,7 +126,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       warmupProfileRepository: new SqliteWarmupProfileRepository(db),
       delayPolicyConfigRepository: new SqliteDelayPolicyConfigRepository(db),
       campaignRepository,
-      sequenceRepository: new SqliteSequenceRepository(db),
+      sequenceRepository,
       templateRepository: new SqliteTemplateRepository(db),
       templateVariantRepository: new SqliteTemplateVariantRepository(db),
       subjectVariantRepository: new SqliteSubjectVariantRepository(db),
@@ -138,6 +148,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       conversationRepository,
       enrollmentRepository,
       campaignRepository,
+      sequenceRepository,
       contactRepository,
       draftRepository,
       draftLifecycle,
@@ -147,11 +158,19 @@ describe("runSendWorkerTick (Section 21.1)", () => {
 
   async function enqueueOneCampaignMessage() {
     const template = await fireStepDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi there"))] } });
+    // Two steps, not one: firing the first step must leave the enrollment "active" (a follow-up
+    // is still pending), which is what actually matters for the bounce tests below -- a bounce on
+    // a single-step sequence's only message has nothing left to stop, since queuing the last step
+    // already completes the enrollment (Section 14.3) before the Send worker ever dispatches it.
     const sequence = await fireStepDeps.sequenceRepository.create({
       name: "Seq",
-      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
     });
     await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Subject", weight: 1 });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "Follow-up subject", weight: 1 });
     const campaign = await fireStepDeps.campaignRepository.create({
       name: "Camp",
       sequenceId: sequence.id,
@@ -168,7 +187,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
 
     const fireResult = await fireEnrollmentStep(fireStepDeps, enrollment, new Date());
     if (fireResult.outcome !== "enqueued") throw new Error(`setup failed: ${fireResult.outcome}`);
-    return fireResult;
+    return { ...fireResult, enrollmentId: enrollment.id, contactId: contact.id };
   }
 
   it("dispatches a claimed message end-to-end: provider calls happen, message and queue row are marked sent", async () => {
@@ -176,7 +195,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
 
     const result = await runSendWorkerTick(sendWorkerDeps, new Date());
 
-    expect(result).toEqual({ claimed: 1, sent: 1, retried: 0, failed: 0, failures: [] });
+    expect(result).toEqual({ claimed: 1, sent: 1, retried: 0, failed: 0, bounced: 0, failures: [] });
     expect(provider.createdDrafts).toHaveLength(1);
     expect(provider.sentDrafts).toEqual([{ providerDraftId: "fake-draft-1" }]);
     expect(provider.appended).toHaveLength(1);
@@ -196,7 +215,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     await db.update(accounts).set({ dailySendLimit: 0 }).where(eq(accounts.id, accountId)).run();
 
     const result = await runSendWorkerTick(sendWorkerDeps, new Date());
-    expect(result).toEqual({ claimed: 1, sent: 0, retried: 1, failed: 0, failures: [] });
+    expect(result).toEqual({ claimed: 1, sent: 0, retried: 1, failed: 0, bounced: 0, failures: [] });
 
     const row = db.select().from(sendQueue).all()[0];
     expect(row?.status).toBe("pending");
@@ -218,8 +237,47 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(row?.attemptCount).toBe(1);
   });
 
+  it("treats a permanent (5xx) SMTP rejection as a bounce: fails the row terminally and stops the enrollment", async () => {
+    provider = new FakeMailProvider(false, 550);
+    sendWorkerDeps.getProviderForAccount = async () => provider;
+    const { enrollmentId } = await enqueueOneCampaignMessage();
+
+    const result = await runSendWorkerTick(sendWorkerDeps, new Date());
+    expect(result).toEqual({ claimed: 1, sent: 0, retried: 0, failed: 0, bounced: 1, failures: [] });
+
+    const row = db.select().from(sendQueue).all()[0];
+    expect(row?.status).toBe("failed"); // terminal -- no point retrying the same rejected recipient
+    expect(row?.attemptCount).toBe(0); // markFailed(permanent:true) doesn't touch attemptCount
+
+    const enrollment = await fireStepDeps.enrollmentRepository.findById(enrollmentId);
+    expect(enrollment?.status).toBe("stopped_bounce");
+  });
+
+  it("does not treat a transient (4xx) SMTP error as a bounce -- it retries normally instead", async () => {
+    provider = new FakeMailProvider(false, 421);
+    sendWorkerDeps.getProviderForAccount = async () => provider;
+    const { enrollmentId } = await enqueueOneCampaignMessage();
+
+    const result = await runSendWorkerTick(sendWorkerDeps, new Date());
+    expect(result).toEqual({
+      claimed: 1,
+      sent: 0,
+      retried: 0,
+      failed: 1,
+      bounced: 0,
+      failures: [{ sendQueueEntryId: expect.any(String), error: expect.stringContaining("421 SMTP rejection") }]
+    });
+
+    const row = db.select().from(sendQueue).all()[0];
+    expect(row?.status).toBe("pending"); // transient -- backoff and retry, not terminal
+    expect(row?.attemptCount).toBe(1);
+
+    const enrollment = await fireStepDeps.enrollmentRepository.findById(enrollmentId);
+    expect(enrollment?.status).toBe("active"); // not stopped -- this wasn't classified as a bounce
+  });
+
   it("returns all-zero counts when the queue is empty", async () => {
     const result = await runSendWorkerTick(sendWorkerDeps, new Date());
-    expect(result).toEqual({ claimed: 0, sent: 0, retried: 0, failed: 0, failures: [] });
+    expect(result).toEqual({ claimed: 0, sent: 0, retried: 0, failed: 0, bounced: 0, failures: [] });
   });
 });

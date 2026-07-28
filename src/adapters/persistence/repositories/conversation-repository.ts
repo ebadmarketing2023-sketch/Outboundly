@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { generateId } from "../../../core/shared-kernel/ids.js";
 import type { DerivedParticipant } from "../../../core/conversation/participants.js";
 import type { ConversationState } from "../../../core/conversation/conversation-engine.js";
@@ -187,6 +187,16 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
       campaignEnrollmentId: row.campaignEnrollmentId ?? undefined,
       draftId: row.draftId ?? undefined
     };
+  }
+
+  async findCampaignEnrollmentIdForThread(threadId: string): Promise<string | undefined> {
+    const row = this.db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.threadId, threadId), eq(messages.direction, "outbound"), isNotNull(messages.campaignEnrollmentId)))
+      .orderBy(desc(messages.createdAt))
+      .get();
+    return row?.campaignEnrollmentId ?? undefined;
   }
 
   async insertReferenceEdges(messageId: string, ancestorChain: string[]): Promise<void> {

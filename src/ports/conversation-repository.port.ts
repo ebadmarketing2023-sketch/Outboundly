@@ -66,4 +66,8 @@ export interface ConversationRepository {
    * didn't create itself -- which account it was queued against, its recipient (to resolve the
    * contact for live personalization), and the Draft/enrollment it was built from. */
   findMessageById(messageId: string): Promise<StoredMessageSummary | undefined>;
+  /** The most recent outbound, campaign-originated message in a thread, if any — used to
+   * correlate a bounce notification that threaded back to one of our own sends (Section 14.2's
+   * ReplyDetected/BounceDetected fan-out reuses the same thread-placement machinery). */
+  findCampaignEnrollmentIdForThread(threadId: string): Promise<string | undefined>;
 }

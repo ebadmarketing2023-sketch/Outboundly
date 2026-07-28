@@ -55,6 +55,7 @@ class InMemoryConversationRepository implements ConversationRepository {
   messageIdToThreadId = new Map<string, string>();
   providerThreadIdToThreadId = new Map<string, string>();
   syncCursors = new Map<string, string>();
+  campaignEnrollmentIdByThread = new Map<string, string>();
   private nextId = 1;
 
   async getSyncCursor(accountId: string) {
@@ -83,6 +84,9 @@ class InMemoryConversationRepository implements ConversationRepository {
   async mergeThreads() {}
   async insertMessage(input: NewMessageInput) {
     this.messageIdToThreadId.set(input.messageIdHeader, input.threadId);
+    if (input.direction === "outbound" && input.campaignEnrollmentId) {
+      this.campaignEnrollmentIdByThread.set(input.threadId, input.campaignEnrollmentId);
+    }
     return `message-${this.nextId++}`;
   }
   async insertReferenceEdges() {}
@@ -90,6 +94,9 @@ class InMemoryConversationRepository implements ConversationRepository {
   async markMessageSent() {}
   async findMessageById() {
     return undefined;
+  }
+  async findCampaignEnrollmentIdForThread(threadId: string) {
+    return this.campaignEnrollmentIdByThread.get(threadId);
   }
 }
 
@@ -207,5 +214,72 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
     });
 
     expect(detectedFrom).toEqual(["them@example.com"]);
+  });
+
+  it("invokes onBounceDetected (not onReplyDetected) for an automated delivery-failure notice threaded to an existing conversation", async () => {
+    const repo = new InMemoryConversationRepository();
+    repo.messageIdToThreadId.set("<m1@x>", "thread-1");
+
+    const provider = new FakeMailProvider({
+      "msg-bounce": {
+        providerMessageId: "msg-bounce",
+        messageIdHeader: "<m2@x>",
+        inReplyToHeader: "<m1@x>",
+        referencesHeader: "<m1@x>",
+        from: "mailer-daemon@googlemail.com",
+        to: ["me@outboundly.app"],
+        subject: "Delivery Status Notification (Failure)",
+        date: new Date()
+      }
+    });
+
+    const detectedFrom: string[] = [];
+    const detectedThreads: string[] = [];
+    const result = await syncInboxForAccount({
+      accountId: "acct-1",
+      accountRef,
+      provider,
+      repo,
+      onReplyDetected: async (from) => {
+        detectedFrom.push(from);
+      },
+      onBounceDetected: async (threadId) => {
+        detectedThreads.push(threadId);
+      }
+    });
+
+    expect(detectedThreads).toEqual(["thread-1"]);
+    expect(detectedFrom).toEqual([]);
+    expect(result.bouncesDetected).toBe(1);
+    expect(result.repliesDetected).toBe(0);
+  });
+
+  it("does not invoke onBounceDetected for a bounce-looking message that starts a new/cold thread (nothing to correlate it to)", async () => {
+    const repo = new InMemoryConversationRepository();
+
+    const provider = new FakeMailProvider({
+      "msg-bounce": {
+        providerMessageId: "msg-bounce",
+        messageIdHeader: "<m9@x>",
+        from: "mailer-daemon@example.com",
+        to: ["me@outboundly.app"],
+        subject: "Undelivered Mail Returned to Sender",
+        date: new Date()
+      }
+    });
+
+    const detectedThreads: string[] = [];
+    const result = await syncInboxForAccount({
+      accountId: "acct-1",
+      accountRef,
+      provider,
+      repo,
+      onBounceDetected: async (threadId) => {
+        detectedThreads.push(threadId);
+      }
+    });
+
+    expect(detectedThreads).toEqual([]);
+    expect(result.bouncesDetected).toBe(0);
   });
 });

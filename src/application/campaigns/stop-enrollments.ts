@@ -1,7 +1,8 @@
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
-import type { EnrollmentId } from "../../core/shared-kernel/ids.js";
+import { asEnrollmentId, type EnrollmentId } from "../../core/shared-kernel/ids.js";
 import type { CampaignRepository } from "../../ports/campaign-repository.port.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
+import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
 import type { CampaignEnrollment } from "../../core/campaigns/campaign.js";
 import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
@@ -70,4 +71,21 @@ export async function handleReplyDetected(deps: HandleReplyDetectedDeps, fromHea
   const contact = await deps.contactRepository.findByEmail(email);
   if (!contact) return [];
   return stopEnrollmentsForContact(deps, contact.id, "stopped_reply");
+}
+
+export interface HandleBounceDetectedDeps extends StopEnrollmentsDeps {
+  conversationRepository: ConversationRepository;
+}
+
+/** Resolves a bounce notification's thread back to the campaign-originated message it's a
+ * delivery-failure report for (via ConversationRepository.findCampaignEnrollmentIdForThread,
+ * which relies on the notification having threaded correctly to one of our own sends) and stops
+ * every active enrollment that respects stopOnBounce for that contact. A no-op when the bounce
+ * didn't thread back to anything of ours, or wasn't for a campaign-originated message at all. */
+export async function handleBounceDetected(deps: HandleBounceDetectedDeps, threadId: string): Promise<EnrollmentId[]> {
+  const enrollmentId = await deps.conversationRepository.findCampaignEnrollmentIdForThread(threadId);
+  if (!enrollmentId) return [];
+  const enrollment = await deps.enrollmentRepository.findById(asEnrollmentId(enrollmentId));
+  if (!enrollment) return [];
+  return stopEnrollmentsForContact(deps, enrollment.contactId, "stopped_bounce");
 }

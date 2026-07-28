@@ -1,5 +1,6 @@
 import { getAccountRef } from "../../adapters/persistence/campaign-scheduling-support.js";
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
+import { isPermanentSmtpRejection } from "../../core/campaigns/bounce-detection.js";
 import { contactToPersonalizationValues } from "../../core/campaigns/personalize.js";
 import type { Draft } from "../../core/drafts/draft.js";
 import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js";
@@ -14,6 +15,8 @@ import type { ProviderSelector } from "../../ports/provider-selector.port.js";
 import type { RateLimiter } from "../../ports/rate-limiter.port.js";
 import type { Repository } from "../../ports/repository.port.js";
 import type { SendQueueEntry, SendQueueRepository } from "../../ports/send-queue-repository.port.js";
+import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
+import { stopEnrollmentsForContact } from "./stop-enrollments.js";
 
 const NO_ACCOUNT_RETRY_MS = 5 * 60 * 1000;
 const MAX_CLAIMS_PER_TICK = 50; // bounded drain per tick (Section 21.2) rather than an unbounded loop
@@ -26,6 +29,7 @@ export interface SendWorkerDeps {
   conversationRepository: ConversationRepository;
   enrollmentRepository: EnrollmentRepository;
   campaignRepository: CampaignRepository;
+  sequenceRepository: SequenceRepository;
   contactRepository: ContactRepository;
   draftRepository: Repository<Draft, DraftId>;
   draftLifecycle: DraftLifecycleService;
@@ -41,10 +45,13 @@ export interface SendWorkerTickResult {
    * momentarily-ineligible account, neither a failure of the send itself (Section 16.2/16.3). */
   retried: number;
   failed: number;
+  /** A permanent (5xx) SMTP rejection at send time (Section 14.2's stopped_bounce) — counted
+   * separately from "failed" since it also stopped matching enrollments, not just failed a send. */
+  bounced: number;
   failures: { sendQueueEntryId: SendQueueId; error: string }[];
 }
 
-type DispatchOutcome = "sent" | "retried" | "failed";
+type DispatchOutcome = "sent" | "retried" | "failed" | "bounced";
 
 async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: Date): Promise<DispatchOutcome> {
   const message = await deps.conversationRepository.findMessageById(claimed.messageId);
@@ -117,10 +124,20 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   });
 
   const provider = await deps.getProviderForAccount(selection.accountId);
-  const draftRef = await provider.createDraft(accountRef, built);
-  await deps.draftLifecycle.recordProviderDraftRef(draft.id, draftRef.providerDraftId);
-  const sendResult = await provider.sendDraft(accountRef, draftRef);
-  await provider.appendToSentFolder(accountRef, Buffer.from(built.raw, "utf8"));
+  let sendResult;
+  try {
+    const draftRef = await provider.createDraft(accountRef, built);
+    await deps.draftLifecycle.recordProviderDraftRef(draft.id, draftRef.providerDraftId);
+    sendResult = await provider.sendDraft(accountRef, draftRef);
+    await provider.appendToSentFolder(accountRef, Buffer.from(built.raw, "utf8"));
+  } catch (err) {
+    if (!isPermanentSmtpRejection(err)) throw err; // let the outer catch retry it as transient
+
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: true, now });
+    if (contact) await stopEnrollmentsForContact(deps, contact.id, "stopped_bounce");
+    return "bounced";
+  }
 
   await deps.conversationRepository.markMessageSent(message.id, { sentAt: now, providerMessageId: sendResult.providerMessageId });
   await deps.sendQueueRepository.markSent(claimed.id);
@@ -132,10 +149,12 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
  * Selector -> Provider Adapter -> Delivery for one message at a time, draining up to
  * MAX_CLAIMS_PER_TICK rows per call. Each claimed row's dispatch failure is isolated (Section
  * 21.3) — it retries with backoff rather than stalling the rest of the drain or crashing the
- * worker.
+ * worker, except a permanent SMTP rejection (Section 14.2's stopped_bounce), which fails the row
+ * terminally and stops the recipient's matching enrollments instead of retrying a send that will
+ * never succeed.
  */
 export async function runSendWorkerTick(deps: SendWorkerDeps, now: Date): Promise<SendWorkerTickResult> {
-  const result: SendWorkerTickResult = { claimed: 0, sent: 0, retried: 0, failed: 0, failures: [] };
+  const result: SendWorkerTickResult = { claimed: 0, sent: 0, retried: 0, failed: 0, bounced: 0, failures: [] };
 
   for (let i = 0; i < MAX_CLAIMS_PER_TICK; i++) {
     const claimed = await deps.sendQueueRepository.claimNext(now);
@@ -146,6 +165,7 @@ export async function runSendWorkerTick(deps: SendWorkerDeps, now: Date): Promis
       const outcome = await dispatchOne(deps, claimed, now);
       if (outcome === "sent") result.sent++;
       else if (outcome === "retried") result.retried++;
+      else if (outcome === "bounced") result.bounced++;
       else result.failed++;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);

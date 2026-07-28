@@ -75,6 +75,13 @@ class InMemoryConversationRepository implements ConversationRepository {
     const toAdd = participants.filter((p) => !known.has(p.emailAddress));
     this.participantsByThread.set(threadId, [...existing, ...toAdd]);
   }
+  async markMessageSent() {}
+  async findMessageById() {
+    return undefined;
+  }
+  async findCampaignEnrollmentIdForThread() {
+    return undefined;
+  }
 }
 
 describe("ingestMessage (Conversation Engine I/O layer, Section 11)", () => {
