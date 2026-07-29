@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AccountSummary, AppPreferencesSummary, BusinessHoursProfileSummary } from "../../ipc-boundary/contracts.js";
 import {
+  AccountStatusBadge,
   Avatar,
   Button,
   Card,
@@ -12,7 +13,11 @@ import {
   Input,
   PageHeader,
   Select,
+  Table,
+  TableRow,
+  Td,
   Textarea,
+  Th,
   UploadIcon,
   useToast
 } from "../components/index.js";
@@ -33,6 +38,8 @@ export function SettingsScreen(): JSX.Element {
   const [restorePassphrase, setRestorePassphrase] = useState("");
   const [backupBusy, setBackupBusy] = useState(false);
   const [confirmRestoreOpen, setConfirmRestoreOpen] = useState(false);
+  const [disconnectTarget, setDisconnectTarget] = useState<AccountSummary | null>(null);
+  const [disconnectBusy, setDisconnectBusy] = useState(false);
   const toast = useToast();
 
   function refresh(): void {
@@ -91,6 +98,21 @@ export function SettingsScreen(): JSX.Element {
     }
   }
 
+  async function handleDisconnect(): Promise<void> {
+    if (!disconnectTarget) return;
+    setDisconnectBusy(true);
+    try {
+      const updated = await window.outboundly.disconnectAccount({ accountId: disconnectTarget.id });
+      setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+      toast.showToast(`${disconnectTarget.emailAddress} disconnected.`, "success");
+    } catch (err) {
+      toast.showToast(String(err), "error");
+    } finally {
+      setDisconnectBusy(false);
+      setDisconnectTarget(null);
+    }
+  }
+
   async function handleExportBackup(): Promise<void> {
     setError(null);
     if (exportPassphrase.trim() === "") {
@@ -129,6 +151,54 @@ export function SettingsScreen(): JSX.Element {
       <PageHeader title="Settings" description="Sending defaults, signatures, and backup & restore." />
 
       {error && <ErrorBanner message={error} />}
+
+      <Card style={{ marginBottom: "var(--space-6)" }} padding="none">
+        <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
+          <CardHeader
+            title="Connected accounts"
+            description="Disconnecting revokes this app's local access to the account -- it can no longer send or sync until you reconnect. Nothing else about the account is deleted."
+          />
+        </div>
+        {accounts.length === 0 ? (
+          <p style={{ fontSize: "13.5px", color: "var(--color-text-secondary)", padding: "0 var(--space-6) var(--space-6)" }}>
+            No accounts connected yet — connect one from the Compose screen.
+          </p>
+        ) : (
+          <Table>
+            <thead>
+              <tr>
+                <Th>Account</Th>
+                <Th>Provider</Th>
+                <Th>Status</Th>
+                <Th></Th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((a) => (
+                <TableRow key={a.id}>
+                  <Td>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <Avatar name={a.displayName ?? a.emailAddress} size={24} />
+                      {a.emailAddress}
+                    </div>
+                  </Td>
+                  <Td>{a.provider}</Td>
+                  <Td>
+                    <AccountStatusBadge status={a.status} />
+                  </Td>
+                  <Td>
+                    {a.status !== "disconnected" && (
+                      <Button variant="danger-ghost" size="sm" onClick={() => setDisconnectTarget(a)}>
+                        Disconnect
+                      </Button>
+                    )}
+                  </Td>
+                </TableRow>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Card>
 
       <Card style={{ marginBottom: "var(--space-6)" }}>
         <CardHeader title="Sending defaults" description="Pre-fills the Campaigns screen's create-campaign form — doesn't change any existing campaign." />
@@ -233,6 +303,17 @@ export function SettingsScreen(): JSX.Element {
         busy={backupBusy}
         onConfirm={handleRestoreBackup}
         onCancel={() => setConfirmRestoreOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={disconnectTarget !== null}
+        title="Disconnect this account?"
+        description={`${disconnectTarget?.emailAddress ?? "This account"} will no longer be able to send or sync until you reconnect it (sign in again from the Compose screen). Its message history, drafts, and campaigns are kept.`}
+        confirmLabel="Disconnect"
+        danger
+        busy={disconnectBusy}
+        onConfirm={handleDisconnect}
+        onCancel={() => setDisconnectTarget(null)}
       />
     </div>
   );

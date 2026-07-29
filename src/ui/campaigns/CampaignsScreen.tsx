@@ -553,6 +553,7 @@ export function CampaignsScreen(): JSX.Element {
                       <option key={a.id} value={a.id}>
                         {a.emailAddress}
                         {a.status === "reauth_required" ? " (reconnect needed)" : ""}
+                        {a.status === "disconnected" ? " (disconnected)" : ""}
                       </option>
                     ))}
                   </Select>

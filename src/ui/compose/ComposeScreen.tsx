@@ -198,6 +198,7 @@ export function ComposeScreen(): JSX.Element {
                 <option key={a.id} value={a.id}>
                   {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
                   {a.status === "reauth_required" ? " (reconnect needed)" : ""}
+                  {a.status === "disconnected" ? " (disconnected)" : ""}
                 </option>
               ))}
             </Select>
@@ -208,6 +209,11 @@ export function ComposeScreen(): JSX.Element {
           <p style={{ fontSize: "13px", color: "var(--color-warning-text, var(--color-text-secondary))", marginBottom: "var(--space-4)" }}>
             This account's authentication is failing — sends will not go through until you reconnect it using the
             buttons below.
+          </p>
+        )}
+        {selectedAccount?.status === "disconnected" && (
+          <p style={{ fontSize: "13px", color: "var(--color-warning-text, var(--color-text-secondary))", marginBottom: "var(--space-4)" }}>
+            This account is disconnected — sends will not go through until you reconnect it using the buttons below.
           </p>
         )}
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>

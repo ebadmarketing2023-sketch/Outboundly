@@ -30,6 +30,14 @@ export interface UpdateAccountLimitsRequest {
   hourlySendLimit?: number;
 }
 
+/** Section 13.3: disconnecting revokes this app's locally stored access to the account (deletes
+ * its TokenVault credentials) and marks it 'disconnected' so the Provider Selector (Section 12.4)
+ * excludes it from sends/syncs. Reconnecting is the existing sign-in flow for that provider,
+ * which already updates the same row back to 'connected' by matching on email address. */
+export interface DisconnectAccountRequest {
+  accountId: string;
+}
+
 export interface DraftSummary {
   id: string;
   accountId: string;
@@ -455,6 +463,7 @@ export interface OutboundlyRendererApi {
   createBusinessHoursProfile(request: CreateBusinessHoursProfileRequest): Promise<BusinessHoursProfileSummary>;
   listBusinessHoursProfiles(): Promise<BusinessHoursProfileSummary[]>;
   updateAccountLimits(request: UpdateAccountLimitsRequest): Promise<AccountSummary>;
+  disconnectAccount(request: DisconnectAccountRequest): Promise<AccountSummary>;
   getCampaignAnalytics(request: CampaignAnalyticsRequest): Promise<CampaignAnalyticsSummary>;
   listActiveInsights(): Promise<InsightSummary[]>;
   dismissInsight(request: DismissInsightRequest): Promise<void>;

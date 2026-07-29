@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld("outboundly", {
   createBusinessHoursProfile: (request) => ipcRenderer.invoke("businessHoursProfiles:create", request),
   listBusinessHoursProfiles: () => ipcRenderer.invoke("businessHoursProfiles:list"),
   updateAccountLimits: (request) => ipcRenderer.invoke("accounts:updateLimits", request),
+  disconnectAccount: (request) => ipcRenderer.invoke("accounts:disconnect", request),
   getCampaignAnalytics: (request) => ipcRenderer.invoke("analytics:getCampaignAnalytics", request),
   listActiveInsights: () => ipcRenderer.invoke("insights:listActive"),
   dismissInsight: (request) => ipcRenderer.invoke("insights:dismiss", request),

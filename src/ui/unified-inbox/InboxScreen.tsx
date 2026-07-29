@@ -139,6 +139,7 @@ export function InboxScreen(): JSX.Element {
               <option key={a.id} value={a.id}>
                 {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
                 {a.status === "reauth_required" ? " (reconnect needed)" : ""}
+                {a.status === "disconnected" ? " (disconnected)" : ""}
               </option>
             ))}
           </Select>

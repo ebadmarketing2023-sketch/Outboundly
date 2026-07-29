@@ -804,6 +804,24 @@ function registerIpcHandlers() {
     return serializeAccount(row);
   });
 
+  // Disconnecting revokes this app's locally stored access (deletes the TokenVault entry) rather
+  // than merely flipping a flag -- a disconnected account genuinely can't be used to send or sync
+  // until the user reconnects (signs in again / re-enters SMTP-IMAP credentials), which is the
+  // existing connect flow: it already matches on email address and updates this same row back to
+  // 'connected'. Provider Selector already excludes any non-'connected' account (Section 12.4), so
+  // this alone is enough to stop future sends/syncs against it -- no other cleanup needed, and
+  // every account/message/campaign row referencing this accountId is left untouched.
+  ipcMain.handle("accounts:disconnect", async (_event, request) => {
+    const row = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
+    if (!row) throw new Error("Account not found");
+
+    await tokenVault.delete(request.accountId);
+    await accountDirectory.updateStatus(request.accountId, "disconnected");
+
+    const updated = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
+    return serializeAccount(updated);
+  });
+
   ipcMain.handle("settings:getAppPreferences", async () => {
     return getAppPreferences(db);
   });
