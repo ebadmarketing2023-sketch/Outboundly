@@ -106,10 +106,23 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       .run();
 
     const businessHoursProfileRepository = new SqliteBusinessHoursProfileRepository(db);
+    // Genuinely every day, not just Monday/Tuesday: this suite calls runSendWorkerTick, whose
+    // send_queue claim query filters on earliestSendAt <= now (Section 5.10) -- a business hours
+    // window that excludes today's real weekday would push earliestSendAt into the future and
+    // make every "claimed"/"sent"/"bounced" assertion below fail depending on what day the suite
+    // happens to run on, which is exactly the bug this fixture used to have.
     const businessHoursProfile = await businessHoursProfileRepository.create({
       name: "Always open",
       timezone: "UTC",
-      windows: { monday: [{ start: "00:00", end: "23:59" }], tuesday: [{ start: "00:00", end: "23:59" }] }
+      windows: {
+        sunday: [{ start: "00:00", end: "23:59" }],
+        monday: [{ start: "00:00", end: "23:59" }],
+        tuesday: [{ start: "00:00", end: "23:59" }],
+        wednesday: [{ start: "00:00", end: "23:59" }],
+        thursday: [{ start: "00:00", end: "23:59" }],
+        friday: [{ start: "00:00", end: "23:59" }],
+        saturday: [{ start: "00:00", end: "23:59" }]
+      }
     });
     businessHoursProfileId = businessHoursProfile.id;
 
