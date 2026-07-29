@@ -672,7 +672,7 @@ export function CampaignsScreen(): JSX.Element {
       <ConfirmDialog
         open={unsubscribeTarget !== null}
         title="Unsubscribe this contact?"
-        description={`This adds ${unsubscribeTarget?.email ?? "this contact"} to the global suppression list and stops every campaign they're enrolled in. There's currently no way to remove a contact from the suppression list once added.`}
+        description={`This adds ${unsubscribeTarget?.email ?? "this contact"} to the global suppression list and stops every campaign they're enrolled in. You can undo this later from the "Suppressed contacts" list on the Leads screen.`}
         confirmLabel="Unsubscribe"
         danger
         onConfirm={handleUnsubscribe}

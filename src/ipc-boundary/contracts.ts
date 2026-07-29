@@ -336,6 +336,20 @@ export interface UnsubscribeContactRequest {
   campaignId?: string;
 }
 
+/** Suppression list management (Section 5.5). Removing an entry only affects future campaign
+ * enrollment/send eligibility -- it never touches outbound email headers or content, so it has no
+ * effect on how any provider's inbox classifies mail (e.g. Gmail's Promotions tab). */
+export interface SuppressionEntrySummary {
+  id: string;
+  email: string;
+  reason: string;
+  createdAt: string;
+}
+
+export interface RemoveSuppressionEntryRequest {
+  email: string;
+}
+
 export type ReplyClassification = "interested" | "not_interested" | "out_of_office";
 
 export interface SetReplyClassificationRequest {
@@ -446,6 +460,8 @@ export interface OutboundlyRendererApi {
   dismissInsight(request: DismissInsightRequest): Promise<void>;
   markConversion(request: MarkConversionRequest): Promise<void>;
   unsubscribeContact(request: UnsubscribeContactRequest): Promise<void>;
+  listSuppressionEntries(): Promise<SuppressionEntrySummary[]>;
+  removeSuppressionEntry(request: RemoveSuppressionEntryRequest): Promise<void>;
   setReplyClassification(request: SetReplyClassificationRequest): Promise<void>;
   listUnreadNotifications(): Promise<NotificationSummary[]>;
   markNotificationRead(request: MarkNotificationReadRequest): Promise<void>;

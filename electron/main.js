@@ -931,6 +931,20 @@ function registerIpcHandlers() {
     );
   });
 
+  ipcMain.handle("suppressionList:list", async () => {
+    const entries = await suppressionListRepository.list();
+    return entries.map((e) => ({ id: e.id, email: e.email, reason: e.reason, createdAt: e.createdAt.toISOString() }));
+  });
+
+  // A purely local database change (Section 5.5): un-suppressing an email only affects future
+  // campaign enrollment/send eligibility. It never touches any previously sent message or any
+  // outbound header/content, so it has no bearing on how a mailbox provider (e.g. Gmail) files
+  // future mail into Primary vs. Promotions -- that classification is driven by sending
+  // reputation/content/engagement signals, none of which this action changes.
+  ipcMain.handle("suppressionList:remove", async (_event, request) => {
+    await suppressionListRepository.remove(request.email);
+  });
+
   ipcMain.handle("inbox:setReplyClassification", async (_event, request) => {
     await labelReply({ conversationRepository, enrollmentRepository, eventRepository }, request.messageId, request.classification);
   });

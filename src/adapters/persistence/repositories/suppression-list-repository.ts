@@ -26,6 +26,10 @@ export class SqliteSuppressionListRepository implements SuppressionListRepositor
       .run();
   }
 
+  async remove(email: string): Promise<void> {
+    this.db.delete(suppressionListTable).where(eq(suppressionListTable.email, email.toLowerCase())).run();
+  }
+
   async list(): Promise<SuppressionEntry[]> {
     return this.db
       .select()

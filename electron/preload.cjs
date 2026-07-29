@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld("outboundly", {
   dismissInsight: (request) => ipcRenderer.invoke("insights:dismiss", request),
   markConversion: (request) => ipcRenderer.invoke("analytics:markConversion", request),
   unsubscribeContact: (request) => ipcRenderer.invoke("campaigns:unsubscribeContact", request),
+  listSuppressionEntries: () => ipcRenderer.invoke("suppressionList:list"),
+  removeSuppressionEntry: (request) => ipcRenderer.invoke("suppressionList:remove", request),
   setReplyClassification: (request) => ipcRenderer.invoke("inbox:setReplyClassification", request),
   listUnreadNotifications: () => ipcRenderer.invoke("notifications:listUnread"),
   markNotificationRead: (request) => ipcRenderer.invoke("notifications:markRead", request),
