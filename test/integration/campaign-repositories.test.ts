@@ -114,6 +114,9 @@ describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, S
       sendingAccountIds: [asAccountId(accountId)],
       businessHoursProfileId
     });
+    // findDueForScheduling only considers enrollments whose parent campaign is 'running' (Section
+    // 14.2) -- a freshly created campaign defaults to 'draft', which must never fire on its own.
+    await campaignRepo.setStatus(campaign.id, "running");
     const contact = await contactRepo.upsertByEmail({ email: "lead@example.com", source: "manual" });
 
     const past = new Date(Date.now() - 60_000);

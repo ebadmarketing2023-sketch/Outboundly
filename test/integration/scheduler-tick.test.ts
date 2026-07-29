@@ -91,6 +91,9 @@ describe("runSchedulerTick (Section 21.1)", () => {
       sendingAccountIds: [asAccountId(accountId)],
       businessHoursProfileId
     });
+    // findDueForScheduling only considers enrollments whose parent campaign is 'running' (Section
+    // 14.2) -- a freshly created campaign defaults to 'draft', which must never fire on its own.
+    await deps.campaignRepository.setStatus(campaign.id, "running");
 
     const goodContact = await deps.contactRepository.upsertByEmail({ email: "good@example.com", source: "manual" });
     const goodEnrollment = await deps.enrollmentRepository.enroll({
@@ -127,6 +130,61 @@ describe("runSchedulerTick (Section 21.1)", () => {
 
     const reloadedGood = await deps.enrollmentRepository.findById(goodEnrollment.id);
     expect(reloadedGood?.status).toBe("completed");
+  });
+
+  it("never fires a still-draft campaign's due enrollments, and Pause/Resume actually gate scheduling (Section 14.2)", async () => {
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    await deps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Subject", weight: 1 });
+    const campaign = await deps.campaignRepository.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+
+    const contact = await deps.contactRepository.upsertByEmail({ email: "lead@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    // A brand-new campaign defaults to 'draft' -- never clicked "Start" -- so its due enrollment
+    // must not fire even though the enrollment itself is 'active' and past due.
+    const draftResult = await runSchedulerTick(deps, new Date());
+    expect(draftResult.processed).toBe(0);
+    expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("active");
+
+    // Starting the campaign is what makes it eligible.
+    await deps.campaignRepository.setStatus(campaign.id, "running");
+    const runningResult = await runSchedulerTick(deps, new Date());
+    expect(runningResult.processed).toBe(1);
+    expect(runningResult.completed).toBe(1); // single-step sequence completes on its only step
+
+    // Re-enroll (the first enrollment already completed) and pause the campaign -- the new due
+    // enrollment must not fire while paused, which is the concrete behavior "Pause" promises.
+    const contact2 = await deps.contactRepository.upsertByEmail({ email: "lead2@example.com", source: "manual" });
+    const enrollment2 = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact2.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+    await deps.campaignRepository.setStatus(campaign.id, "paused");
+    const pausedResult = await runSchedulerTick(deps, new Date());
+    expect(pausedResult.processed).toBe(0);
+    expect((await deps.enrollmentRepository.findById(enrollment2.id))?.status).toBe("active");
+
+    // Resuming (back to 'running') makes it fire again.
+    await deps.campaignRepository.setStatus(campaign.id, "running");
+    const resumedResult = await runSchedulerTick(deps, new Date());
+    expect(resumedResult.processed).toBe(1);
+    expect(resumedResult.completed).toBe(1);
   });
 
   it("returns all-zero counts when nothing is due", async () => {

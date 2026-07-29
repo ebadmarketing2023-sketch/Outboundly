@@ -87,12 +87,16 @@ describe("Load testing at scale (Section 24.5)", () => {
       name: "Seq",
       steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
     });
-    const campaign = await new SqliteCampaignRepository(db).create({
+    const campaignRepository = new SqliteCampaignRepository(db);
+    const campaign = await campaignRepository.create({
       name: "Camp",
       sequenceId: sequence.id,
       sendingAccountIds: [asAccountId(accountId)],
       businessHoursProfileId: businessHoursProfile.id
     });
+    // findDueForScheduling only considers enrollments whose parent campaign is 'running' (Section
+    // 14.2) -- a freshly created campaign defaults to 'draft', which must never fire on its own.
+    await campaignRepository.setStatus(campaign.id, "running");
     const stepId = sequence.steps[0]!.id;
 
     // One real message row, reused as send_queue's messageId FK target across every queue row --
@@ -148,12 +152,16 @@ describe("Load testing at scale (Section 24.5)", () => {
     insertInBatches(sendQueueRows, (batch) => db.insert(sendQueue).values(batch).run());
 
     // 1. EXPLAIN QUERY PLAN: the real, mechanism-level guarantee that the index is actually used.
+    // Matches findDueForScheduling's real query (Section 14.2's campaign-status gate): joined to
+    // campaigns on its primary key, which is itself always index-backed, so the join doesn't
+    // reintroduce a full scan on the large campaign_enrollments side.
     expect(
       explainUsesIndex(
         dbPath,
         encryptionKey,
-        "SELECT * FROM campaign_enrollments WHERE status = ? AND next_send_at <= ?",
-        ["active", now.getTime()]
+        "SELECT * FROM campaign_enrollments JOIN campaigns ON campaign_enrollments.campaign_id = campaigns.id " +
+          "WHERE campaign_enrollments.status = ? AND campaign_enrollments.next_send_at <= ? AND campaigns.status = ?",
+        ["active", now.getTime(), "running"]
       )
     ).toBe(true);
     expect(

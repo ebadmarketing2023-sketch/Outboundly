@@ -16,7 +16,7 @@ import type {
   NewEnrollmentInput
 } from "../../../ports/enrollment-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
-import { campaignEnrollments as enrollmentsTable } from "../schema.js";
+import { campaignEnrollments as enrollmentsTable, campaigns as campaignsTable } from "../schema.js";
 
 type EnrollmentRow = typeof enrollmentsTable.$inferSelect;
 
@@ -85,12 +85,21 @@ export class SqliteEnrollmentRepository implements EnrollmentRepository {
   }
 
   async findDueForScheduling(now: Date): Promise<CampaignEnrollment[]> {
-    return this.db
-      .select()
+    // Joins to campaigns.status = 'running' (Section 14.2): an enrollment being individually
+    // 'active' is necessary but not sufficient -- its parent campaign must also have been
+    // explicitly started and not paused. Before this join existed, a campaign's enrollments fired
+    // regardless of the campaign's own status, which meant "Pause" didn't pause anything and a
+    // still-'draft' campaign (never clicked "Start") would silently begin sending the moment
+    // contacts were enrolled into it.
+    const rows = this.db
+      .select({ enrollment: enrollmentsTable })
       .from(enrollmentsTable)
-      .where(and(eq(enrollmentsTable.status, "active"), lte(enrollmentsTable.nextSendAt, now)))
-      .all()
-      .map(toDomain);
+      .innerJoin(campaignsTable, eq(enrollmentsTable.campaignId, campaignsTable.id))
+      .where(
+        and(eq(enrollmentsTable.status, "active"), lte(enrollmentsTable.nextSendAt, now), eq(campaignsTable.status, "running"))
+      )
+      .all();
+    return rows.map((row) => toDomain(row.enrollment));
   }
 
   async advance(id: EnrollmentId, patch: AdvanceEnrollmentInput): Promise<void> {
