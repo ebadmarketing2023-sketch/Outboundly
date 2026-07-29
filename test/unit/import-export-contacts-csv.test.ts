@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { importContactsCsv } from "../../src/application/leads/import-contacts-csv.js";
 import { exportContactsCsv } from "../../src/application/leads/export-contacts-csv.js";
+import { CSV_SAFETY_LIMITS, CsvTooLargeError } from "../../src/core/shared-kernel/csv-safety.js";
 import type { Contact, ContactRepository, NewContactInput } from "../../src/ports/contact-repository.port.js";
 import { asContactId, generateId } from "../../src/core/shared-kernel/ids.js";
 
@@ -88,6 +89,52 @@ describe("importContactsCsv (Section 5.5)", () => {
     expect(all).toHaveLength(1);
     expect(all[0]?.firstName).toBe("Janet");
   });
+
+  it("neutralizes a formula-injection payload in a known field before it's ever stored (Section 23)", async () => {
+    const repo = new InMemoryContactRepository();
+    const csv = 'email,company\nme@example.com,"=cmd|\'/c calc\'!A1"\n';
+
+    await importContactsCsv(csv, repo);
+    const contact = await repo.findByEmail("me@example.com");
+    expect(contact?.company).toBe("'=cmd|'/c calc'!A1");
+  });
+
+  it("neutralizes a formula-injection payload in a custom field before it's ever stored", async () => {
+    const repo = new InMemoryContactRepository();
+    const csv = 'email,notes\nme@example.com,"=HYPERLINK(""http://evil.example"",""click"")"\n';
+
+    await importContactsCsv(csv, repo);
+    const contact = await repo.findByEmail("me@example.com");
+    expect(contact?.customFields?.notes?.startsWith("'=")).toBe(true);
+  });
+
+  it("skips a row whose field exceeds the maximum allowed length instead of storing it truncated or aborting the import", async () => {
+    const repo = new InMemoryContactRepository();
+    const tooLong = "x".repeat(CSV_SAFETY_LIMITS.maxFieldLength + 1);
+    const csv = `email,company\nme@example.com,${tooLong}\ngood@example.com,Acme\n`;
+
+    const result = await importContactsCsv(csv, repo);
+    expect(result.imported).toBe(1);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.reason).toMatch(/exceeds the maximum allowed length/);
+    expect(await repo.findByEmail("good@example.com")).toBeDefined();
+    expect(await repo.findByEmail("me@example.com")).toBeUndefined();
+  });
+
+  it("rejects a CSV whose raw text exceeds the maximum allowed size before attempting to parse it", async () => {
+    const repo = new InMemoryContactRepository();
+    const huge = "x".repeat(CSV_SAFETY_LIMITS.maxTextLength + 1);
+
+    await expect(importContactsCsv(huge, repo)).rejects.toThrow(CsvTooLargeError);
+  });
+
+  it("rejects a CSV with more rows than the maximum allowed", async () => {
+    const repo = new InMemoryContactRepository();
+    const rows = Array.from({ length: CSV_SAFETY_LIMITS.maxRows + 1 }, (_, i) => `person${i}@example.com`).join("\n");
+    const csv = `email\n${rows}\n`;
+
+    await expect(importContactsCsv(csv, repo)).rejects.toThrow(CsvTooLargeError);
+  });
 });
 
 describe("exportContactsCsv (Section 5.5)", () => {
@@ -112,5 +159,19 @@ describe("exportContactsCsv (Section 5.5)", () => {
     expect(reimported?.firstName).toBe("Jane");
     expect(reimported?.company).toBe("Acme, Inc.");
     expect(reimported?.customFields).toEqual({ "Favorite Color": "Blue" });
+  });
+
+  it("neutralizes a formula-injection payload on export even for a contact never created via CSV import (Section 23)", async () => {
+    const repo = new InMemoryContactRepository();
+    // Simulates a contact created through some other path (e.g. manual entry) whose field was
+    // never neutralized on the way in -- exportContactsCsv must neutralize it on the way out.
+    await repo.upsertByEmail({
+      email: "me@example.com",
+      company: "=cmd|'/c calc'!A1",
+      source: "manual"
+    });
+
+    const csv = await exportContactsCsv(repo);
+    expect(csv).toContain("'=cmd|'/c calc'!A1");
   });
 });

@@ -1,4 +1,5 @@
 import { parse } from "csv-parse/sync";
+import { CSV_SAFETY_LIMITS, CsvTooLargeError, neutralizeCsvCell } from "../../core/shared-kernel/csv-safety.js";
 import { EmailAddress } from "../../core/shared-kernel/email-address.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
 
@@ -46,7 +47,17 @@ export async function importContactsCsv(
   csvText: string,
   contactRepository: ContactRepository
 ): Promise<ImportContactsCsvResult> {
+  if (csvText.length > CSV_SAFETY_LIMITS.maxTextLength) {
+    throw new CsvTooLargeError(
+      `CSV is too large (${csvText.length} characters, max ${CSV_SAFETY_LIMITS.maxTextLength}) — checked before parsing to avoid exhausting memory on a pathological file`
+    );
+  }
+
   const records = parse(csvText, { columns: true, skip_empty_lines: true, trim: true }) as Record<string, string>[];
+
+  if (records.length > CSV_SAFETY_LIMITS.maxRows) {
+    throw new CsvTooLargeError(`CSV has too many rows (${records.length}, max ${CSV_SAFETY_LIMITS.maxRows})`);
+  }
 
   const skipped: ImportContactsCsvResult["skipped"] = [];
   let imported = 0;
@@ -56,17 +67,31 @@ export async function importContactsCsv(
 
     const knownFields: Record<string, string> = {};
     const customFields: Record<string, string> = {};
+    let fieldTooLong = false;
 
     for (const [rawHeader, rawValue] of Object.entries(record)) {
       const value = (rawValue ?? "").trim();
       if (!value) continue;
+      if (value.length > CSV_SAFETY_LIMITS.maxFieldLength) {
+        fieldTooLong = true;
+        break;
+      }
+      // Neutralized here (Section 23), not only on export: a "company"/custom-field value that
+      // opens with =/+/-/@ would otherwise be interpreted as a formula the moment this data is
+      // ever exported back out and opened in a spreadsheet app.
+      const safeValue = neutralizeCsvCell(value);
       const normalized = normalizeHeader(rawHeader);
       const knownField = KNOWN_FIELD_ALIASES[normalized];
       if (knownField) {
-        knownFields[knownField] = value;
+        knownFields[knownField] = safeValue;
       } else if (!IGNORED_HEADERS.has(normalized)) {
-        customFields[rawHeader] = value;
+        customFields[rawHeader] = safeValue;
       }
+    }
+
+    if (fieldTooLong) {
+      skipped.push({ row: rowNumber, reason: `A field exceeds the maximum allowed length (${CSV_SAFETY_LIMITS.maxFieldLength} characters)` });
+      continue;
     }
 
     const emailRaw = knownFields.email;
