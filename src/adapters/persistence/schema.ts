@@ -20,6 +20,18 @@ export const accounts = sqliteTable("accounts", {
   syncCursor: text("sync_cursor"),
   dailySendLimit: integer("daily_send_limit"),
   hourlySendLimit: integer("hourly_send_limit"),
+  // Per-account random send-pacing (distinct from the per-campaign Delay Policy's one-time
+  // scheduling-time jitter, Section 15.2): a freshly randomized wait, generated anew after every
+  // send, that this account's *next* send must not go out before, enforced authoritatively at
+  // dispatch time by the RateLimiter -- so the delay is respected across the whole queue and
+  // across every campaign sharing this account, not just within one campaign's own scheduling.
+  // Undefined min/max means no pacing is enforced, not a zero-length one (same convention as the
+  // Delay Policy).
+  minSendDelaySeconds: integer("min_send_delay_seconds"),
+  maxSendDelaySeconds: integer("max_send_delay_seconds"),
+  // Mutable admission-gate state written by the RateLimiter itself (Section 16.2) each time it
+  // allows a send through -- not a user-configured value like the two columns above.
+  nextAllowedSendAt: integer("next_allowed_send_at", { mode: "timestamp_ms" }),
   warmupMode: integer("warmup_mode", { mode: "boolean" }).notNull().default(false),
   // Settings module (Section 3: "signatures-by-account"). Plain text only, matching this phase's
   // compose screen -- it treats the whole body as plain text parsed into the Internal Document

@@ -17,6 +17,12 @@ export interface AccountSummary {
    * directly off the account — undefined means no cap configured. */
   dailySendLimit?: number;
   hourlySendLimit?: number;
+  /** Randomized send-pacing (Critical Improvement #1): the RateLimiter generates a fresh random
+   * delay in this range after every admitted send from this account and denies the next one until
+   * it elapses, regardless of which campaign queued it. Undefined min/max means no pacing is
+   * enforced, not a zero-length one. */
+  minSendDelaySeconds?: number;
+  maxSendDelaySeconds?: number;
   /** Settings module (Section 3: "signatures-by-account"). Plain text only -- this phase's
    * compose screen treats the whole body as plain text (Section 8). */
   signatureText?: string;
@@ -28,6 +34,10 @@ export interface UpdateAccountLimitsRequest {
    * emptied input actually clears rather than leaving the previous value untouched. */
   dailySendLimit?: number;
   hourlySendLimit?: number;
+  /** Same clear-on-omit convention as the two fields above. Must both be set together (or both
+   * omitted) -- the renderer enforces this before calling. */
+  minSendDelaySeconds?: number;
+  maxSendDelaySeconds?: number;
 }
 
 /** Section 13.3: disconnecting revokes this app's locally stored access to the account (deletes

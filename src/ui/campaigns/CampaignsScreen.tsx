@@ -69,7 +69,9 @@ export function CampaignsScreen(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const toast = useToast();
 
-  const [accountLimitDrafts, setAccountLimitDrafts] = useState<Record<string, { daily: string; hourly: string }>>({});
+  const [accountLimitDrafts, setAccountLimitDrafts] = useState<
+    Record<string, { daily: string; hourly: string; minDelay: string; maxDelay: string }>
+  >({});
 
   const [bhpName, setBhpName] = useState("");
   const [bhpTimezone, setBhpTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
@@ -103,7 +105,12 @@ export function CampaignsScreen(): JSX.Element {
           const next = { ...prev };
           for (const a of list) {
             if (!next[a.id]) {
-              next[a.id] = { daily: a.dailySendLimit?.toString() ?? "", hourly: a.hourlySendLimit?.toString() ?? "" };
+              next[a.id] = {
+                daily: a.dailySendLimit?.toString() ?? "",
+                hourly: a.hourlySendLimit?.toString() ?? "",
+                minDelay: a.minSendDelaySeconds?.toString() ?? "",
+                maxDelay: a.maxSendDelaySeconds?.toString() ?? ""
+              };
             }
           }
           return next;
@@ -154,12 +161,24 @@ export function CampaignsScreen(): JSX.Element {
 
   async function handleSaveAccountLimits(accountId: string): Promise<void> {
     setError(null);
-    const draft = accountLimitDrafts[accountId] ?? { daily: "", hourly: "" };
+    const draft = accountLimitDrafts[accountId] ?? { daily: "", hourly: "", minDelay: "", maxDelay: "" };
+    const minDelayTrimmed = draft.minDelay.trim();
+    const maxDelayTrimmed = draft.maxDelay.trim();
+    if (minDelayTrimmed === "" !== (maxDelayTrimmed === "")) {
+      toast.showToast("Set both a minimum and maximum send delay, or leave both blank.", "error");
+      return;
+    }
+    if (minDelayTrimmed !== "" && Number(minDelayTrimmed) > Number(maxDelayTrimmed)) {
+      toast.showToast("Minimum send delay can't be greater than the maximum.", "error");
+      return;
+    }
     try {
       const updated = await window.outboundly.updateAccountLimits({
         accountId,
         dailySendLimit: draft.daily.trim() === "" ? undefined : Number(draft.daily),
-        hourlySendLimit: draft.hourly.trim() === "" ? undefined : Number(draft.hourly)
+        hourlySendLimit: draft.hourly.trim() === "" ? undefined : Number(draft.hourly),
+        minSendDelaySeconds: minDelayTrimmed === "" ? undefined : Number(minDelayTrimmed),
+        maxSendDelaySeconds: maxDelayTrimmed === "" ? undefined : Number(maxDelayTrimmed)
       });
       setAccounts((prev) => prev.map((a) => (a.id === accountId ? updated : a)));
       toast.showToast("Limits saved.", "success");
@@ -311,7 +330,10 @@ export function CampaignsScreen(): JSX.Element {
       {section === "accounts" && (
         <Card padding="none">
           <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
-            <CardHeader title="Sending accounts & limits" description="Caps applied per account by the Rate Limit Policy — leave blank for no limit." />
+            <CardHeader
+              title="Sending accounts & limits"
+              description="Daily/hourly caps are enforced by the Rate Limiter — leave blank for no limit. Send delay is a randomized wait (re-rolled after every send) this account's next send must respect, across every campaign — leave both blank to disable pacing."
+            />
           </div>
           {accounts.length === 0 ? (
             <EmptyState icon={<MegaphoneIcon size={20} />} title="No accounts connected yet" description="Connect a sending account from the Compose screen first." />
@@ -323,12 +345,13 @@ export function CampaignsScreen(): JSX.Element {
                   <Th>Status</Th>
                   <Th>Daily limit</Th>
                   <Th>Hourly limit</Th>
+                  <Th>Send delay (seconds)</Th>
                   <Th></Th>
                 </tr>
               </thead>
               <tbody>
                 {accounts.map((a) => {
-                  const draft = accountLimitDrafts[a.id] ?? { daily: "", hourly: "" };
+                  const draft = accountLimitDrafts[a.id] ?? { daily: "", hourly: "", minDelay: "", maxDelay: "" };
                   return (
                     <TableRow key={a.id}>
                       <Td>{a.emailAddress}</Td>
@@ -352,6 +375,27 @@ export function CampaignsScreen(): JSX.Element {
                           onChange={(e) => setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, hourly: e.target.value } }))}
                           style={{ width: "6rem" }}
                         />
+                      </Td>
+                      <Td>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                          <Input
+                            type="number"
+                            min={0}
+                            placeholder="Min"
+                            value={draft.minDelay}
+                            onChange={(e) => setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, minDelay: e.target.value } }))}
+                            style={{ width: "4.5rem" }}
+                          />
+                          <span style={{ color: "var(--color-text-tertiary)" }}>–</span>
+                          <Input
+                            type="number"
+                            min={0}
+                            placeholder="Max"
+                            value={draft.maxDelay}
+                            onChange={(e) => setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, maxDelay: e.target.value } }))}
+                            style={{ width: "4.5rem" }}
+                          />
+                        </div>
                       </Td>
                       <Td align="right">
                         <Button variant="secondary" size="sm" onClick={() => handleSaveAccountLimits(a.id)}>

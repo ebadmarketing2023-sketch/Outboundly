@@ -305,6 +305,8 @@ function serializeAccount(row) {
     status: row.status,
     dailySendLimit: row.dailySendLimit ?? undefined,
     hourlySendLimit: row.hourlySendLimit ?? undefined,
+    minSendDelaySeconds: row.minSendDelaySeconds ?? undefined,
+    maxSendDelaySeconds: row.maxSendDelaySeconds ?? undefined,
     signatureText: row.signatureText ?? undefined
   };
 }
@@ -791,7 +793,12 @@ function registerIpcHandlers() {
 
   ipcMain.handle("accounts:updateLimits", async (_event, request) => {
     db.update(accountsTable)
-      .set({ dailySendLimit: request.dailySendLimit ?? null, hourlySendLimit: request.hourlySendLimit ?? null })
+      .set({
+        dailySendLimit: request.dailySendLimit ?? null,
+        hourlySendLimit: request.hourlySendLimit ?? null,
+        minSendDelaySeconds: request.minSendDelaySeconds ?? null,
+        maxSendDelaySeconds: request.maxSendDelaySeconds ?? null
+      })
       .where(eq(accountsTable.id, request.accountId))
       .run();
     const row = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();

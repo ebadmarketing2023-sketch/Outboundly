@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/db.js";
 import { SqliteRateLimiter } from "../../src/adapters/persistence/rate-limiter.js";
@@ -15,7 +16,15 @@ describe("SendQueue + RateLimiter (Section 5.8, Section 16.2)", () => {
   let rateLimiter: SqliteRateLimiter;
   let accountId: string;
 
-  function insertAccount(overrides: Partial<{ dailySendLimit: number; hourlySendLimit: number }> = {}): string {
+  function insertAccount(
+    overrides: Partial<{
+      dailySendLimit: number;
+      hourlySendLimit: number;
+      minSendDelaySeconds: number;
+      maxSendDelaySeconds: number;
+      nextAllowedSendAt: Date;
+    }> = {}
+  ): string {
     const id = generateId();
     const now = new Date();
     db.insert(accounts)
@@ -285,6 +294,70 @@ describe("SendQueue + RateLimiter (Section 5.8, Section 16.2)", () => {
       insertMessage(limitedAccountId, { status: "sent", sentAt: new Date() });
       const decision = rateLimiter.checkAndReserve(asAccountId(limitedAccountId));
       expect(decision.allowed).toBe(true);
+    });
+
+    describe("per-account randomized send-pacing (Critical Improvement #1)", () => {
+      it("does not enforce any pacing when min/max aren't configured", () => {
+        const first = rateLimiter.checkAndReserve(asAccountId(accountId));
+        const second = rateLimiter.checkAndReserve(asAccountId(accountId));
+        expect(first.allowed).toBe(true);
+        expect(second.allowed).toBe(true);
+      });
+
+      it("allows the first send immediately even with pacing configured, then denies an immediate second one", () => {
+        const pacedAccountId = insertAccount({ minSendDelaySeconds: 60, maxSendDelaySeconds: 120 });
+
+        const first = rateLimiter.checkAndReserve(asAccountId(pacedAccountId));
+        expect(first.allowed).toBe(true);
+
+        const second = rateLimiter.checkAndReserve(asAccountId(pacedAccountId));
+        expect(second.allowed).toBe(false);
+        if (!second.allowed) {
+          // Denial's retryAfter must land within the configured range of "now" (the first send's
+          // admission time), never before it and never past the max bound.
+          const minRetry = Date.now() + 60_000 - 1000; // small slack for test execution time
+          const maxRetry = Date.now() + 120_000 + 1000;
+          expect(second.retryAfter.getTime()).toBeGreaterThan(minRetry);
+          expect(second.retryAfter.getTime()).toBeLessThan(maxRetry);
+        }
+      });
+
+      it("allows a send once the previously reserved delay has elapsed", () => {
+        const pacedAccountId = insertAccount({
+          minSendDelaySeconds: 60,
+          maxSendDelaySeconds: 120,
+          nextAllowedSendAt: new Date(Date.now() - 1000) // already in the past
+        });
+
+        const decision = rateLimiter.checkAndReserve(asAccountId(pacedAccountId));
+        expect(decision.allowed).toBe(true);
+      });
+
+      it("generates a fresh random delay on every admitted send, not a fixed one", () => {
+        const pacedAccountId = insertAccount({ minSendDelaySeconds: 1, maxSendDelaySeconds: 100 });
+        const observedDelays = new Set<number>();
+
+        for (let i = 0; i < 5; i++) {
+          const decision = rateLimiter.checkAndReserve(asAccountId(pacedAccountId));
+          expect(decision.allowed).toBe(true);
+          const row = db.select().from(accounts).where(eq(accounts.id, pacedAccountId)).get();
+          observedDelays.add(row!.nextAllowedSendAt!.getTime());
+          // Force the next iteration's check to pass the pacing gate again.
+          db.update(accounts).set({ nextAllowedSendAt: new Date(Date.now() - 1000) }).where(eq(accounts.id, pacedAccountId)).run();
+        }
+
+        // Astronomically unlikely for 5 independent uniform draws over a 99-second span to collide.
+        expect(observedDelays.size).toBeGreaterThan(1);
+      });
+
+      it("paces independently per account -- one account's reserved delay never blocks another's", () => {
+        const accountA = insertAccount({ minSendDelaySeconds: 60, maxSendDelaySeconds: 120 });
+        const accountB = insertAccount({ minSendDelaySeconds: 60, maxSendDelaySeconds: 120 });
+
+        expect(rateLimiter.checkAndReserve(asAccountId(accountA)).allowed).toBe(true);
+        expect(rateLimiter.checkAndReserve(asAccountId(accountA)).allowed).toBe(false); // paced now
+        expect(rateLimiter.checkAndReserve(asAccountId(accountB)).allowed).toBe(true); // unaffected
+      });
     });
   });
 });
