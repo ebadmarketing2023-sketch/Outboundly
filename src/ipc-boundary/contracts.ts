@@ -264,6 +264,37 @@ export interface CampaignSummary {
   businessHoursProfileId: string;
 }
 
+/** Campaign dashboard list (Critical Improvement #4): one row per campaign with live metrics, so
+ * the campaign list doesn't need a separate getCampaignAnalytics round-trip per row. */
+export interface CampaignDashboardEntrySummary {
+  id: string;
+  name: string;
+  status: string;
+  totalLeads: number;
+  emailsSent: number;
+  emailsRemaining: number;
+  replies: number;
+  replyRatePercent?: number;
+  completionPercent: number;
+  lastActivityAt?: string;
+  createdAt: string;
+}
+
+/** Deliberately narrow: renaming or switching the business-hours profile only -- see
+ * CampaignRepository.update's docblock for why sequence/sending-account changes aren't supported
+ * here. */
+export interface UpdateCampaignRequest {
+  campaignId: string;
+  name: string;
+  businessHoursProfileId: string;
+}
+
+/** Only succeeds for a campaign with zero enrollments (an unused draft) -- see
+ * CampaignRepository.delete's docblock. */
+export interface DeleteCampaignRequest {
+  campaignId: string;
+}
+
 export interface SetCampaignStatusRequest {
   campaignId: string;
   status: string;
@@ -467,6 +498,9 @@ export interface OutboundlyRendererApi {
   listSequences(): Promise<SequenceSummary[]>;
   createCampaign(request: CreateCampaignRequest): Promise<CampaignSummary>;
   listCampaigns(): Promise<CampaignSummary[]>;
+  listCampaignDashboard(): Promise<CampaignDashboardEntrySummary[]>;
+  updateCampaign(request: UpdateCampaignRequest): Promise<CampaignSummary>;
+  deleteCampaign(request: DeleteCampaignRequest): Promise<void>;
   setCampaignStatus(request: SetCampaignStatusRequest): Promise<void>;
   enrollContacts(request: EnrollContactsRequest): Promise<EnrollContactsResponse>;
   listEnrollments(request: ListEnrollmentsRequest): Promise<EnrollmentSummary[]>;

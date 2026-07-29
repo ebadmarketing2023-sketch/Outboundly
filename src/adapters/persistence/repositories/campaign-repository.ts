@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Campaign, CampaignStatus, NewCampaignInput } from "../../../core/campaigns/campaign.js";
 import { asAccountId, asCampaignId, asSequenceId, generateId, type CampaignId } from "../../../core/shared-kernel/ids.js";
-import type { CampaignRepository } from "../../../ports/campaign-repository.port.js";
+import type { CampaignRepository, UpdateCampaignInput } from "../../../ports/campaign-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
 import { campaigns as campaignsTable } from "../schema.js";
 
@@ -58,5 +58,20 @@ export class SqliteCampaignRepository implements CampaignRepository {
 
   async setStatus(id: CampaignId, status: CampaignStatus): Promise<void> {
     this.db.update(campaignsTable).set({ status }).where(eq(campaignsTable.id, id)).run();
+  }
+
+  async update(id: CampaignId, patch: UpdateCampaignInput): Promise<Campaign> {
+    this.db
+      .update(campaignsTable)
+      .set({ name: patch.name, businessHoursProfileId: patch.businessHoursProfileId })
+      .where(eq(campaignsTable.id, id))
+      .run();
+    const row = this.db.select().from(campaignsTable).where(eq(campaignsTable.id, id)).get();
+    if (!row) throw new Error(`Campaign ${id} not found`);
+    return toDomain(row);
+  }
+
+  async delete(id: CampaignId): Promise<void> {
+    this.db.delete(campaignsTable).where(eq(campaignsTable.id, id)).run();
   }
 }

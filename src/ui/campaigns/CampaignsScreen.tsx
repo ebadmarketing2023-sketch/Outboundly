@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type {
   AccountSummary,
   BusinessHoursProfileSummary,
+  CampaignDashboardEntrySummary,
   CampaignSummary,
   ContactSummary,
   EnrollmentSummary,
@@ -21,6 +22,7 @@ import {
   Field,
   Input,
   MegaphoneIcon,
+  Modal,
   PageHeader,
   PlusIcon,
   Select,
@@ -34,7 +36,7 @@ import {
   TrashIcon,
   useToast
 } from "../components/index.js";
-import { formatDate } from "../lib/format.js";
+import { formatDate, formatDateTime } from "../lib/format.js";
 
 const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 const WEEKDAY_LABELS: Record<string, string> = {
@@ -96,6 +98,14 @@ export function CampaignsScreen(): JSX.Element {
   const [enrollments, setEnrollments] = useState<EnrollmentSummary[]>([]);
   const [unsubscribeTarget, setUnsubscribeTarget] = useState<{ contactId: string; email: string } | null>(null);
 
+  const [campaignDashboard, setCampaignDashboard] = useState<CampaignDashboardEntrySummary[]>([]);
+  const [editCampaignTarget, setEditCampaignTarget] = useState<CampaignDashboardEntrySummary | null>(null);
+  const [editCampaignName, setEditCampaignName] = useState("");
+  const [editCampaignBusinessHoursProfileId, setEditCampaignBusinessHoursProfileId] = useState("");
+  const [editCampaignBusy, setEditCampaignBusy] = useState(false);
+  const [deleteCampaignTarget, setDeleteCampaignTarget] = useState<CampaignDashboardEntrySummary | null>(null);
+  const [deleteCampaignBusy, setDeleteCampaignBusy] = useState(false);
+
   function refreshAll(): void {
     window.outboundly
       .listAccounts()
@@ -122,6 +132,11 @@ export function CampaignsScreen(): JSX.Element {
     window.outboundly.listSequences().then(setSequences).catch((err) => setError(String(err)));
     window.outboundly.listCampaigns().then(setCampaigns).catch((err) => setError(String(err)));
     window.outboundly.listBusinessHoursProfiles().then(setBusinessHoursProfiles).catch((err) => setError(String(err)));
+    refreshCampaignDashboard();
+  }
+
+  function refreshCampaignDashboard(): void {
+    window.outboundly.listCampaignDashboard().then(setCampaignDashboard).catch((err) => setError(String(err)));
   }
 
   useEffect(() => {
@@ -261,14 +276,55 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
-  async function handleStartCampaign(campaignId: string): Promise<void> {
+  async function handleSetCampaignStatus(campaignId: string, status: "running" | "paused", successMessage: string): Promise<void> {
     setError(null);
     try {
-      await window.outboundly.setCampaignStatus({ campaignId, status: "running" });
+      await window.outboundly.setCampaignStatus({ campaignId, status });
       refreshAll();
-      toast.showToast("Campaign started.", "success");
+      toast.showToast(successMessage, "success");
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  function handleOpenEditCampaign(entry: CampaignDashboardEntrySummary): void {
+    setEditCampaignTarget(entry);
+    setEditCampaignName(entry.name);
+    const campaign = campaigns.find((c) => c.id === entry.id);
+    setEditCampaignBusinessHoursProfileId(campaign?.businessHoursProfileId ?? "");
+  }
+
+  async function handleSaveEditCampaign(): Promise<void> {
+    if (!editCampaignTarget) return;
+    setEditCampaignBusy(true);
+    try {
+      await window.outboundly.updateCampaign({
+        campaignId: editCampaignTarget.id,
+        name: editCampaignName,
+        businessHoursProfileId: editCampaignBusinessHoursProfileId
+      });
+      refreshAll();
+      toast.showToast("Campaign updated.", "success");
+      setEditCampaignTarget(null);
+    } catch (err) {
+      toast.showToast(String(err), "error");
+    } finally {
+      setEditCampaignBusy(false);
+    }
+  }
+
+  async function handleConfirmDeleteCampaign(): Promise<void> {
+    if (!deleteCampaignTarget) return;
+    setDeleteCampaignBusy(true);
+    try {
+      await window.outboundly.deleteCampaign({ campaignId: deleteCampaignTarget.id });
+      refreshAll();
+      toast.showToast("Campaign deleted.", "success");
+    } catch (err) {
+      toast.showToast(String(err), "error");
+    } finally {
+      setDeleteCampaignBusy(false);
+      setDeleteCampaignTarget(null);
     }
   }
 
@@ -280,6 +336,7 @@ export function CampaignsScreen(): JSX.Element {
       if (campaignId === selectedCampaignId) {
         window.outboundly.listEnrollments({ campaignId }).then(setEnrollments);
       }
+      refreshCampaignDashboard();
     } catch (err) {
       setError(String(err));
     }
@@ -625,42 +682,80 @@ export function CampaignsScreen(): JSX.Element {
               </Button>
             </div>
 
-            {campaigns.length === 0 ? (
+            {campaignDashboard.length === 0 ? (
               <EmptyState icon={<MegaphoneIcon size={20} />} title="No campaigns yet" description="Create your first campaign above." />
             ) : (
-              <Table>
-                <thead>
-                  <tr>
-                    <Th>Name</Th>
-                    <Th>Status</Th>
-                    <Th>Business hours</Th>
-                    <Th align="right">Actions</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {campaigns.map((c) => (
-                    <TableRow key={c.id} onClick={() => setSelectedCampaignId(c.id)} style={{ background: c.id === selectedCampaignId ? "var(--color-primary-light)" : undefined }}>
-                      <Td style={{ fontWeight: 600 }}>{c.name}</Td>
-                      <Td>
-                        <StatusBadge status={c.status} />
-                      </Td>
-                      <Td>{businessHoursProfiles.find((p) => p.id === c.businessHoursProfileId)?.name ?? "—"}</Td>
-                      <Td align="right">
-                        <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }} onClick={(e) => e.stopPropagation()}>
-                          {c.status === "draft" && (
-                            <Button variant="secondary" size="sm" onClick={() => handleStartCampaign(c.id)}>
-                              Start
+              <div style={{ overflowX: "auto" }}>
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>Name</Th>
+                      <Th>Status</Th>
+                      <Th align="right">Total leads</Th>
+                      <Th align="right">Sent</Th>
+                      <Th align="right">Remaining</Th>
+                      <Th align="right">Replies</Th>
+                      <Th align="right">Reply rate</Th>
+                      <Th align="right">Completion</Th>
+                      <Th>Last activity</Th>
+                      <Th>Created</Th>
+                      <Th align="right">Actions</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {campaignDashboard.map((c) => (
+                      <TableRow
+                        key={c.id}
+                        onClick={() => setSelectedCampaignId(c.id)}
+                        style={{ background: c.id === selectedCampaignId ? "var(--color-primary-light)" : undefined }}
+                      >
+                        <Td style={{ fontWeight: 600 }}>{c.name}</Td>
+                        <Td>
+                          <StatusBadge status={c.status} />
+                        </Td>
+                        <Td align="right">{c.totalLeads}</Td>
+                        <Td align="right">{c.emailsSent}</Td>
+                        <Td align="right">{c.emailsRemaining}</Td>
+                        <Td align="right">{c.replies}</Td>
+                        <Td align="right">{c.replyRatePercent === undefined ? "—" : `${c.replyRatePercent}%`}</Td>
+                        <Td align="right">{c.completionPercent}%</Td>
+                        <Td>{c.lastActivityAt ? formatDateTime(c.lastActivityAt) : "—"}</Td>
+                        <Td>{formatDate(c.createdAt)}</Td>
+                        <Td align="right">
+                          <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end", flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
+                            {c.status === "draft" && (
+                              <Button variant="secondary" size="sm" onClick={() => handleSetCampaignStatus(c.id, "running", "Campaign started.")}>
+                                Start
+                              </Button>
+                            )}
+                            {c.status === "running" && (
+                              <Button variant="secondary" size="sm" onClick={() => handleSetCampaignStatus(c.id, "paused", "Campaign paused.")}>
+                                Pause
+                              </Button>
+                            )}
+                            {c.status === "paused" && (
+                              <Button variant="secondary" size="sm" onClick={() => handleSetCampaignStatus(c.id, "running", "Campaign resumed.")}>
+                                Resume
+                              </Button>
+                            )}
+                            <Button variant="secondary" size="sm" disabled={contacts.length === 0} onClick={() => handleEnrollAll(c.id)}>
+                              Enroll all ({contacts.length})
                             </Button>
-                          )}
-                          <Button variant="secondary" size="sm" disabled={contacts.length === 0} onClick={() => handleEnrollAll(c.id)}>
-                            Enroll all ({contacts.length})
-                          </Button>
-                        </div>
-                      </Td>
-                    </TableRow>
-                  ))}
-                </tbody>
-              </Table>
+                            <Button variant="ghost" size="sm" onClick={() => handleOpenEditCampaign(c)}>
+                              Edit
+                            </Button>
+                            {c.totalLeads === 0 && (
+                              <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteCampaignTarget(c)}>
+                                Delete
+                              </Button>
+                            )}
+                          </div>
+                        </Td>
+                      </TableRow>
+                    ))}
+                  </tbody>
+                </Table>
+              </div>
             )}
           </Card>
 
@@ -722,6 +817,52 @@ export function CampaignsScreen(): JSX.Element {
         danger
         onConfirm={handleUnsubscribe}
         onCancel={() => setUnsubscribeTarget(null)}
+      />
+
+      <Modal
+        open={editCampaignTarget !== null}
+        onClose={() => setEditCampaignTarget(null)}
+        title="Edit campaign"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditCampaignTarget(null)} disabled={editCampaignBusy}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={editCampaignBusy} disabled={!editCampaignName || !editCampaignBusinessHoursProfileId} onClick={handleSaveEditCampaign}>
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <Field label="Campaign name">
+            <Input value={editCampaignName} onChange={(e) => setEditCampaignName(e.target.value)} />
+          </Field>
+          <Field label="Business hours">
+            <Select value={editCampaignBusinessHoursProfileId} onChange={(e) => setEditCampaignBusinessHoursProfileId(e.target.value)}>
+              <option value="">Select profile...</option>
+              {businessHoursProfiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
+            The sequence and sending account can't be changed once a campaign exists -- pause this one and create a new campaign instead.
+          </p>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={deleteCampaignTarget !== null}
+        title="Delete this campaign?"
+        description={`"${deleteCampaignTarget?.name ?? "This campaign"}" has never had any leads enrolled, so it can be deleted safely. This can't be undone.`}
+        confirmLabel="Delete"
+        danger
+        busy={deleteCampaignBusy}
+        onConfirm={handleConfirmDeleteCampaign}
+        onCancel={() => setDeleteCampaignTarget(null)}
       />
     </div>
   );

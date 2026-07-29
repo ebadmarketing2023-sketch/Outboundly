@@ -102,6 +102,71 @@ describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, S
     expect(reloaded?.status).toBe("running");
   });
 
+  it("update renames a campaign and switches its business-hours profile", async () => {
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await campaignRepo.create({
+      name: "Original name",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+
+    const otherProfileId = "bhp-2";
+    db.insert(businessHoursProfiles).values({ id: otherProfileId, name: "24/7", timezone: "UTC", windowsJson: {} }).run();
+
+    const updated = await campaignRepo.update(campaign.id, { name: "Renamed", businessHoursProfileId: otherProfileId });
+    expect(updated.name).toBe("Renamed");
+    expect(updated.businessHoursProfileId).toBe(otherProfileId);
+
+    const reloaded = await campaignRepo.findById(campaign.id);
+    expect(reloaded?.name).toBe("Renamed");
+    expect(reloaded?.businessHoursProfileId).toBe(otherProfileId);
+  });
+
+  it("delete removes a campaign that has no enrollments", async () => {
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await campaignRepo.create({
+      name: "Unused draft",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+
+    await campaignRepo.delete(campaign.id);
+    expect(await campaignRepo.findById(campaign.id)).toBeUndefined();
+  });
+
+  it("delete throws (the FK constraint rejects it) when the campaign still has enrollments", async () => {
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await campaignRepo.create({
+      name: "In use",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await contactRepo.upsertByEmail({ email: "lead@example.com", source: "manual" });
+    await enrollmentRepo.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date()
+    });
+
+    await expect(campaignRepo.delete(campaign.id)).rejects.toThrow();
+  });
+
   it("enrolls a contact, finds it as due once next_send_at has passed, and advances it", async () => {
     const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
     const sequence = await sequenceRepo.create({

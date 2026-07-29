@@ -39,6 +39,7 @@ import { handleBounceDetected, handleReplyDetected, unsubscribeContact } from ".
 import { recordConversion } from "../dist/application/analytics/record-conversion.js";
 import { labelReply } from "../dist/application/analytics/label-reply.js";
 import { getCampaignAnalytics } from "../dist/adapters/persistence/campaign-analytics-support.js";
+import { getCampaignDashboard } from "../dist/adapters/persistence/campaign-dashboard-support.js";
 import { getAppPreferences, setAccountSignature, setAppPreferences } from "../dist/adapters/persistence/settings-support.js";
 import { exportEncryptedBackup, restoreEncryptedBackup } from "../dist/adapters/persistence/backup-restore.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
@@ -294,6 +295,16 @@ function providerFor(account) {
   if (account.provider === "microsoft") return microsoftProvider;
   if (account.provider === "smtp_imap") return smtpImapProvider;
   return gmailProvider;
+}
+
+function serializeCampaign(campaign) {
+  return {
+    id: campaign.id,
+    name: campaign.name,
+    sequenceId: campaign.sequenceId,
+    status: campaign.status,
+    businessHoursProfileId: campaign.businessHoursProfileId
+  };
 }
 
 function serializeAccount(row) {
@@ -753,24 +764,50 @@ function registerIpcHandlers() {
       sendingAccountIds: [request.sendingAccountId],
       businessHoursProfileId: request.businessHoursProfileId
     });
-    return {
-      id: campaign.id,
-      name: campaign.name,
-      sequenceId: campaign.sequenceId,
-      status: campaign.status,
-      businessHoursProfileId: campaign.businessHoursProfileId
-    };
+    return serializeCampaign(campaign);
   });
 
   ipcMain.handle("campaigns:list", async () => {
     const campaigns = await campaignRepository.list();
-    return campaigns.map((c) => ({
-      id: c.id,
-      name: c.name,
-      sequenceId: c.sequenceId,
-      status: c.status,
-      businessHoursProfileId: c.businessHoursProfileId
+    return campaigns.map(serializeCampaign);
+  });
+
+  ipcMain.handle("campaigns:listDashboard", async () => {
+    const entries = await getCampaignDashboard(
+      { db, campaignRepository, enrollmentRepository, campaignMetricsRollupRepository },
+      new Date()
+    );
+    return entries.map((e) => ({
+      id: e.id,
+      name: e.name,
+      status: e.status,
+      totalLeads: e.totalLeads,
+      emailsSent: e.emailsSent,
+      emailsRemaining: e.emailsRemaining,
+      replies: e.replies,
+      replyRatePercent: e.replyRatePercent,
+      completionPercent: e.completionPercent,
+      lastActivityAt: e.lastActivityAt ? e.lastActivityAt.toISOString() : undefined,
+      createdAt: e.createdAt.toISOString()
     }));
+  });
+
+  ipcMain.handle("campaigns:update", async (_event, request) => {
+    const campaign = await campaignRepository.update(request.campaignId, {
+      name: request.name,
+      businessHoursProfileId: request.businessHoursProfileId
+    });
+    return serializeCampaign(campaign);
+  });
+
+  ipcMain.handle("campaigns:delete", async (_event, request) => {
+    const enrollments = await enrollmentRepository.listByCampaign(request.campaignId);
+    if (enrollments.length > 0) {
+      throw new Error(
+        "This campaign has enrollments and can't be deleted -- pause it instead. Only a never-used draft with zero leads can be deleted."
+      );
+    }
+    await campaignRepository.delete(request.campaignId);
   });
 
   ipcMain.handle("businessHoursProfiles:create", async (_event, request) => {
