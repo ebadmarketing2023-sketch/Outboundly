@@ -314,7 +314,7 @@ export interface UpdateCampaignRequest {
   businessHoursProfileId: string;
 }
 
-/** Only succeeds for a campaign with zero enrollments (an unused draft) -- see
+/** Cascades safely regardless of how many leads the campaign has -- see
  * CampaignRepository.delete's docblock. */
 export interface DeleteCampaignRequest {
   campaignId: string;

@@ -149,7 +149,10 @@ let inboxSyncTickTimer;
 
 const SCHEDULER_TICK_INTERVAL_MS = 60_000;
 const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
-const ROLLUP_TICK_INTERVAL_MS = 60 * 60 * 1000;
+// Was 1 hour -- far too coarse for a dashboard someone is actively watching during/after a test
+// send; every metric on the Campaign dashboard that isn't computed live (reply rate, emails sent)
+// is only ever as fresh as this tick.
+const ROLLUP_TICK_INTERVAL_MS = 5 * 60 * 1000;
 const ACCOUNT_HEALTH_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 const INBOX_SYNC_TICK_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -288,6 +291,7 @@ async function syncAccountById(accountId, { reportProgress }) {
 
     const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
     const stopEnrollmentDeps = {
+      db,
       enrollmentRepository,
       campaignRepository,
       sequenceRepository,
@@ -319,6 +323,24 @@ async function syncAccountById(accountId, { reportProgress }) {
   } finally {
     accountsCurrentlySyncing.delete(accountId);
   }
+}
+
+/** Recomputes the Analytics rollup tables, then the Insights Engine on top of them (Section 21.1's
+ * "fixed interval, after rollups" chaining) -- shared by startBackgroundWorkers' immediate
+ * run-once-at-startup call and its recurring interval, so there's exactly one implementation of
+ * "run this tick" for both. */
+function runRollupAndInsightsTick() {
+  const now = new Date();
+  computeRollups({ db, campaignRepository, eventRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository }, now)
+    .then(() =>
+      computeInsights(
+        { db, campaignRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository, insightRepository },
+        now
+      )
+    )
+    .catch((err) => {
+      console.error("[rollup-tick] failed:", err);
+    });
 }
 
 /** Background workers (Section 21.1): fixed-interval Scheduler tick, Send worker, and the
@@ -358,22 +380,15 @@ function startBackgroundWorkers() {
     });
   }, SEND_WORKER_TICK_INTERVAL_MS);
 
-  rollupTickTimer = setInterval(() => {
-    const now = new Date();
-    computeRollups({ db, campaignRepository, eventRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository }, now)
-      .then(() =>
-        // Insights worker (Section 21.1): "Fixed interval, after rollups" -- chained onto the same
-        // tick rather than its own timer so it always reads rollups this tick just recomputed, never
-        // a stale prior run.
-        computeInsights(
-          { db, campaignRepository, campaignMetricsRollupRepository, accountMetricsRollupRepository, insightRepository },
-          now
-        )
-      )
-      .catch((err) => {
-        console.error("[rollup-tick] failed:", err);
-      });
-  }, ROLLUP_TICK_INTERVAL_MS);
+  // setInterval alone never fires until the first full interval has elapsed -- with the old
+  // one-hour period, a freshly started app (or any session shorter than an hour, which is most
+  // real usage) would show a stale/zeroed reply rate and emails-sent count on the Campaign
+  // dashboard the whole time, since those numbers are deliberately read only from these rollup
+  // tables (Section 20.1), never computed live from the events log. Running once immediately at
+  // startup, on top of the recurring interval below, is what actually keeps the dashboard truthful
+  // during ordinary use instead of only after an hour has passed.
+  runRollupAndInsightsTick();
+  rollupTickTimer = setInterval(runRollupAndInsightsTick, ROLLUP_TICK_INTERVAL_MS);
 
   // Account Health sweep (Section 17.3's "Periodic (background)" mode): re-runs the same live
   // auth check the manual "Recompute" button triggers, for every non-disconnected account, so a
@@ -859,7 +874,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle("contacts:delete", async (_event, request) => {
     await deleteContact(
-      { enrollmentRepository, campaignRepository, sequenceRepository, contactRepository },
+      { db, enrollmentRepository, campaignRepository, sequenceRepository, contactRepository },
       request.contactId
     );
   });
@@ -910,10 +925,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("campaigns:listDashboard", async () => {
-    const entries = await getCampaignDashboard(
-      { db, campaignRepository, enrollmentRepository, campaignMetricsRollupRepository },
-      new Date()
-    );
+    const entries = await getCampaignDashboard({ db, campaignRepository, enrollmentRepository });
     return entries.map((e) => ({
       id: e.id,
       name: e.name,
@@ -938,12 +950,9 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("campaigns:delete", async (_event, request) => {
-    const enrollments = await enrollmentRepository.listByCampaign(request.campaignId);
-    if (enrollments.length > 0) {
-      throw new Error(
-        "This campaign has enrollments and can't be deleted -- pause it instead. Only a never-used draft with zero leads can be deleted."
-      );
-    }
+    // campaignRepository.delete cascades safely (cancels outstanding queued sends, removes
+    // enrollments, all in one transaction) -- a campaign is always deletable regardless of how
+    // many leads it has, unlike the earlier "only an empty draft" restriction.
     await campaignRepository.delete(request.campaignId);
   });
 
@@ -1129,7 +1138,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle("campaigns:unsubscribeContact", async (_event, request) => {
     await unsubscribeContact(
-      { enrollmentRepository, campaignRepository, sequenceRepository, contactRepository, suppressionListRepository, eventRepository },
+      { db, enrollmentRepository, campaignRepository, sequenceRepository, contactRepository, suppressionListRepository, eventRepository },
       request.contactId,
       request.campaignId
     );

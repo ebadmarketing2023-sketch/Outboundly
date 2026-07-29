@@ -22,18 +22,24 @@ const DEFAULT_IN_FLIGHT_RETRY_MS = 5 * 60 * 1000; // no confirmed-sent timestamp
  * ceiling"); the cost is occasional over-conservatism while sends are in flight, which resolves
  * itself as soon as they land as confirmed sends or fail back to pending.
  *
- * Also enforces each account's own randomized send-pacing (a freshly randomized delay generated
- * after every admitted send, distinct from the per-campaign Delay Policy's one-time
- * scheduling-time jitter): this is what actually stops emails from the same account going out
- * "almost simultaneously" regardless of which campaign queued them, since every claimed row for an
+ * Also enforces each account's own randomized send-pacing (a freshly randomized delay committed
+ * by reserveNextSend, distinct from the per-campaign Delay Policy's one-time scheduling-time
+ * jitter): this is what actually stops emails from the same account going out "almost
+ * simultaneously" regardless of which campaign queued them, since every claimed row for an
  * account is funneled through this same authoritative check before dispatch.
  *
  * checkAndReserve is synchronous by design: better-sqlite3 itself is synchronous, so with no
  * await point between reading the current counts and this function returning, no other call on
- * this single-threaded process can interleave and observe a stale count — the "reservation" is
- * simply the queue row's own claimed status, which the Queue already set before this is called
- * (Section 16.1's Queue -> RateLimiter ordering), plus (for pacing) this account's own
- * next_allowed_send_at, which this same call advances the instant it admits a send.
+ * this single-threaded process can interleave and observe a stale count — the "reservation" for
+ * the daily/hourly limits is simply the queue row's own claimed status, which the Queue already
+ * set before this is called (Section 16.1's Queue -> RateLimiter ordering). Pacing is different:
+ * checkAndReserve itself no longer writes anything (see reserveNextSend) precisely because it gets
+ * called more than once per real dispatch -- once directly by the Send worker, and again per
+ * candidate account the Provider Selector screens for rotation-pool eligibility. Writing
+ * next_allowed_send_at from inside a read-only-sounding "check" used to mean the Provider
+ * Selector's own eligibility re-check (moments later, same account) would see the window
+ * dispatchOne's own check had just reserved and deny it -- so the message could never actually go
+ * out no matter how long the configured delay was.
  */
 export class SqliteRateLimiter implements RateLimiter {
   constructor(private readonly db: OutboundlyDb) {}
@@ -59,37 +65,42 @@ export class SqliteRateLimiter implements RateLimiter {
       if (!decision.allowed) return decision;
     }
 
-    const pacingDenial = this.checkAndReservePacing(account);
+    const pacingDenial = this.checkPacing(account);
     if (pacingDenial) return pacingDenial;
 
     return { allowed: true };
   }
 
-  /** Undefined min/max means no pacing is configured for this account -- not a zero-length delay
-   * (same convention the Delay Policy already uses). Returns a denial if this account's own
-   * randomized delay hasn't elapsed yet; otherwise reserves a fresh one for the *next* send and
-   * returns undefined (allowed). */
-  private checkAndReservePacing(
-    account: { id: string; minSendDelaySeconds: number | null; maxSendDelaySeconds: number | null; nextAllowedSendAt: Date | null } | undefined
+  /** Read-only: undefined min/max means no pacing is configured for this account -- not a
+   * zero-length delay (same convention the Delay Policy already uses). Returns a denial if this
+   * account's own randomized delay (set by a prior reserveNextSend call) hasn't elapsed yet. */
+  private checkPacing(
+    account: { minSendDelaySeconds: number | null; maxSendDelaySeconds: number | null; nextAllowedSendAt: Date | null } | undefined
   ): RateLimitDecision | undefined {
     if (!account) return undefined;
     const { minSendDelaySeconds: min, maxSendDelaySeconds: max } = account;
     if (min == null || max == null) return undefined;
 
-    const now = new Date();
-    if (account.nextAllowedSendAt && account.nextAllowedSendAt.getTime() > now.getTime()) {
+    if (account.nextAllowedSendAt && account.nextAllowedSendAt.getTime() > Date.now()) {
       return {
         allowed: false,
         retryAfter: account.nextAllowedSendAt,
         reason: `Waiting for this account's randomized send delay (${min}-${max}s) before the next send`
       };
     }
+    return undefined;
+  }
+
+  reserveNextSend(accountId: AccountId): void {
+    const account = this.db.select().from(accounts).where(eq(accounts.id, accountId)).get();
+    if (!account) return;
+    const { minSendDelaySeconds: min, maxSendDelaySeconds: max } = account;
+    if (min == null || max == null) return;
 
     const spanSeconds = Math.max(0, max - min);
     const delaySeconds = min + Math.random() * spanSeconds;
-    const nextAllowedSendAt = new Date(now.getTime() + delaySeconds * 1000);
-    this.db.update(accounts).set({ nextAllowedSendAt }).where(eq(accounts.id, account.id)).run();
-    return undefined;
+    const nextAllowedSendAt = new Date(Date.now() + delaySeconds * 1000);
+    this.db.update(accounts).set({ nextAllowedSendAt }).where(eq(accounts.id, accountId)).run();
   }
 
   private checkWindow(

@@ -19,6 +19,7 @@ import type { RateLimiter } from "../../ports/rate-limiter.port.js";
 import type { Repository } from "../../ports/repository.port.js";
 import type { SendQueueEntry, SendQueueRepository } from "../../ports/send-queue-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
+import { maybeCompleteCampaign } from "./maybe-complete-campaign.js";
 import { stopEnrollmentsForContact } from "./stop-enrollments.js";
 
 const NO_ACCOUNT_RETRY_MS = 5 * 60 * 1000;
@@ -119,6 +120,12 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     return "retried";
   }
 
+  // Commit this account's next randomized pacing window now, exactly once -- on the account
+  // actually selected (which may differ from claimed.accountId if the Provider Selector
+  // substituted), and only now that dispatch is truly committed, not during the eligibility checks
+  // above (see RateLimiter.reserveNextSend's doc comment for why those must stay side-effect-free).
+  deps.rateLimiter.reserveNextSend(selection.accountId);
+
   const recipientEmail = message.toAddresses[0];
 
   if (!message.draftId) {
@@ -207,6 +214,13 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
         ? { templateId: message.templateId, subjectVariantId: message.subjectVariantId }
         : undefined
   });
+
+  // This may be the last outstanding queued send maybeCompleteCampaign (called at enqueue time,
+  // Section 14.3) was waiting on -- an enrollment can already be sitting in a terminal status with
+  // nothing left to do the moment its last message actually leaves the queue, so re-check here
+  // rather than only ever checking at enqueue time.
+  if (campaignId) await maybeCompleteCampaign(deps, campaignId);
+
   return "sent";
 }
 

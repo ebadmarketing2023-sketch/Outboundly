@@ -1,9 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Campaign, CampaignStatus, NewCampaignInput } from "../../../core/campaigns/campaign.js";
 import { asAccountId, asCampaignId, asSequenceId, generateId, type CampaignId } from "../../../core/shared-kernel/ids.js";
 import type { CampaignRepository, UpdateCampaignInput } from "../../../ports/campaign-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
-import { campaigns as campaignsTable } from "../schema.js";
+import { campaigns as campaignsTable, campaignEnrollments, messages, sendQueue } from "../schema.js";
 
 type CampaignRow = typeof campaignsTable.$inferSelect;
 
@@ -71,7 +71,37 @@ export class SqliteCampaignRepository implements CampaignRepository {
     return toDomain(row);
   }
 
+  /** Deleting a campaign that already has enrollments used to be refused outright (Section 5.6's
+   * FK on campaign_enrollments.campaign_id would otherwise reject the raw delete) -- but a user
+   * needs to be able to remove a campaign they're done with regardless of how many leads it ever
+   * had. This cancels any outstanding pending/claimed send_queue rows for the campaign's
+   * enrollments (so the Send worker never tries to dispatch a message for a campaign that no
+   * longer exists), then removes the enrollment rows, then the campaign itself -- all in one real
+   * transaction (Database Integrity, Critical Improvement #13) so a crash partway through can't
+   * leave the campaign gone but its enrollments/queued sends still dangling, or vice versa. Sent
+   * messages and analytics history are untouched: messages.campaignEnrollmentId has no real FK
+   * (Section 5.3) specifically so historical message rows can safely outlive the enrollment (and
+   * now the campaign) that produced them. */
   async delete(id: CampaignId): Promise<void> {
-    this.db.delete(campaignsTable).where(eq(campaignsTable.id, id)).run();
+    this.db.transaction((tx) => {
+      const enrollmentRows = tx.select({ id: campaignEnrollments.id }).from(campaignEnrollments).where(eq(campaignEnrollments.campaignId, id)).all();
+      const enrollmentIds = enrollmentRows.map((r) => r.id);
+
+      if (enrollmentIds.length > 0) {
+        const outstandingQueueRows = tx
+          .select({ id: sendQueue.id })
+          .from(sendQueue)
+          .innerJoin(messages, eq(sendQueue.messageId, messages.id))
+          .where(and(inArray(messages.campaignEnrollmentId, enrollmentIds), inArray(sendQueue.status, ["pending", "claimed"])))
+          .all();
+        const outstandingQueueIds = outstandingQueueRows.map((r) => r.id);
+        if (outstandingQueueIds.length > 0) {
+          tx.update(sendQueue).set({ status: "cancelled" }).where(inArray(sendQueue.id, outstandingQueueIds)).run();
+        }
+        tx.delete(campaignEnrollments).where(eq(campaignEnrollments.campaignId, id)).run();
+      }
+
+      tx.delete(campaignsTable).where(eq(campaignsTable.id, id)).run();
+    });
   }
 }

@@ -10,8 +10,10 @@ import { SqliteSequenceRepository } from "../../src/adapters/persistence/reposit
 import { SqliteCampaignRepository } from "../../src/adapters/persistence/repositories/campaign-repository.js";
 import { SqliteEnrollmentRepository } from "../../src/adapters/persistence/repositories/enrollment-repository.js";
 import { SqliteContactRepository } from "../../src/adapters/persistence/repositories/contact-repository.js";
+import { SqliteConversationRepository } from "../../src/adapters/persistence/repositories/conversation-repository.js";
+import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
-import { asAccountId } from "../../src/core/shared-kernel/ids.js";
+import { asAccountId, asMessageId } from "../../src/core/shared-kernel/ids.js";
 
 describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, Section 14)", () => {
   let db: OutboundlyDb;
@@ -144,7 +146,7 @@ describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, S
     expect(await campaignRepo.findById(campaign.id)).toBeUndefined();
   });
 
-  it("delete throws (the FK constraint rejects it) when the campaign still has enrollments", async () => {
+  it("delete cascades safely when the campaign still has enrollments: cancels outstanding queued sends, removes enrollments, keeps sent message history", async () => {
     const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
     const sequence = await sequenceRepo.create({
       name: "Seq",
@@ -157,14 +159,55 @@ describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, S
       businessHoursProfileId
     });
     const contact = await contactRepo.upsertByEmail({ email: "lead@example.com", source: "manual" });
-    await enrollmentRepo.enroll({
+    const enrollment = await enrollmentRepo.enroll({
       campaignId: campaign.id,
       contactId: contact.id,
       currentStepId: sequence.steps[0]!.id,
       nextSendAt: new Date()
     });
 
-    await expect(campaignRepo.delete(campaign.id)).rejects.toThrow();
+    const conversationRepo = new SqliteConversationRepository(db);
+    const sendQueueRepo = new SqliteSendQueueRepository(db);
+    const thread = await conversationRepo.createThread({ accountId, subjectNormalized: "hi", conversationState: "active" });
+    const sentMessageId = await conversationRepo.insertMessage({
+      accountId,
+      threadId: thread,
+      messageIdHeader: "<sent@outboundly>",
+      direction: "outbound",
+      fromAddress: "me@outboundly.app",
+      toAddresses: ["lead@example.com"],
+      subject: "hi",
+      status: "sent",
+      sentAt: new Date(),
+      campaignEnrollmentId: enrollment.id
+    });
+    const queuedMessageId = await conversationRepo.insertMessage({
+      accountId,
+      threadId: thread,
+      messageIdHeader: "<queued@outboundly>",
+      direction: "outbound",
+      fromAddress: "me@outboundly.app",
+      toAddresses: ["lead@example.com"],
+      subject: "hi",
+      status: "queued",
+      campaignEnrollmentId: enrollment.id
+    });
+    const queuedEntry = await sendQueueRepo.enqueue({
+      messageId: asMessageId(queuedMessageId),
+      accountId: asAccountId(accountId),
+      priority: "campaign",
+      earliestSendAt: new Date(Date.now() + 60_000),
+      idempotencyKey: "still-queued"
+    });
+
+    await campaignRepo.delete(campaign.id);
+
+    expect(await campaignRepo.findById(campaign.id)).toBeUndefined();
+    expect(await enrollmentRepo.findById(enrollment.id)).toBeUndefined();
+    expect((await sendQueueRepo.findById(queuedEntry.id))?.status).toBe("cancelled");
+    // The already-sent message and its history survive the campaign's deletion.
+    expect(await conversationRepo.findMessageById(sentMessageId)).toBeDefined();
+    expect(await conversationRepo.findMessageById(queuedMessageId)).toBeDefined();
   });
 
   it("enrolls a contact, finds it as due once next_send_at has passed, and advances it", async () => {

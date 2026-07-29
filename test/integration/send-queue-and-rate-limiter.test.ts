@@ -368,17 +368,31 @@ describe("SendQueue + RateLimiter (Section 5.8, Section 16.2)", () => {
 
     describe("per-account randomized send-pacing (Critical Improvement #1)", () => {
       it("does not enforce any pacing when min/max aren't configured", () => {
+        rateLimiter.reserveNextSend(asAccountId(accountId)); // no-op: no delay range configured
         const first = rateLimiter.checkAndReserve(asAccountId(accountId));
         const second = rateLimiter.checkAndReserve(asAccountId(accountId));
         expect(first.allowed).toBe(true);
         expect(second.allowed).toBe(true);
       });
 
-      it("allows the first send immediately even with pacing configured, then denies an immediate second one", () => {
+      it("checkAndReserve never writes anything by itself -- calling it repeatedly has no side effects", () => {
+        // This is the exact bug this split fixed: the Provider Selector's own eligibility check
+        // re-invokes checkAndReserve for the same account moments after dispatchOne's explicit
+        // check, and if checkAndReserve itself reserved a window, that second call would always
+        // see its own account freshly paced and deny it -- so a message could never actually be
+        // dispatched no matter how long the process ran.
+        const pacedAccountId = insertAccount({ minSendDelaySeconds: 60, maxSendDelaySeconds: 120 });
+        for (let i = 0; i < 5; i++) {
+          expect(rateLimiter.checkAndReserve(asAccountId(pacedAccountId)).allowed).toBe(true);
+        }
+      });
+
+      it("allows the first send immediately even with pacing configured, then denies an immediate second one once reserveNextSend commits it", () => {
         const pacedAccountId = insertAccount({ minSendDelaySeconds: 60, maxSendDelaySeconds: 120 });
 
         const first = rateLimiter.checkAndReserve(asAccountId(pacedAccountId));
         expect(first.allowed).toBe(true);
+        rateLimiter.reserveNextSend(asAccountId(pacedAccountId));
 
         const second = rateLimiter.checkAndReserve(asAccountId(pacedAccountId));
         expect(second.allowed).toBe(false);
@@ -403,21 +417,24 @@ describe("SendQueue + RateLimiter (Section 5.8, Section 16.2)", () => {
         expect(decision.allowed).toBe(true);
       });
 
-      it("generates a fresh random delay on every admitted send, not a fixed one", () => {
+      it("generates a fresh random delay on every reserveNextSend call, not a fixed one", () => {
         const pacedAccountId = insertAccount({ minSendDelaySeconds: 1, maxSendDelaySeconds: 100 });
         const observedDelays = new Set<number>();
 
         for (let i = 0; i < 5; i++) {
-          const decision = rateLimiter.checkAndReserve(asAccountId(pacedAccountId));
-          expect(decision.allowed).toBe(true);
+          rateLimiter.reserveNextSend(asAccountId(pacedAccountId));
           const row = db.select().from(accounts).where(eq(accounts.id, pacedAccountId)).get();
           observedDelays.add(row!.nextAllowedSendAt!.getTime());
-          // Force the next iteration's check to pass the pacing gate again.
-          db.update(accounts).set({ nextAllowedSendAt: new Date(Date.now() - 1000) }).where(eq(accounts.id, pacedAccountId)).run();
         }
 
         // Astronomically unlikely for 5 independent uniform draws over a 99-second span to collide.
         expect(observedDelays.size).toBeGreaterThan(1);
+      });
+
+      it("reserveNextSend is a no-op when no delay range is configured", () => {
+        rateLimiter.reserveNextSend(asAccountId(accountId));
+        const row = db.select().from(accounts).where(eq(accounts.id, accountId)).get();
+        expect(row?.nextAllowedSendAt).toBeNull();
       });
 
       it("paces independently per account -- one account's reserved delay never blocks another's", () => {
@@ -425,6 +442,7 @@ describe("SendQueue + RateLimiter (Section 5.8, Section 16.2)", () => {
         const accountB = insertAccount({ minSendDelaySeconds: 60, maxSendDelaySeconds: 120 });
 
         expect(rateLimiter.checkAndReserve(asAccountId(accountA)).allowed).toBe(true);
+        rateLimiter.reserveNextSend(asAccountId(accountA));
         expect(rateLimiter.checkAndReserve(asAccountId(accountA)).allowed).toBe(false); // paced now
         expect(rateLimiter.checkAndReserve(asAccountId(accountB)).allowed).toBe(true); // unaffected
       });

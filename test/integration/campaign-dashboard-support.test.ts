@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getCampaignDashboard, type CampaignDashboardDeps } from "../../src/adapters/persistence/campaign-dashboard-support.js";
 import { SqliteBusinessHoursProfileRepository } from "../../src/adapters/persistence/repositories/business-hours-profile-repository.js";
-import { SqliteCampaignMetricsRollupRepository } from "../../src/adapters/persistence/repositories/campaign-metrics-rollup-repository.js";
 import { SqliteCampaignRepository } from "../../src/adapters/persistence/repositories/campaign-repository.js";
 import { SqliteContactRepository } from "../../src/adapters/persistence/repositories/contact-repository.js";
 import { SqliteConversationRepository } from "../../src/adapters/persistence/repositories/conversation-repository.js";
 import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/db.js";
 import { SqliteEnrollmentRepository } from "../../src/adapters/persistence/repositories/enrollment-repository.js";
+import { SqliteEventRepository } from "../../src/adapters/persistence/repositories/event-repository.js";
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteTemplateRepository } from "../../src/adapters/persistence/repositories/template-repository.js";
@@ -24,6 +24,7 @@ describe("getCampaignDashboard (Critical Improvement #4 campaign list)", () => {
   let conversationRepository: SqliteConversationRepository;
   let enrollmentRepository: SqliteEnrollmentRepository;
   let sendQueueRepository: SqliteSendQueueRepository;
+  let eventRepository: SqliteEventRepository;
   let accountId: string;
   let stepAId: string;
 
@@ -69,17 +70,13 @@ describe("getCampaignDashboard (Critical Improvement #4 campaign list)", () => {
     conversationRepository = new SqliteConversationRepository(db);
     enrollmentRepository = new SqliteEnrollmentRepository(db);
     sendQueueRepository = new SqliteSendQueueRepository(db);
+    eventRepository = new SqliteEventRepository(db);
 
-    deps = {
-      db,
-      campaignRepository,
-      enrollmentRepository,
-      campaignMetricsRollupRepository: new SqliteCampaignMetricsRollupRepository(db)
-    };
+    deps = { db, campaignRepository, enrollmentRepository };
   });
 
   it("returns zeroed metrics for a campaign with no enrollments yet", async () => {
-    const [entry] = await getCampaignDashboard(deps, new Date());
+    const [entry] = await getCampaignDashboard(deps);
     expect(entry).toMatchObject({
       id: campaignId,
       name: "Q1 outreach",
@@ -147,25 +144,12 @@ describe("getCampaignDashboard (Critical Improvement #4 campaign list)", () => {
       campaignEnrollmentId: enrollmentB.id
     });
 
-    await deps.campaignMetricsRollupRepository.upsertBuckets(
-      asCampaignId(campaignId),
-      [
-        {
-          periodStart: earlier,
-          sentCount: 2,
-          bouncedCount: 0,
-          repliedCount: 1,
-          positiveReplyCount: 0,
-          unsubscribedCount: 0,
-          conversionCount: 0,
-          openedCount: 0,
-          clickedCount: 0
-        }
-      ],
-      later
-    );
+    // Live-computed, not from a rollup bucket (Section 21.1's rollup worker can lag by minutes, or
+    // by a full hour on a fresh app start before its startup fix) -- the dashboard must reflect a
+    // real reply immediately.
+    await eventRepository.record({ eventType: "replied", campaignId: asCampaignId(campaignId), occurredAt: later });
 
-    const [entry] = await getCampaignDashboard(deps, later);
+    const [entry] = await getCampaignDashboard(deps);
     expect(entry).toMatchObject({
       totalLeads: 2,
       emailsSent: 2,
@@ -227,7 +211,51 @@ describe("getCampaignDashboard (Critical Improvement #4 campaign list)", () => {
     });
     await sendQueueRepository.markSent(sentQueueEntry.id);
 
-    const [entry] = await getCampaignDashboard(deps, new Date());
+    const [entry] = await getCampaignDashboard(deps);
     expect(entry!.emailsRemaining).toBe(1);
+  });
+
+  it("does not count an enrollment as 'complete' while its last email is still sitting in send_queue, unsent", async () => {
+    // Reproduces a real reported bug: a single-step sequence's enrollment flips to 'completed' the
+    // instant its message is enqueued (Section 14.3 -- queuing, not delivery, advances the state
+    // machine), which can be well before the Send worker actually dispatches it (e.g. a configured
+    // send delay holding it in the queue). The dashboard must not show 100% completion until the
+    // email has actually left the queue.
+    const contactRepository = new SqliteContactRepository(db);
+    const contact = await contactRepository.upsertByEmail({ email: "lead@example.com", source: "manual" });
+    const enrollment = await enrollmentRepository.enroll({
+      campaignId: asCampaignId(campaignId),
+      contactId: contact.id,
+      currentStepId: stepAId,
+      nextSendAt: new Date()
+    });
+
+    const thread = await conversationRepository.createThread({ accountId, subjectNormalized: "hi", conversationState: "active" });
+    const messageId = await conversationRepository.insertMessage({
+      accountId,
+      threadId: thread,
+      messageIdHeader: "<queued@outboundly>",
+      direction: "outbound",
+      fromAddress: "me@outboundly.app",
+      toAddresses: ["lead@example.com"],
+      subject: "hi",
+      status: "queued",
+      campaignEnrollmentId: enrollment.id
+    });
+    await sendQueueRepository.enqueue({
+      messageId: asMessageId(messageId),
+      accountId: asAccountId(accountId),
+      priority: "campaign",
+      earliestSendAt: new Date(Date.now() + 60_000), // still waiting out a configured send delay
+      idempotencyKey: "still-queued-key"
+    });
+    // The engine's own state machine already advanced this enrollment to 'completed' at enqueue
+    // time, well before the send worker gets to it.
+    await enrollmentRepository.advance(enrollment.id, { status: "completed", nextSendAt: undefined });
+
+    const [entry] = await getCampaignDashboard(deps);
+    expect(entry!.emailsSent).toBe(0);
+    expect(entry!.emailsRemaining).toBe(1);
+    expect(entry!.completionPercent).toBe(0);
   });
 });

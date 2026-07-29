@@ -11,6 +11,7 @@ import {
   unsubscribeContact
 } from "../../src/application/campaigns/stop-enrollments.js";
 import { deleteContact } from "../../src/application/leads/delete-contact.js";
+import { maybeCompleteCampaign } from "../../src/application/campaigns/maybe-complete-campaign.js";
 import { recordConversion } from "../../src/application/analytics/record-conversion.js";
 import { DraftLifecycleService } from "../../src/core/drafts/draft-lifecycle.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
@@ -183,8 +184,16 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     const reloaded = await deps.enrollmentRepository.findById(enrollment.id);
     expect(reloaded?.status).toBe("completed");
 
-    // With this contact's enrollment now the campaign's only one and it's terminal, the campaign
-    // itself should have auto-transitioned to 'completed' (Section 14.1).
+    // The enrollment's own state machine already reads "completed" the instant its last message is
+    // enqueued, but the actual send hasn't happened yet (it's sitting in send_queue as 'pending') --
+    // the campaign itself must stay 'running' until that email has actually left the queue,
+    // otherwise Pause/Resume disappear from a campaign that still has a real send in flight.
+    const stillRunning = await deps.campaignRepository.findById(campaign.id);
+    expect(stillRunning?.status).toBe("running");
+
+    // Once the Send worker actually resolves that last queued send, the campaign completes.
+    await deps.sendQueueRepository.markSent(result.sendQueueEntryId);
+    await maybeCompleteCampaign(deps, campaign.id);
     const reloadedCampaign = await deps.campaignRepository.findById(campaign.id);
     expect(reloadedCampaign?.status).toBe("completed");
   });

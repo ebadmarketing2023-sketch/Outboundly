@@ -16,10 +16,11 @@ export interface CampaignRepository {
    * much bigger implications (mid-flight personalization/attribution changes) and isn't supported
    * here -- pause and create a new campaign instead. */
   update(id: CampaignId, patch: UpdateCampaignInput): Promise<Campaign>;
-  /** The caller is responsible for checking the campaign has no enrollments first (Section 14.2):
-   * campaign_enrollments.campaign_id is a real FK, so this throws if any still reference it --
-   * deleting a campaign with real send history would either violate that constraint or require
-   * cascading through enrollments/messages, which would destroy analytics history this app exists
-   * to preserve. Delete is for an unused draft only; pause a campaign with real history instead. */
+  /** Cascades safely regardless of how many leads the campaign has (Section 14.2):
+   * campaign_enrollments.campaign_id is a real FK, so a raw delete would otherwise throw. This
+   * cancels any outstanding queued sends for the campaign's enrollments, removes the enrollment
+   * rows, then the campaign, all in one transaction -- sent messages and their analytics history
+   * are untouched (messages.campaignEnrollmentId has no real FK precisely so historical rows can
+   * safely outlive the campaign that produced them). */
   delete(id: CampaignId): Promise<void>;
 }

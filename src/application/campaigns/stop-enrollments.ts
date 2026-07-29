@@ -1,3 +1,4 @@
+import type { OutboundlyDb } from "../../adapters/persistence/db.js";
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
 import { asAccountId, asEnrollmentId, type CampaignId, type ContactId, type EnrollmentId } from "../../core/shared-kernel/ids.js";
 import type { CampaignRepository } from "../../ports/campaign-repository.port.js";
@@ -14,6 +15,7 @@ import { maybeCompleteCampaign } from "./maybe-complete-campaign.js";
 export type StopReason = "stopped_reply" | "stopped_bounce" | "stopped_manual" | "stopped_suppressed";
 
 export interface StopEnrollmentsDeps {
+  db: OutboundlyDb;
   enrollmentRepository: EnrollmentRepository;
   campaignRepository: CampaignRepository;
   sequenceRepository: SequenceRepository;

@@ -323,6 +323,7 @@ export function CampaignsScreen(): JSX.Element {
     setDeleteCampaignBusy(true);
     try {
       await window.outboundly.deleteCampaign({ campaignId: deleteCampaignTarget.id });
+      if (selectedCampaignId === deleteCampaignTarget.id) setSelectedCampaignId("");
       refreshAll();
       toast.showToast("Campaign deleted.", "success");
     } catch (err) {
@@ -780,11 +781,9 @@ export function CampaignsScreen(): JSX.Element {
                             <Button variant="ghost" size="sm" onClick={() => handleOpenEditCampaign(c)}>
                               Edit
                             </Button>
-                            {c.totalLeads === 0 && (
-                              <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteCampaignTarget(c)}>
-                                Delete
-                              </Button>
-                            )}
+                            <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteCampaignTarget(c)}>
+                              Delete
+                            </Button>
                           </div>
                         </Td>
                       </TableRow>
@@ -936,7 +935,7 @@ export function CampaignsScreen(): JSX.Element {
       <ConfirmDialog
         open={deleteCampaignTarget !== null}
         title="Delete this campaign?"
-        description={`"${deleteCampaignTarget?.name ?? "This campaign"}" has never had any leads enrolled, so it can be deleted safely. This can't be undone.`}
+        description={`"${deleteCampaignTarget?.name ?? "This campaign"}" will be deleted along with its enrollments. Any of its emails still waiting to send will be cancelled -- emails already sent, and their reply/analytics history, are kept. This can't be undone.`}
         confirmLabel="Delete"
         danger
         busy={deleteCampaignBusy}
