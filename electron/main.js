@@ -933,7 +933,10 @@ function createWindow() {
       preload: join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      // OS-level renderer sandbox (Section 23 defense-in-depth): preload.cjs only ever calls
+      // contextBridge/ipcRenderer, both fully supported from a sandboxed preload, so there's no
+      // functional reason for this to be off.
+      sandbox: true
     }
   });
   void win.loadFile(join(__dirname, "renderer", "index.html"));
