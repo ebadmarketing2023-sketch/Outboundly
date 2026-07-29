@@ -13,6 +13,7 @@ import {
   Card,
   CardHeader,
   Checkbox,
+  ConfirmDialog,
   EmptyState,
   EnrollmentStatusBadge,
   ErrorBanner,
@@ -90,6 +91,7 @@ export function CampaignsScreen(): JSX.Element {
 
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [enrollments, setEnrollments] = useState<EnrollmentSummary[]>([]);
+  const [unsubscribeTarget, setUnsubscribeTarget] = useState<{ contactId: string; email: string } | null>(null);
 
   function refreshAll(): void {
     window.outboundly
@@ -273,14 +275,17 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
-  async function handleUnsubscribe(campaignId: string, contactId: string): Promise<void> {
+  async function handleUnsubscribe(): Promise<void> {
+    if (!unsubscribeTarget) return;
     setError(null);
     try {
-      await window.outboundly.unsubscribeContact({ campaignId, contactId });
-      window.outboundly.listEnrollments({ campaignId }).then(setEnrollments);
+      await window.outboundly.unsubscribeContact({ campaignId: selectedCampaignId, contactId: unsubscribeTarget.contactId });
+      window.outboundly.listEnrollments({ campaignId: selectedCampaignId }).then(setEnrollments);
       toast.showToast("Contact unsubscribed.", "success");
     } catch (err) {
       setError(String(err));
+    } finally {
+      setUnsubscribeTarget(null);
     }
   }
 
@@ -627,26 +632,29 @@ export function CampaignsScreen(): JSX.Element {
                     </tr>
                   </thead>
                   <tbody>
-                    {enrollments.map((e) => (
-                      <TableRow key={e.id}>
-                        <Td>{contacts.find((c) => c.id === e.contactId)?.email ?? e.contactId}</Td>
-                        <Td>
-                          <EnrollmentStatusBadge status={e.status} />
-                        </Td>
-                        <Td>{e.nextSendAt ? formatDate(e.nextSendAt) : "—"}</Td>
-                        <Td>{formatDate(e.enrolledAt)}</Td>
-                        <Td align="right">
-                          <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
-                            <Button variant="secondary" size="sm" onClick={() => handleMarkConversion(selectedCampaignId, e.contactId)}>
-                              Mark converted
-                            </Button>
-                            <Button variant="danger-ghost" size="sm" onClick={() => handleUnsubscribe(selectedCampaignId, e.contactId)}>
-                              Unsubscribe
-                            </Button>
-                          </div>
-                        </Td>
-                      </TableRow>
-                    ))}
+                    {enrollments.map((e) => {
+                      const email = contacts.find((c) => c.id === e.contactId)?.email ?? e.contactId;
+                      return (
+                        <TableRow key={e.id}>
+                          <Td>{email}</Td>
+                          <Td>
+                            <EnrollmentStatusBadge status={e.status} />
+                          </Td>
+                          <Td>{e.nextSendAt ? formatDate(e.nextSendAt) : "—"}</Td>
+                          <Td>{formatDate(e.enrolledAt)}</Td>
+                          <Td align="right">
+                            <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
+                              <Button variant="secondary" size="sm" onClick={() => handleMarkConversion(selectedCampaignId, e.contactId)}>
+                                Mark converted
+                              </Button>
+                              <Button variant="danger-ghost" size="sm" onClick={() => setUnsubscribeTarget({ contactId: e.contactId, email })}>
+                                Unsubscribe
+                              </Button>
+                            </div>
+                          </Td>
+                        </TableRow>
+                      );
+                    })}
                   </tbody>
                 </Table>
               )}
@@ -654,6 +662,16 @@ export function CampaignsScreen(): JSX.Element {
           )}
         </>
       )}
+
+      <ConfirmDialog
+        open={unsubscribeTarget !== null}
+        title="Unsubscribe this contact?"
+        description={`This adds ${unsubscribeTarget?.email ?? "this contact"} to the global suppression list and stops every campaign they're enrolled in. There's currently no way to remove a contact from the suppression list once added.`}
+        confirmLabel="Unsubscribe"
+        danger
+        onConfirm={handleUnsubscribe}
+        onCancel={() => setUnsubscribeTarget(null)}
+      />
     </div>
   );
 }
