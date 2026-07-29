@@ -56,6 +56,7 @@ class InMemoryConversationRepository implements ConversationRepository {
   providerThreadIdToThreadId = new Map<string, string>();
   syncCursors = new Map<string, string>();
   campaignEnrollmentIdByThread = new Map<string, string>();
+  insertedMessages: NewMessageInput[] = [];
   private nextId = 1;
 
   async getSyncCursor(accountId: string) {
@@ -83,6 +84,7 @@ class InMemoryConversationRepository implements ConversationRepository {
   async updateThreadState(_threadId: string, _state: ConversationState) {}
   async mergeThreads() {}
   async insertMessage(input: NewMessageInput) {
+    this.insertedMessages.push(input);
     this.messageIdToThreadId.set(input.messageIdHeader, input.threadId);
     if (input.direction === "outbound" && input.campaignEnrollmentId) {
       this.campaignEnrollmentIdByThread.set(input.threadId, input.campaignEnrollmentId);
@@ -282,5 +284,29 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
 
     expect(detectedThreads).toEqual([]);
     expect(result.bouncesDetected).toBe(0);
+  });
+
+  it("sanitizes a synced message's bodyHtml before it's ever persisted (Section 23)", async () => {
+    const repo = new InMemoryConversationRepository();
+    const provider = new FakeMailProvider({
+      "msg-html": {
+        providerMessageId: "msg-html",
+        messageIdHeader: "<m1@x>",
+        from: "someone@example.com",
+        to: ["me@outboundly.app"],
+        subject: "Hi",
+        bodyHtml: '<p>Hello</p><script>alert(document.cookie)</script><img src="x" onerror="steal()">',
+        date: new Date()
+      }
+    });
+
+    await syncInboxForAccount({ accountId: "acct-1", accountRef, provider, repo });
+
+    expect(repo.insertedMessages).toHaveLength(1);
+    const stored = repo.insertedMessages[0]!.bodyHtml!;
+    expect(stored).not.toContain("<script");
+    expect(stored).not.toContain("alert(document.cookie)");
+    expect(stored).not.toContain("onerror");
+    expect(stored).toContain("Hello");
   });
 });

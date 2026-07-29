@@ -1,4 +1,5 @@
 import { looksLikeBounceNotification } from "../../core/campaigns/bounce-detection.js";
+import { sanitizeInboundHtml } from "../../core/rendering/sanitize-html.js";
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
 import type { AccountRef, MailProvider } from "../../ports/mail-provider.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
@@ -77,7 +78,10 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
         to: normalized.to,
         cc: normalized.cc,
         subject: normalized.subject,
-        bodyHtml: normalized.bodyHtml,
+        // Section 23: "inbound synced HTML sanitized ... before rendering" -- the one place
+        // externally-authored HTML enters this pipeline, so it's re-parsed against the Internal
+        // Document Model's allowed-node schema and re-rendered from that, never stored verbatim.
+        bodyHtml: sanitizeInboundHtml(normalized.bodyHtml),
         bodyText: normalized.bodyText,
         snippet: normalized.snippet,
         occurredAt: normalized.date
