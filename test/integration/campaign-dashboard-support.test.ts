@@ -81,6 +81,7 @@ describe("getCampaignDashboard (Critical Improvement #4 campaign list)", () => {
       id: campaignId,
       name: "Q1 outreach",
       status: "draft",
+      sendingAccountIds: [accountId],
       totalLeads: 0,
       emailsSent: 0,
       emailsRemaining: 0,

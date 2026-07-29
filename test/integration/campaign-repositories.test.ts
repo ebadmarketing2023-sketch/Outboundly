@@ -3,8 +3,16 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/db.js";
-import { accounts as accountsTable, businessHoursProfiles } from "../../src/adapters/persistence/schema.js";
+import {
+  accounts as accountsTable,
+  businessHoursProfiles,
+  campaignMetricsRollup,
+  errorLogs,
+  events,
+  notifications
+} from "../../src/adapters/persistence/schema.js";
 import { SqliteTemplateRepository } from "../../src/adapters/persistence/repositories/template-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteCampaignRepository } from "../../src/adapters/persistence/repositories/campaign-repository.js";
@@ -13,7 +21,7 @@ import { SqliteContactRepository } from "../../src/adapters/persistence/reposito
 import { SqliteConversationRepository } from "../../src/adapters/persistence/repositories/conversation-repository.js";
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
-import { asAccountId, asMessageId } from "../../src/core/shared-kernel/ids.js";
+import { asAccountId, asMessageId, generateId } from "../../src/core/shared-kernel/ids.js";
 
 describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, Section 14)", () => {
   let db: OutboundlyDb;
@@ -208,6 +216,82 @@ describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, S
     // The already-sent message and its history survive the campaign's deletion.
     expect(await conversationRepo.findMessageById(sentMessageId)).toBeDefined();
     expect(await conversationRepo.findMessageById(queuedMessageId)).toBeDefined();
+  });
+
+  it("delete succeeds for a campaign that has actually run and accumulated analytics rows, detaching (not losing) its event/notification/error-log history", async () => {
+    // Reproduces a real reported bug: a campaign old enough to have real events, a computed
+    // campaign_metrics_rollup bucket, a notification, and an error-log entry used to fail to
+    // delete outright with "FOREIGN KEY constraint failed" (db.ts turns on `foreign_keys = ON`,
+    // and every one of those tables has a real, enforced FK on campaigns.id -- unlike
+    // messages.campaignEnrollmentId, which predates campaigns and so has no real FK). A brand-new
+    // campaign with none of these rows yet (the "delete removes a campaign that has no
+    // enrollments" case above) never hit this, which is exactly why it only ever showed up on
+    // "old" campaigns for real users.
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await campaignRepo.create({
+      name: "Old campaign",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+
+    const now = new Date();
+    db.insert(events)
+      .values({ id: generateId(), eventType: "sent", campaignId: campaign.id, accountId, occurredAt: now })
+      .run();
+    db.insert(campaignMetricsRollup)
+      .values({
+        id: generateId(),
+        campaignId: campaign.id,
+        periodStart: now,
+        sentCount: 1,
+        bouncedCount: 0,
+        repliedCount: 0,
+        positiveReplyCount: 0,
+        unsubscribedCount: 0,
+        conversionCount: 0,
+        openedCount: 0,
+        clickedCount: 0,
+        computedAt: now
+      })
+      .run();
+    db.insert(notifications)
+      .values({
+        id: generateId(),
+        notificationType: "send_failure",
+        severity: "warning",
+        message: "test",
+        relatedCampaignId: campaign.id,
+        createdAt: now
+      })
+      .run();
+    db.insert(errorLogs)
+      .values({ id: generateId(), occurredAt: now, source: "send-worker", errorType: "test", errorMessage: "test", campaignId: campaign.id })
+      .run();
+
+    await expect(campaignRepo.delete(campaign.id)).resolves.toBeUndefined();
+    expect(await campaignRepo.findById(campaign.id)).toBeUndefined();
+
+    // Rollups are always safely regenerable from the event log and meaningless once the campaign
+    // is gone (Section 20's own docblock), so they're deleted outright rather than detached.
+    expect(db.select().from(campaignMetricsRollup).where(eq(campaignMetricsRollup.campaignId, campaign.id)).all()).toHaveLength(0);
+
+    // Events/notifications/error-logs are real historical/audit records -- kept, just detached.
+    const eventRow = db.select().from(events).all()[0];
+    expect(eventRow?.eventType).toBe("sent");
+    expect(eventRow?.campaignId).toBeNull();
+
+    const notificationRow = db.select().from(notifications).all()[0];
+    expect(notificationRow?.message).toBe("test");
+    expect(notificationRow?.relatedCampaignId).toBeNull();
+
+    const errorLogRow = db.select().from(errorLogs).all()[0];
+    expect(errorLogRow?.errorMessage).toBe("test");
+    expect(errorLogRow?.campaignId).toBeNull();
   });
 
   it("enrolls a contact, finds it as due once next_send_at has passed, and advances it", async () => {

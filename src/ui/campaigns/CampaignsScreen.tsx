@@ -26,6 +26,7 @@ import {
   Modal,
   PageHeader,
   PlusIcon,
+  RefreshIcon,
   Select,
   StatusBadge,
   Table,
@@ -51,6 +52,16 @@ const WEEKDAY_LABELS: Record<string, string> = {
 };
 
 type SectionKey = "accounts" | "business-hours" | "templates" | "sequences" | "campaigns";
+
+/** Renders a campaign's rotation pool (Critical Improvement: which account(s) a campaign actually
+ * sends from, visible right on the dashboard row) as a comma-joined list of email addresses --
+ * usually just one, but a campaign's sendingAccountIds can hold more than one for round-robin
+ * rotation (Section 16.3's Provider Selector). Falls back to the bare id for an account that's
+ * since been disconnected/removed from the visible accounts list, rather than silently dropping it. */
+function describeSendingAccounts(sendingAccountIds: string[], accounts: AccountSummary[]): string {
+  if (sendingAccountIds.length === 0) return "—";
+  return sendingAccountIds.map((id) => accounts.find((a) => a.id === id)?.emailAddress ?? id).join(", ");
+}
 
 /**
  * The Phase 4 "minimal" Campaign UI (Section 14): sending-account limits, business hours
@@ -113,9 +124,10 @@ export function CampaignsScreen(): JSX.Element {
   const [editCampaignBusy, setEditCampaignBusy] = useState(false);
   const [deleteCampaignTarget, setDeleteCampaignTarget] = useState<CampaignDashboardEntrySummary | null>(null);
   const [deleteCampaignBusy, setDeleteCampaignBusy] = useState(false);
+  const [dashboardRefreshBusy, setDashboardRefreshBusy] = useState(false);
 
-  function refreshAll(): void {
-    window.outboundly
+  function refreshAll(): Promise<void> {
+    const accountsPromise = window.outboundly
       .listAccounts()
       .then((list) => {
         setAccounts(list);
@@ -135,17 +147,34 @@ export function CampaignsScreen(): JSX.Element {
         });
       })
       .catch((err) => setError(String(err)));
-    window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err)));
-    window.outboundly.listLeadImportBatches().then(setLeadImportBatches).catch((err) => setError(String(err)));
-    window.outboundly.listTemplates().then(setTemplates).catch((err) => setError(String(err)));
-    window.outboundly.listSequences().then(setSequences).catch((err) => setError(String(err)));
-    window.outboundly.listCampaigns().then(setCampaigns).catch((err) => setError(String(err)));
-    window.outboundly.listBusinessHoursProfiles().then(setBusinessHoursProfiles).catch((err) => setError(String(err)));
-    refreshCampaignDashboard();
+    return Promise.all([
+      accountsPromise,
+      window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err))),
+      window.outboundly.listLeadImportBatches().then(setLeadImportBatches).catch((err) => setError(String(err))),
+      window.outboundly.listTemplates().then(setTemplates).catch((err) => setError(String(err))),
+      window.outboundly.listSequences().then(setSequences).catch((err) => setError(String(err))),
+      window.outboundly.listCampaigns().then(setCampaigns).catch((err) => setError(String(err))),
+      window.outboundly.listBusinessHoursProfiles().then(setBusinessHoursProfiles).catch((err) => setError(String(err))),
+      refreshCampaignDashboard()
+    ]).then(() => undefined);
   }
 
-  function refreshCampaignDashboard(): void {
-    window.outboundly.listCampaignDashboard().then(setCampaignDashboard).catch((err) => setError(String(err)));
+  function refreshCampaignDashboard(): Promise<void> {
+    return window.outboundly.listCampaignDashboard().then(setCampaignDashboard).catch((err) => setError(String(err)));
+  }
+
+  // Critical Improvement: replies/completion/queue counts on this dashboard are live-computed
+  // (Section 21.1's rollup worker only recomputes every few minutes), but nothing on this screen
+  // re-fetches on its own once mounted -- a reply that lands, or a background send that completes,
+  // while the user is sitting here looking at it just never appears until they navigate away and
+  // back. A manual refresh gives an explicit, immediate way to pull the latest without that.
+  async function handleRefreshDashboard(): Promise<void> {
+    setDashboardRefreshBusy(true);
+    try {
+      await refreshAll();
+    } finally {
+      setDashboardRefreshBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -421,7 +450,15 @@ export function CampaignsScreen(): JSX.Element {
 
   return (
     <div>
-      <PageHeader title="Campaigns" description="Sending accounts, business hours, templates, sequences, and enrollment monitoring." />
+      <PageHeader
+        title="Campaigns"
+        description="Sending accounts, business hours, templates, sequences, and enrollment monitoring."
+        actions={
+          <Button variant="secondary" icon={<RefreshIcon size={15} />} loading={dashboardRefreshBusy} onClick={handleRefreshDashboard}>
+            Refresh
+          </Button>
+        }
+      />
 
       {error && <ErrorBanner message={error} />}
 
@@ -744,6 +781,7 @@ export function CampaignsScreen(): JSX.Element {
                     <tr>
                       <Th>Name</Th>
                       <Th>Status</Th>
+                      <Th>Sending account</Th>
                       <Th align="right">Total leads</Th>
                       <Th align="right">Sent</Th>
                       <Th align="right">Remaining</Th>
@@ -766,6 +804,7 @@ export function CampaignsScreen(): JSX.Element {
                         <Td>
                           <StatusBadge status={c.status} />
                         </Td>
+                        <Td>{describeSendingAccounts(c.sendingAccountIds, accounts)}</Td>
                         <Td align="right">{c.totalLeads}</Td>
                         <Td align="right">{c.emailsSent}</Td>
                         <Td align="right">{c.emailsRemaining}</Td>

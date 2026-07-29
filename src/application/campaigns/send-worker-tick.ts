@@ -23,6 +23,7 @@ import { maybeCompleteCampaign } from "./maybe-complete-campaign.js";
 import { stopEnrollmentsForContact } from "./stop-enrollments.js";
 
 const NO_ACCOUNT_RETRY_MS = 5 * 60 * 1000;
+const PAUSED_CAMPAIGN_RETRY_MS = 5 * 60 * 1000;
 const MAX_CLAIMS_PER_TICK = 50; // bounded drain per tick (Section 21.2) rather than an unbounded loop
 
 export interface SendWorkerDeps {
@@ -101,6 +102,17 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     const enrollment = await deps.enrollmentRepository.findById(asEnrollmentId(message.campaignEnrollmentId));
     const campaign = enrollment ? await deps.campaignRepository.findById(enrollment.campaignId) : undefined;
     if (campaign) {
+      // A real reported bug: pausing a campaign only ever gated the Scheduler from enqueuing *new*
+      // sends (Section 14.2's campaigns.status='running' join in findDueForScheduling) -- this
+      // worker's claimNext just drains send_queue in FIFO order with no awareness of campaigns at
+      // all, so a message that was already queued *before* the pause click kept going out anyway.
+      // Releasing it back to pending here (rather than sending it) means a paused/no-longer-running
+      // campaign genuinely stops dispatching, and the exact same row picks back up once resumed --
+      // nothing is lost or skipped, just held.
+      if (campaign.status !== "running") {
+        await deps.sendQueueRepository.releaseForRetry(claimed.id, new Date(now.getTime() + PAUSED_CAMPAIGN_RETRY_MS));
+        return "retried";
+      }
       rotationPool = campaign.sendingAccountIds;
       campaignId = campaign.id;
     }
@@ -201,7 +213,11 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     return "bounced";
   }
 
-  await deps.conversationRepository.markMessageSent(message.id, { sentAt: now, providerMessageId: sendResult.providerMessageId });
+  await deps.conversationRepository.markMessageSent(message.id, {
+    sentAt: now,
+    providerMessageId: sendResult.providerMessageId,
+    providerThreadId: sendResult.providerThreadId
+  });
   await deps.sendQueueRepository.markSent(claimed.id);
   await deps.eventRepository.record({
     eventType: "sent",

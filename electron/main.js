@@ -938,6 +938,7 @@ function registerIpcHandlers() {
       id: e.id,
       name: e.name,
       status: e.status,
+      sendingAccountIds: e.sendingAccountIds,
       totalLeads: e.totalLeads,
       emailsSent: e.emailsSent,
       emailsRemaining: e.emailsRemaining,

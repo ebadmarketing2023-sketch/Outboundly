@@ -17,6 +17,11 @@ export interface CampaignDashboardEntry {
   id: string;
   name: string;
   status: string;
+  /** Which account(s) this campaign sends from -- shown on the dashboard row so it's visible
+   * without opening the campaign, since a campaign's rotation pool can never be changed after
+   * creation (CampaignRepository.update's docblock) and is otherwise only visible in the
+   * create-campaign form's own dropdown. */
+  sendingAccountIds: string[];
   totalLeads: number;
   emailsSent: number;
   /** Currently pending or claimed send_queue rows for this campaign's messages -- concretely
@@ -104,6 +109,7 @@ export async function getCampaignDashboard(deps: CampaignDashboardDeps): Promise
       id: campaign.id,
       name: campaign.name,
       status: campaign.status,
+      sendingAccountIds: campaign.sendingAccountIds,
       totalLeads: enrollments.length,
       emailsSent,
       emailsRemaining,

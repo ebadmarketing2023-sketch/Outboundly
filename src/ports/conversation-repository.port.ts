@@ -70,8 +70,15 @@ export interface ConversationRepository {
   upsertParticipants(threadId: string, participants: DerivedParticipant[]): Promise<void>;
   /** Transitions a queued campaign message (Section 14.3) to its final delivered state once the
    * Send worker (Section 21.1) actually dispatches it -- the row already exists (created "queued"
-   * at enqueue time), so this updates it in place rather than inserting a second row. */
-  markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string }): Promise<void>;
+   * at enqueue time), so this updates it in place rather than inserting a second row.
+   * providerThreadId is the real thread id the provider assigned at send time (unknowable at
+   * enqueue time, before the message existed anywhere) -- when given, it's recorded onto the
+   * message's thread so a later inbound reply can correlate back to it via
+   * findThreadIdForProviderThreadId even if the reply's In-Reply-To/References chain doesn't match
+   * (e.g. the provider rewrote the outbound Message-ID). Without this, a campaign-originated
+   * thread's provider_thread_id stays null forever, unlike a manually composed send (Section 9.5's
+   * sendDraftMessage records it immediately since that message isn't inserted until after sending). */
+  markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string }): Promise<void>;
   /** The minimal fields the Send worker (Section 21.1) needs to dispatch a queued message it
    * didn't create itself -- which account it was queued against, its recipient (to resolve the
    * contact for live personalization), and the Draft/enrollment it was built from. */

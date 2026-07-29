@@ -303,6 +303,7 @@ export interface CampaignDashboardEntrySummary {
   id: string;
   name: string;
   status: string;
+  sendingAccountIds: string[];
   totalLeads: number;
   emailsSent: number;
   emailsRemaining: number;

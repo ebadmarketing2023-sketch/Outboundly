@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { generateId } from "../../../core/shared-kernel/ids.js";
 import type { DerivedParticipant } from "../../../core/conversation/participants.js";
 import type { ConversationState } from "../../../core/conversation/conversation-engine.js";
@@ -172,12 +172,25 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
     return id;
   }
 
-  async markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string }): Promise<void> {
+  async markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string }): Promise<void> {
+    const existing = this.db.select({ threadId: messages.threadId }).from(messages).where(eq(messages.id, messageId)).get();
+
     this.db
       .update(messages)
       .set({ status: "sent", sentAt: input.sentAt, providerMessageId: input.providerMessageId, updatedAt: new Date() })
       .where(eq(messages.id, messageId))
       .run();
+
+    // Only if not already set: this thread was created (Section 14.3) before the message actually
+    // sent, so it never had a real provider thread id yet -- but if it's already been reconciled
+    // some other way since, that value stays authoritative rather than being overwritten here.
+    if (input.providerThreadId && existing?.threadId) {
+      this.db
+        .update(threads)
+        .set({ providerThreadId: input.providerThreadId })
+        .where(and(eq(threads.id, existing.threadId), isNull(threads.providerThreadId)))
+        .run();
+    }
   }
 
   async findMessageById(messageId: string): Promise<StoredMessageSummary | undefined> {

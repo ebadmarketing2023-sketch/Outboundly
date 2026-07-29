@@ -3,7 +3,17 @@ import type { Campaign, CampaignStatus, NewCampaignInput } from "../../../core/c
 import { asAccountId, asCampaignId, asSequenceId, generateId, type CampaignId } from "../../../core/shared-kernel/ids.js";
 import type { CampaignRepository, UpdateCampaignInput } from "../../../ports/campaign-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
-import { campaigns as campaignsTable, campaignEnrollments, messages, sendQueue } from "../schema.js";
+import {
+  campaigns as campaignsTable,
+  campaignEnrollments,
+  campaignMetricsRollup,
+  delayPolicyConfigs,
+  errorLogs,
+  events,
+  messages,
+  notifications,
+  sendQueue
+} from "../schema.js";
 
 type CampaignRow = typeof campaignsTable.$inferSelect;
 
@@ -81,7 +91,20 @@ export class SqliteCampaignRepository implements CampaignRepository {
    * leave the campaign gone but its enrollments/queued sends still dangling, or vice versa. Sent
    * messages and analytics history are untouched: messages.campaignEnrollmentId has no real FK
    * (Section 5.3) specifically so historical message rows can safely outlive the enrollment (and
-   * now the campaign) that produced them. */
+   * now the campaign) that produced them.
+   *
+   * A real reported bug: this used to stop there, but any campaign that had actually run for a
+   * while has also accumulated campaign_metrics_rollup rows (Section 20's periodic rollup worker)
+   * and events rows (Section 20.1's event log) with a *real, enforced* FK on campaigns.id (unlike
+   * messages.campaignEnrollmentId above) -- `foreign_keys = ON` (db.ts), so deleting the campaign
+   * row while those children still reference it threw "FOREIGN KEY constraint failed" and the
+   * delete silently never happened. A brand-new "Q2 Draft Outreach"-style campaign with no
+   * events/rollups yet deleted fine, which is exactly why this only ever showed up on "old"
+   * campaigns that had actually sent mail. campaign_metrics_rollup rows are deleted outright (Section
+   * 20's own docblock: always safely regenerable from the event log, and meaningless once the
+   * campaign is gone); events/notifications/error_log rows are kept but detached (campaignId set to
+   * null) since those are real historical/audit records that outlive the campaign that produced
+   * them, same reasoning as the message rows above -- and every one of those columns is nullable. */
   async delete(id: CampaignId): Promise<void> {
     this.db.transaction((tx) => {
       const enrollmentRows = tx.select({ id: campaignEnrollments.id }).from(campaignEnrollments).where(eq(campaignEnrollments.campaignId, id)).all();
@@ -100,6 +123,12 @@ export class SqliteCampaignRepository implements CampaignRepository {
         }
         tx.delete(campaignEnrollments).where(eq(campaignEnrollments.campaignId, id)).run();
       }
+
+      tx.delete(campaignMetricsRollup).where(eq(campaignMetricsRollup.campaignId, id)).run();
+      tx.update(events).set({ campaignId: null }).where(eq(events.campaignId, id)).run();
+      tx.update(notifications).set({ relatedCampaignId: null }).where(eq(notifications.relatedCampaignId, id)).run();
+      tx.update(errorLogs).set({ campaignId: null }).where(eq(errorLogs.campaignId, id)).run();
+      tx.delete(delayPolicyConfigs).where(eq(delayPolicyConfigs.campaignId, id)).run();
 
       tx.delete(campaignsTable).where(eq(campaignsTable.id, id)).run();
     });

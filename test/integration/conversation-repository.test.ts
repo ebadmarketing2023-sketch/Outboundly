@@ -64,6 +64,49 @@ describe("SqliteConversationRepository (Section 11 persistence)", () => {
     expect(await repo.getSyncCursor(accountId)).toBe("history-123");
   });
 
+  it("markMessageSent records the thread's real provider_thread_id, since a campaign-originated thread never had one until now", async () => {
+    // A campaign send is ingested "queued" (Section 14.3) before it actually goes out, so its
+    // thread is created with providerThreadId undefined -- the real one is only known once the
+    // Send worker (Section 21.1) actually dispatches it. A reply arriving later can only correlate
+    // back via findThreadIdForProviderThreadId if this got backfilled at that point.
+    const result = await ingestMessage(repo, {
+      accountId,
+      direction: "outbound",
+      messageIdHeader: "<queued@x>",
+      from: "me@outboundly.app",
+      to: ["them@example.com"],
+      subject: "Hello there",
+      status: "queued",
+      campaignEnrollmentId: "enrollment-1"
+    });
+
+    let threadRow = db.select().from(threads).where(eq(threads.id, result.threadId)).get();
+    expect(threadRow?.providerThreadId).toBeNull();
+
+    await repo.markMessageSent(result.messageId!, { sentAt: new Date(), providerMessageId: "pm-1", providerThreadId: "real-thread-1" });
+
+    threadRow = db.select().from(threads).where(eq(threads.id, result.threadId)).get();
+    expect(threadRow?.providerThreadId).toBe("real-thread-1");
+    expect(await repo.findThreadIdForProviderThreadId(accountId, "real-thread-1")).toBe(result.threadId);
+  });
+
+  it("markMessageSent never overwrites a thread's already-known provider_thread_id", async () => {
+    const result = await ingestMessage(repo, {
+      accountId,
+      providerThreadId: "already-known",
+      direction: "outbound",
+      messageIdHeader: "<m1@x>",
+      from: "me@outboundly.app",
+      to: ["them@example.com"],
+      subject: "Hello there"
+    });
+
+    await repo.markMessageSent(result.messageId!, { sentAt: new Date(), providerThreadId: "different-value" });
+
+    const threadRow = db.select().from(threads).where(eq(threads.id, result.threadId)).get();
+    expect(threadRow?.providerThreadId).toBe("already-known");
+  });
+
   it("attaches a reply to its parent thread via the real database, and records a merge with real rows on conflict", async () => {
     const sent = await ingestMessage(repo, {
       accountId,

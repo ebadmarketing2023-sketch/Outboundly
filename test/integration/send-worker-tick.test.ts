@@ -31,7 +31,7 @@ import { SqliteProviderSelector } from "../../src/adapters/persistence/provider-
 import { SqliteRateLimiter } from "../../src/adapters/persistence/rate-limiter.js";
 import { SqliteEventRepository } from "../../src/adapters/persistence/repositories/event-repository.js";
 import { SqliteErrorLogRepository } from "../../src/adapters/persistence/repositories/error-log-repository.js";
-import { accounts, messages, sendQueue } from "../../src/adapters/persistence/schema.js";
+import { accounts, messages, sendQueue, threads } from "../../src/adapters/persistence/schema.js";
 import { asAccountId, generateId } from "../../src/core/shared-kernel/ids.js";
 import type { AccountRef, ChangeSet, MailProvider, NormalizedMessage, NormalizedThread, ProviderDraftRef, ProviderSendResult, SyncCursor } from "../../src/ports/mail-provider.port.js";
 import type { BuiltMimeMessage } from "../../src/core/mime/types.js";
@@ -198,6 +198,11 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       sendingAccountIds: [asAccountId(accountId)],
       businessHoursProfileId
     });
+    // A real campaign only ever reaches send_queue via the Scheduler, whose findDueForScheduling
+    // join requires campaigns.status='running' (Section 14.2) -- matching that invariant here so
+    // this fixture doesn't rely on the Send worker dispatching for a still-'draft' campaign, which
+    // can no longer happen after this suite's own "paused campaign" test below.
+    await fireStepDeps.campaignRepository.setStatus(campaign.id, "running");
     const contact = await fireStepDeps.contactRepository.upsertByEmail({ email: "lead@example.com", firstName: "Ada", source: "manual" });
     const enrollment = await fireStepDeps.enrollmentRepository.enroll({
       campaignId: campaign.id,
@@ -235,6 +240,13 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(messageRow?.status).toBe("sent");
     expect(messageRow?.providerMessageId).toBe("fake-message-1");
 
+    // Reproduces a real reported bug: a reply to a campaign-originated message never bumped its
+    // campaign's reply rate, because this thread's provider_thread_id was never recorded at send
+    // time -- leaving inbox sync's later reply with nothing to correlate against via
+    // findThreadIdForProviderThreadId if the reply's own header chain doesn't line up.
+    const threadRow = db.select().from(threads).where(eq(threads.id, messageRow!.threadId!)).get();
+    expect(threadRow?.providerThreadId).toBe("fake-thread-1");
+
     const recordedEvents = await sendWorkerDeps.eventRepository.findByCampaignInWindow(
       fireResult.campaignId,
       new Date(0),
@@ -257,6 +269,24 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     const row = db.select().from(sendQueue).all()[0];
     expect(row?.status).toBe("pending");
     expect(row?.attemptCount).toBe(0); // not counted as a failed attempt
+  });
+
+  it("releases an already-queued message back to pending instead of sending it once its campaign is paused", async () => {
+    // Reproduces a real reported bug: pausing a campaign only ever stopped the Scheduler from
+    // enqueuing *new* sends (Section 14.2's status='running' join) -- a message that reached
+    // send_queue while the campaign was still running kept going out regardless, since claimNext
+    // has no notion of campaigns at all. The fix must hold it, not send it, and not fail it either.
+    const { campaignId } = await enqueueOneCampaignMessage();
+    await fireStepDeps.campaignRepository.setStatus(campaignId, "paused");
+
+    const result = await runSendWorkerTick(sendWorkerDeps, new Date());
+    expect(result).toEqual({ claimed: 1, sent: 0, retried: 1, failed: 0, bounced: 0, failures: [] });
+    expect(provider.createdDrafts).toHaveLength(0); // the provider must never even be asked to send it
+
+    const row = db.select().from(sendQueue).all()[0];
+    expect(row?.status).toBe("pending");
+    expect(row?.attemptCount).toBe(0); // held, not counted as a failed attempt
+    expect(row!.earliestSendAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("retries with backoff (transient failure) when the provider throws during dispatch", async () => {
