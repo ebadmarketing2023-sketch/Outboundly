@@ -1,7 +1,9 @@
 import { parse } from "csv-parse/sync";
 import { CSV_SAFETY_LIMITS, CsvTooLargeError, neutralizeCsvCell } from "../../core/shared-kernel/csv-safety.js";
 import { EmailAddress } from "../../core/shared-kernel/email-address.js";
+import type { ContactId } from "../../core/shared-kernel/ids.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
+import type { LeadImportBatchRepository } from "../../ports/lead-import-batch-repository.port.js";
 
 /**
  * CSV import for Leads/Contacts (Section 5.5). Real RFC-4180 parsing via csv-parse (handles
@@ -41,11 +43,19 @@ function normalizeHeader(header: string): string {
 export interface ImportContactsCsvResult {
   imported: number;
   skipped: Array<{ row: number; reason: string }>;
+  /** The import batch this run created (Critical Improvement #3) — every successfully
+   * imported/updated contact below is tagged with this id, whether it's new or a re-import. */
+  batchId: string;
+  /** Every contact id touched by this run, in row order — a campaign-specific CSV upload
+   * (Critical Improvement #2) enrolls exactly these ids and nothing else. */
+  contactIds: string[];
 }
 
 export async function importContactsCsv(
   csvText: string,
-  contactRepository: ContactRepository
+  contactRepository: ContactRepository,
+  leadImportBatchRepository: LeadImportBatchRepository,
+  filename: string
 ): Promise<ImportContactsCsvResult> {
   if (csvText.length > CSV_SAFETY_LIMITS.maxTextLength) {
     throw new CsvTooLargeError(
@@ -60,7 +70,10 @@ export async function importContactsCsv(
   }
 
   const skipped: ImportContactsCsvResult["skipped"] = [];
+  const contactIds: ContactId[] = [];
   let imported = 0;
+
+  const batch = await leadImportBatchRepository.create({ filename, importedAt: new Date() });
 
   for (const [index, record] of records.entries()) {
     const rowNumber = index + 2; // +1 for 1-indexing, +1 for the header row itself
@@ -107,7 +120,7 @@ export async function importContactsCsv(
     }
 
     try {
-      await contactRepository.upsertByEmail({
+      const contact = await contactRepository.upsertByEmail({
         email: parsedEmail.toString(),
         firstName: knownFields.firstName,
         lastName: knownFields.lastName,
@@ -115,13 +128,15 @@ export async function importContactsCsv(
         title: knownFields.title,
         timezone: knownFields.timezone,
         customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
-        source: "csv_import"
+        source: "csv_import",
+        importBatchId: batch.id
       });
+      contactIds.push(contact.id);
       imported++;
     } catch (err) {
       skipped.push({ row: rowNumber, reason: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  return { imported, skipped };
+  return { imported, skipped, batchId: batch.id, contactIds };
 }

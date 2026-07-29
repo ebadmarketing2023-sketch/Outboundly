@@ -17,6 +17,7 @@ export type EventId = Brand<string, "EventId">;
 export type InsightId = Brand<string, "InsightId">;
 export type NotificationId = Brand<string, "NotificationId">;
 export type ErrorLogId = Brand<string, "ErrorLogId">;
+export type LeadImportBatchId = Brand<string, "LeadImportBatchId">;
 
 export function asAccountId(id: string): AccountId {
   return id as AccountId;
@@ -65,6 +66,9 @@ export function asNotificationId(id: string): NotificationId {
 }
 export function asErrorLogId(id: string): ErrorLogId {
   return id as ErrorLogId;
+}
+export function asLeadImportBatchId(id: string): LeadImportBatchId {
+  return id as LeadImportBatchId;
 }
 
 /** Generates a v4-shaped UUID without pulling in an external dependency for this narrow need. */

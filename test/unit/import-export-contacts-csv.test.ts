@@ -3,7 +3,8 @@ import { importContactsCsv } from "../../src/application/leads/import-contacts-c
 import { exportContactsCsv } from "../../src/application/leads/export-contacts-csv.js";
 import { CSV_SAFETY_LIMITS, CsvTooLargeError } from "../../src/core/shared-kernel/csv-safety.js";
 import type { Contact, ContactRepository, NewContactInput } from "../../src/ports/contact-repository.port.js";
-import { asContactId, generateId } from "../../src/core/shared-kernel/ids.js";
+import type { LeadImportBatch, LeadImportBatchRepository, NewLeadImportBatchInput } from "../../src/ports/lead-import-batch-repository.port.js";
+import { asContactId, asLeadImportBatchId, generateId } from "../../src/core/shared-kernel/ids.js";
 
 class InMemoryContactRepository implements ContactRepository {
   private readonly byEmail = new Map<string, Contact>();
@@ -43,12 +44,28 @@ class InMemoryContactRepository implements ContactRepository {
   }
 }
 
+class InMemoryLeadImportBatchRepository implements LeadImportBatchRepository {
+  private readonly byId = new Map<string, LeadImportBatch>();
+
+  async create(input: NewLeadImportBatchInput): Promise<LeadImportBatch> {
+    const batch: LeadImportBatch = { id: asLeadImportBatchId(generateId()), filename: input.filename, importedAt: input.importedAt };
+    this.byId.set(batch.id, batch);
+    return batch;
+  }
+  async list(): Promise<LeadImportBatch[]> {
+    return [...this.byId.values()];
+  }
+  async findById(id: string): Promise<LeadImportBatch | undefined> {
+    return this.byId.get(id);
+  }
+}
+
 describe("importContactsCsv (Section 5.5)", () => {
   it("imports known columns and folds unrecognized columns into customFields", async () => {
     const repo = new InMemoryContactRepository();
     const csv = "Email,First Name,Last Name,Company,Favorite Color\nme@example.com,Jane,Doe,Acme,Blue\n";
 
-    const result = await importContactsCsv(csv, repo);
+    const result = await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     expect(result.imported).toBe(1);
     expect(result.skipped).toEqual([]);
 
@@ -63,7 +80,7 @@ describe("importContactsCsv (Section 5.5)", () => {
   it("handles a real RFC-4180 quoted field with an embedded comma correctly", async () => {
     const repo = new InMemoryContactRepository();
     const csv = 'email,company\nme@example.com,"Acme, Inc."\n';
-    await importContactsCsv(csv, repo);
+    await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     const contact = await repo.findByEmail("me@example.com");
     expect(contact?.company).toBe("Acme, Inc.");
   });
@@ -72,7 +89,7 @@ describe("importContactsCsv (Section 5.5)", () => {
     const repo = new InMemoryContactRepository();
     const csv = "email,first_name\nnot-an-email,Bad\n,NoEmail\nreal@example.com,Good\n";
 
-    const result = await importContactsCsv(csv, repo);
+    const result = await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     expect(result.imported).toBe(1);
     expect(result.skipped).toHaveLength(2);
     expect(result.skipped[0]).toMatchObject({ row: 2 });
@@ -82,8 +99,9 @@ describe("importContactsCsv (Section 5.5)", () => {
 
   it("upserts by email rather than creating a duplicate on re-import", async () => {
     const repo = new InMemoryContactRepository();
-    await importContactsCsv("email,first_name\nme@example.com,Jane\n", repo);
-    await importContactsCsv("email,first_name\nme@example.com,Janet\n", repo);
+    const batchRepo = new InMemoryLeadImportBatchRepository();
+    await importContactsCsv("email,first_name\nme@example.com,Jane\n", repo, batchRepo, "test.csv");
+    await importContactsCsv("email,first_name\nme@example.com,Janet\n", repo, batchRepo, "test.csv");
 
     const all = await repo.list();
     expect(all).toHaveLength(1);
@@ -94,7 +112,7 @@ describe("importContactsCsv (Section 5.5)", () => {
     const repo = new InMemoryContactRepository();
     const csv = 'email,company\nme@example.com,"=cmd|\'/c calc\'!A1"\n';
 
-    await importContactsCsv(csv, repo);
+    await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     const contact = await repo.findByEmail("me@example.com");
     expect(contact?.company).toBe("'=cmd|'/c calc'!A1");
   });
@@ -103,7 +121,7 @@ describe("importContactsCsv (Section 5.5)", () => {
     const repo = new InMemoryContactRepository();
     const csv = 'email,notes\nme@example.com,"=HYPERLINK(""http://evil.example"",""click"")"\n';
 
-    await importContactsCsv(csv, repo);
+    await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     const contact = await repo.findByEmail("me@example.com");
     expect(contact?.customFields?.notes?.startsWith("'=")).toBe(true);
   });
@@ -113,7 +131,7 @@ describe("importContactsCsv (Section 5.5)", () => {
     const tooLong = "x".repeat(CSV_SAFETY_LIMITS.maxFieldLength + 1);
     const csv = `email,company\nme@example.com,${tooLong}\ngood@example.com,Acme\n`;
 
-    const result = await importContactsCsv(csv, repo);
+    const result = await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     expect(result.imported).toBe(1);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]?.reason).toMatch(/exceeds the maximum allowed length/);
@@ -125,7 +143,7 @@ describe("importContactsCsv (Section 5.5)", () => {
     const repo = new InMemoryContactRepository();
     const huge = "x".repeat(CSV_SAFETY_LIMITS.maxTextLength + 1);
 
-    await expect(importContactsCsv(huge, repo)).rejects.toThrow(CsvTooLargeError);
+    await expect(importContactsCsv(huge, repo, new InMemoryLeadImportBatchRepository(), "test.csv")).rejects.toThrow(CsvTooLargeError);
   });
 
   it("rejects a CSV with more rows than the maximum allowed", async () => {
@@ -133,7 +151,7 @@ describe("importContactsCsv (Section 5.5)", () => {
     const rows = Array.from({ length: CSV_SAFETY_LIMITS.maxRows + 1 }, (_, i) => `person${i}@example.com`).join("\n");
     const csv = `email\n${rows}\n`;
 
-    await expect(importContactsCsv(csv, repo)).rejects.toThrow(CsvTooLargeError);
+    await expect(importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv")).rejects.toThrow(CsvTooLargeError);
   });
 });
 
@@ -153,7 +171,7 @@ describe("exportContactsCsv (Section 5.5)", () => {
     expect(csv).toContain("Favorite Color");
 
     const reimportRepo = new InMemoryContactRepository();
-    const result = await importContactsCsv(csv, reimportRepo);
+    const result = await importContactsCsv(csv, reimportRepo, new InMemoryLeadImportBatchRepository(), "test.csv");
     expect(result.imported).toBe(1);
     const reimported = await reimportRepo.findByEmail("me@example.com");
     expect(reimported?.firstName).toBe("Jane");

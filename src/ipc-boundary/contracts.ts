@@ -193,11 +193,16 @@ export interface LabAnalysisResponse {
 /** Leads/Contacts (Section 5.5) and the Campaign Engine's minimal Phase 4 UI (Section 14). */
 export interface ImportContactsCsvRequest {
   csvText: string;
+  /** The source file's name, shown as the group label on the Leads screen (Critical Improvement
+   * #3). Optional only for the plain-paste path; falls back to a generic "Pasted import" label. */
+  filename?: string;
 }
 
 export interface ImportContactsCsvResponse {
   imported: number;
   skipped: Array<{ row: number; reason: string }>;
+  batchId: string;
+  contactIds: string[];
 }
 
 export interface ContactSummary {
@@ -207,6 +212,18 @@ export interface ContactSummary {
   lastName?: string;
   company?: string;
   source: string;
+  importBatchId?: string;
+}
+
+export interface LeadImportBatchSummary {
+  id: string;
+  filename: string;
+  importedAt: string;
+  contactCount: number;
+}
+
+export interface DeleteContactRequest {
+  contactId: string;
 }
 
 export interface CreateTemplateRequest {
@@ -316,6 +333,24 @@ export interface EnrollContactsRequest {
 export interface EnrollContactsResponse {
   enrolled: number;
   skipped: Array<{ contactId: string; reason: string }>;
+}
+
+/** Campaign-specific leads (Critical Improvement #2): a campaign's own CSV upload imports (or
+ * re-tags) contacts by email as a fresh import batch and enrolls exactly and only that batch --
+ * never the entire global contacts list ("Enroll all" auto-enrolled every existing contact,
+ * which is exactly the cross-campaign leakage this replaces). */
+export interface EnrollContactsFromCsvRequest {
+  campaignId: string;
+  csvText: string;
+  filename?: string;
+}
+
+export interface EnrollContactsFromCsvResponse {
+  batchId: string;
+  imported: number;
+  importSkipped: Array<{ row: number; reason: string }>;
+  enrolled: number;
+  enrollSkipped: Array<{ contactId: string; reason: string }>;
 }
 
 export interface ListEnrollmentsRequest {
@@ -521,6 +556,8 @@ export interface OutboundlyRendererApi {
   runLabAnalysis(request: RunLabAnalysisRequest): Promise<LabAnalysisResponse>;
   importContactsCsv(request: ImportContactsCsvRequest): Promise<ImportContactsCsvResponse>;
   listContacts(): Promise<ContactSummary[]>;
+  listLeadImportBatches(): Promise<LeadImportBatchSummary[]>;
+  deleteContact(request: DeleteContactRequest): Promise<void>;
   createTemplate(request: CreateTemplateRequest): Promise<TemplateSummary>;
   listTemplates(): Promise<TemplateSummary[]>;
   createSequence(request: CreateSequenceRequest): Promise<SequenceSummary>;
@@ -532,6 +569,7 @@ export interface OutboundlyRendererApi {
   deleteCampaign(request: DeleteCampaignRequest): Promise<void>;
   setCampaignStatus(request: SetCampaignStatusRequest): Promise<void>;
   enrollContacts(request: EnrollContactsRequest): Promise<EnrollContactsResponse>;
+  enrollContactsFromCsv(request: EnrollContactsFromCsvRequest): Promise<EnrollContactsFromCsvResponse>;
   listEnrollments(request: ListEnrollmentsRequest): Promise<EnrollmentSummary[]>;
   createBusinessHoursProfile(request: CreateBusinessHoursProfileRequest): Promise<BusinessHoursProfileSummary>;
   listBusinessHoursProfiles(): Promise<BusinessHoursProfileSummary[]>;

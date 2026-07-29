@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/db.js";
 import { SqliteContactRepository } from "../../src/adapters/persistence/repositories/contact-repository.js";
+import { SqliteLeadImportBatchRepository } from "../../src/adapters/persistence/repositories/lead-import-batch-repository.js";
 import { SqliteSuppressionListRepository } from "../../src/adapters/persistence/repositories/suppression-list-repository.js";
 
 describe("SqliteContactRepository (Section 5.5 persistence)", () => {
@@ -39,10 +40,40 @@ describe("SqliteContactRepository (Section 5.5 persistence)", () => {
     expect(found?.customFields).toEqual({ "Favorite Color": "Blue", Region: "EMEA" });
   });
 
-  it("deletes a contact by id", async () => {
+  it("soft-deletes a contact by id: excluded from list() but still resolvable by id/email", async () => {
     const created = await repo.upsertByEmail({ email: "me@example.com", source: "manual" });
     await repo.delete(created.id);
-    expect(await repo.findByEmail("me@example.com")).toBeUndefined();
+
+    expect(await repo.list()).toHaveLength(0);
+    expect((await repo.findByEmail("me@example.com"))?.deletedAt).toBeInstanceOf(Date);
+    expect((await repo.findById(created.id))?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it("un-deletes a soft-deleted contact on re-import by the same email", async () => {
+    const created = await repo.upsertByEmail({ email: "me@example.com", source: "manual" });
+    await repo.delete(created.id);
+    expect(await repo.list()).toHaveLength(0);
+
+    const revived = await repo.upsertByEmail({ email: "me@example.com", firstName: "Jane", source: "csv_import" });
+
+    expect(revived.id).toBe(created.id);
+    expect(revived.deletedAt).toBeUndefined();
+    expect(await repo.list()).toHaveLength(1);
+  });
+
+  it("tags a new contact with its import batch id, and re-tags on re-import to the newest batch", async () => {
+    const batchRepo = new SqliteLeadImportBatchRepository(db);
+    const batchOne = await batchRepo.create({ filename: "one.csv", importedAt: new Date() });
+    const batchTwo = await batchRepo.create({ filename: "two.csv", importedAt: new Date() });
+
+    const created = await repo.upsertByEmail({ email: "me@example.com", source: "csv_import", importBatchId: batchOne.id });
+    expect(created.importBatchId).toBe(batchOne.id);
+
+    const retagged = await repo.upsertByEmail({ email: "me@example.com", source: "csv_import", importBatchId: batchTwo.id });
+    expect(retagged.importBatchId).toBe(batchTwo.id);
+
+    const untouched = await repo.upsertByEmail({ email: "me@example.com", firstName: "Jane", source: "manual" });
+    expect(untouched.importBatchId).toBe(batchTwo.id);
   });
 });
 

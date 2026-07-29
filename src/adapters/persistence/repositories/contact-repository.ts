@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import { asContactId, generateId, type ContactId } from "../../../core/shared-kernel/ids.js";
+import { eq, isNull } from "drizzle-orm";
+import { asContactId, asLeadImportBatchId, generateId, type ContactId } from "../../../core/shared-kernel/ids.js";
 import type { Contact, ContactRepository, NewContactInput } from "../../../ports/contact-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
 import { contacts as contactsTable } from "../schema.js";
@@ -17,6 +17,8 @@ function toDomain(row: ContactRow): Contact {
     timezone: row.timezone ?? undefined,
     customFields: row.customFields ?? undefined,
     source: row.source as Contact["source"],
+    importBatchId: row.importBatchId ? asLeadImportBatchId(row.importBatchId) : undefined,
+    deletedAt: row.deletedAt ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
   };
@@ -50,6 +52,11 @@ export class SqliteContactRepository implements ContactRepository {
           title: input.title,
           timezone: input.timezone,
           customFields: input.customFields,
+          // Re-tag to the newest import batch that touched this contact ("last touched by"
+          // semantics); a plain manual upsert with no batch keeps whatever it already had. Either
+          // way, an upsert is proof this email is active again, so a prior soft-delete is undone.
+          importBatchId: input.importBatchId ?? existing.importBatchId,
+          deletedAt: null,
           updatedAt: now
         })
         .where(eq(contactsTable.id, existing.id))
@@ -71,6 +78,7 @@ export class SqliteContactRepository implements ContactRepository {
         timezone: input.timezone,
         customFields: input.customFields,
         source: input.source,
+        importBatchId: input.importBatchId,
         createdAt: now,
         updatedAt: now
       })
@@ -80,10 +88,10 @@ export class SqliteContactRepository implements ContactRepository {
   }
 
   async list(): Promise<Contact[]> {
-    return this.db.select().from(contactsTable).all().map(toDomain);
+    return this.db.select().from(contactsTable).where(isNull(contactsTable.deletedAt)).all().map(toDomain);
   }
 
   async delete(id: ContactId): Promise<void> {
-    this.db.delete(contactsTable).where(eq(contactsTable.id, id)).run();
+    this.db.update(contactsTable).set({ deletedAt: new Date() }).where(eq(contactsTable.id, id)).run();
   }
 }

@@ -254,6 +254,16 @@ export interface DeliverabilityFindingRecord {
   explanation: string;
 }
 
+/** A single CSV import event (Critical Improvement #3): the filename is the human-readable label
+ * the Leads screen groups contacts by, and a campaign's own CSV upload (Critical Improvement #2)
+ * tags the resulting contacts with the same mechanism so per-campaign isolation and the Leads
+ * screen's grouping share one underlying concept rather than two parallel ones. */
+export const leadImportBatches = sqliteTable("lead_import_batches", {
+  id: text("id").primaryKey(),
+  filename: text("filename").notNull(),
+  importedAt: integer("imported_at", { mode: "timestamp_ms" }).notNull()
+});
+
 /**
  * Leads / Contacts (Section 5.5, Phase 4) — the recipient side of a campaign, independent of the
  * Conversation Engine's own participant tracking (conversation_participants above still exists
@@ -272,6 +282,16 @@ export const contacts = sqliteTable(
     timezone: text("timezone"),
     customFields: text("custom_fields", { mode: "json" }).$type<Record<string, string>>(),
     source: text("source").notNull(), // 'csv_import' | 'manual' | 'reply'
+    // Which CSV import this contact last appeared in (Critical Improvement #3) — null for a
+    // contact that has never been part of a CSV (e.g. created from an inbound reply). A contact
+    // re-imported in a later CSV is re-tagged to that newest batch ("last touched by" semantics).
+    importBatchId: text("import_batch_id").references(() => leadImportBatches.id),
+    // Soft-delete only (Critical Improvement #3): a hard delete would violate the real FK from
+    // campaign_enrollments.contact_id whenever this contact has ever been enrolled anywhere, and
+    // would destroy the analytics/message history tied to it -- the same "preserve history"
+    // reasoning already applied to campaign delete. Deleted contacts are simply filtered out of
+    // normal listing; re-importing the same email un-deletes it.
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
   },

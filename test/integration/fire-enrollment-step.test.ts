@@ -10,6 +10,7 @@ import {
   stopEnrollmentsForContact,
   unsubscribeContact
 } from "../../src/application/campaigns/stop-enrollments.js";
+import { deleteContact } from "../../src/application/leads/delete-contact.js";
 import { recordConversion } from "../../src/application/analytics/record-conversion.js";
 import { DraftLifecycleService } from "../../src/core/drafts/draft-lifecycle.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
@@ -593,6 +594,35 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
     // This was the campaign's only enrollment -- stopping it (Section 14.1) should have flipped
     // the campaign itself to 'completed', same as the natural end-of-sequence path.
     expect((await deps.campaignRepository.findById(campaign.id))?.status).toBe("completed");
+  });
+
+  it("deleteContact stops the contact's active enrollments (auto-completing the campaign) then soft-deletes it out of list()", async () => {
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await deps.campaignRepository.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    await deps.campaignRepository.setStatus(campaign.id, "running");
+    const contact = await deps.contactRepository.upsertByEmail({ email: "delete-me@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date()
+    });
+
+    await deleteContact(deps, contact.id);
+
+    expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_manual");
+    expect((await deps.campaignRepository.findById(campaign.id))?.status).toBe("completed");
+    expect(await deps.contactRepository.list()).toHaveLength(0);
+    expect((await deps.contactRepository.findById(contact.id))?.deletedAt).toBeInstanceOf(Date);
   });
 
   it("recordConversion records a conversion event scoped to the campaign", async () => {

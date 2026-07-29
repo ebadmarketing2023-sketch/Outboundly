@@ -69,6 +69,8 @@ import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-se
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
 import { importContactsCsv } from "../dist/application/leads/import-contacts-csv.js";
+import { deleteContact } from "../dist/application/leads/delete-contact.js";
+import { SqliteLeadImportBatchRepository } from "../dist/adapters/persistence/repositories/lead-import-batch-repository.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -119,6 +121,7 @@ let accountDirectory;
 let domainAuthChecker;
 let labReportRepository;
 let contactRepository;
+let leadImportBatchRepository;
 let suppressionListRepository;
 let enrollmentRepository;
 let campaignRepository;
@@ -171,6 +174,7 @@ function initServices() {
   domainAuthChecker = new DnsDomainAuthChecker();
   labReportRepository = new SqliteLabReportRepository(db);
   contactRepository = new SqliteContactRepository(db);
+  leadImportBatchRepository = new SqliteLeadImportBatchRepository(db);
   suppressionListRepository = new SqliteSuppressionListRepository(db);
   enrollmentRepository = new SqliteEnrollmentRepository(db);
   campaignRepository = new SqliteCampaignRepository(db);
@@ -214,6 +218,44 @@ function campaignEngineDeps() {
     draftLifecycle,
     errorLogRepository
   };
+}
+
+/** Shared by the manual contact-picker enrollment handler and the campaign-specific CSV-upload
+ * handler (Critical Improvement #2) so there's exactly one place that enforces "not already
+ * actively enrolled" and "not suppressed" before creating an enrollment row. */
+async function enrollContactIdsIntoCampaign(campaignId, contactIds) {
+  const campaign = await campaignRepository.findById(campaignId);
+  if (!campaign) throw new Error("Campaign not found");
+  const sequence = await sequenceRepository.findById(campaign.sequenceId);
+  if (!sequence || sequence.steps.length === 0) throw new Error("Campaign's sequence has no steps");
+  const firstStep = sequence.steps[0];
+
+  let enrolled = 0;
+  const skipped = [];
+  for (const contactId of contactIds) {
+    const contact = await contactRepository.findById(contactId);
+    if (!contact) {
+      skipped.push({ contactId, reason: "Contact not found" });
+      continue;
+    }
+    if (await suppressionListRepository.isSuppressed(contact.email)) {
+      skipped.push({ contactId, reason: "Contact is on the suppression list" });
+      continue;
+    }
+    const existing = await enrollmentRepository.findActiveByCampaignAndContact(campaign.id, contactId);
+    if (existing) {
+      skipped.push({ contactId, reason: "Already actively enrolled in this campaign" });
+      continue;
+    }
+    await enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId,
+      currentStepId: firstStep.id,
+      nextSendAt: new Date()
+    });
+    enrolled++;
+  }
+  return { enrolled, skipped };
 }
 
 async function getProviderForAccount(accountId) {
@@ -765,7 +807,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("contacts:importCsv", async (_event, request) => {
-    return importContactsCsv(request.csvText, contactRepository);
+    return importContactsCsv(request.csvText, contactRepository, leadImportBatchRepository, request.filename || "Pasted import");
   });
 
   ipcMain.handle("contacts:list", async () => {
@@ -776,8 +818,31 @@ function registerIpcHandlers() {
       firstName: c.firstName,
       lastName: c.lastName,
       company: c.company,
-      source: c.source
+      source: c.source,
+      importBatchId: c.importBatchId
     }));
+  });
+
+  ipcMain.handle("leadImportBatches:list", async () => {
+    const [batches, contacts] = await Promise.all([leadImportBatchRepository.list(), contactRepository.list()]);
+    const countByBatchId = new Map();
+    for (const contact of contacts) {
+      if (!contact.importBatchId) continue;
+      countByBatchId.set(contact.importBatchId, (countByBatchId.get(contact.importBatchId) ?? 0) + 1);
+    }
+    return batches.map((b) => ({
+      id: b.id,
+      filename: b.filename,
+      importedAt: b.importedAt.toISOString(),
+      contactCount: countByBatchId.get(b.id) ?? 0
+    }));
+  });
+
+  ipcMain.handle("contacts:delete", async (_event, request) => {
+    await deleteContact(
+      { enrollmentRepository, campaignRepository, sequenceRepository, contactRepository },
+      request.contactId
+    );
   });
 
   ipcMain.handle("templates:create", async (_event, request) => {
@@ -962,38 +1027,28 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("campaigns:enrollContacts", async (_event, request) => {
-    const campaign = await campaignRepository.findById(request.campaignId);
-    if (!campaign) throw new Error("Campaign not found");
-    const sequence = await sequenceRepository.findById(campaign.sequenceId);
-    if (!sequence || sequence.steps.length === 0) throw new Error("Campaign's sequence has no steps");
-    const firstStep = sequence.steps[0];
+    return enrollContactIdsIntoCampaign(request.campaignId, request.contactIds);
+  });
 
-    let enrolled = 0;
-    const skipped = [];
-    for (const contactId of request.contactIds) {
-      const contact = await contactRepository.findById(contactId);
-      if (!contact) {
-        skipped.push({ contactId, reason: "Contact not found" });
-        continue;
-      }
-      if (await suppressionListRepository.isSuppressed(contact.email)) {
-        skipped.push({ contactId, reason: "Contact is on the suppression list" });
-        continue;
-      }
-      const existing = await enrollmentRepository.findActiveByCampaignAndContact(campaign.id, contactId);
-      if (existing) {
-        skipped.push({ contactId, reason: "Already actively enrolled in this campaign" });
-        continue;
-      }
-      await enrollmentRepository.enroll({
-        campaignId: campaign.id,
-        contactId,
-        currentStepId: firstStep.id,
-        nextSendAt: new Date()
-      });
-      enrolled++;
-    }
-    return { enrolled, skipped };
+  // Critical Improvement #2: a campaign's own CSV upload, not the global contacts list, is the
+  // only way leads get enrolled -- importContactsCsv's returned contactIds are exactly and only
+  // this run's batch, so enrollContactIdsIntoCampaign (shared with the manual-selection handler
+  // above) never reaches outside it into unrelated contacts from other campaigns/imports.
+  ipcMain.handle("campaigns:enrollFromCsv", async (_event, request) => {
+    const importResult = await importContactsCsv(
+      request.csvText,
+      contactRepository,
+      leadImportBatchRepository,
+      request.filename || "Pasted import"
+    );
+    const enrollResult = await enrollContactIdsIntoCampaign(request.campaignId, importResult.contactIds);
+    return {
+      batchId: importResult.batchId,
+      imported: importResult.imported,
+      importSkipped: importResult.skipped,
+      enrolled: enrollResult.enrolled,
+      enrollSkipped: enrollResult.skipped
+    };
   });
 
   ipcMain.handle("campaigns:listEnrollments", async (_event, request) => {

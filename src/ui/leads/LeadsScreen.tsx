@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { ContactSummary, ImportContactsCsvResponse, SuppressionEntrySummary } from "../../ipc-boundary/contracts.js";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ContactSummary, ImportContactsCsvResponse, LeadImportBatchSummary, SuppressionEntrySummary } from "../../ipc-boundary/contracts.js";
 import {
   Avatar,
   Badge,
@@ -9,7 +9,10 @@ import {
   ConfirmDialog,
   EmptyState,
   ErrorBanner,
+  Field,
+  Input,
   PageHeader,
+  Select,
   Spinner,
   Table,
   TableRow,
@@ -23,14 +26,22 @@ import {
 } from "../components/index.js";
 import { formatDateTime } from "../lib/format.js";
 
+const ALL_BATCHES = "all";
+const NO_BATCH = "__none__";
+
 /**
- * The Phase 4 "minimal" Leads UI (Section 5.5): paste-a-CSV import and a plain contact list —
- * proves the CSV import pipeline end-to-end. A file picker, column-mapping UI, and CSV export
- * are later increments.
+ * The Leads UI (Section 5.5, Critical Improvement #3): CSV import (either a real file or pasted
+ * text), grouped by the CSV import batch it came from with a switcher and per-group search, and a
+ * per-lead delete action. A contact never imported via CSV (e.g. created from an inbound reply)
+ * has no batch and only shows up under "All contacts."
  */
 export function LeadsScreen(): JSX.Element {
   const [contacts, setContacts] = useState<ContactSummary[]>([]);
+  const [batches, setBatches] = useState<LeadImportBatchSummary[]>([]);
+  const [selectedBatchId, setSelectedBatchId] = useState<string>(ALL_BATCHES);
+  const [searchQuery, setSearchQuery] = useState("");
   const [csvText, setCsvText] = useState("email,first_name,last_name,company\nlead@example.com,Ada,Lovelace,Analytical Engines");
+  const [csvFilename, setCsvFilename] = useState("");
   const [importResult, setImportResult] = useState<ImportContactsCsvResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +50,9 @@ export function LeadsScreen(): JSX.Element {
   const [suppressionLoading, setSuppressionLoading] = useState(true);
   const [removeTarget, setRemoveTarget] = useState<SuppressionEntrySummary | null>(null);
   const [removingBusy, setRemovingBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ContactSummary | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
   function refreshContacts(): void {
@@ -47,6 +61,10 @@ export function LeadsScreen(): JSX.Element {
       .then(setContacts)
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
+  }
+
+  function refreshBatches(): void {
+    window.outboundly.listLeadImportBatches().then(setBatches).catch((err) => setError(String(err)));
   }
 
   function refreshSuppressionEntries(): void {
@@ -59,6 +77,7 @@ export function LeadsScreen(): JSX.Element {
 
   useEffect(() => {
     refreshContacts();
+    refreshBatches();
     refreshSuppressionEntries();
   }, []);
 
@@ -77,14 +96,29 @@ export function LeadsScreen(): JSX.Element {
     }
   }
 
+  function handleFileChosen(e: React.ChangeEvent<HTMLInputElement>): void {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    file
+      .text()
+      .then((text) => {
+        setCsvText(text);
+        setCsvFilename(file.name);
+      })
+      .catch((err) => setError(String(err)));
+    e.target.value = "";
+  }
+
   async function handleImport(): Promise<void> {
     setBusy(true);
     setError(null);
     setImportResult(null);
     try {
-      const result = await window.outboundly.importContactsCsv({ csvText });
+      const result = await window.outboundly.importContactsCsv({ csvText, filename: csvFilename || undefined });
       setImportResult(result);
       refreshContacts();
+      refreshBatches();
+      setSelectedBatchId(result.batchId);
       toast.showToast(`Imported ${result.imported} contact(s).`, result.skipped.length > 0 ? "info" : "success");
     } catch (err) {
       setError(String(err));
@@ -93,6 +127,39 @@ export function LeadsScreen(): JSX.Element {
     }
   }
 
+  async function handleConfirmDelete(): Promise<void> {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      await window.outboundly.deleteContact({ contactId: deleteTarget.id });
+      refreshContacts();
+      refreshBatches();
+      toast.showToast(`${deleteTarget.email} deleted.`, "success");
+    } catch (err) {
+      toast.showToast(String(err), "error");
+    } finally {
+      setDeleteBusy(false);
+      setDeleteTarget(null);
+    }
+  }
+
+  const visibleContacts = useMemo(() => {
+    const byBatch =
+      selectedBatchId === ALL_BATCHES
+        ? contacts
+        : selectedBatchId === NO_BATCH
+          ? contacts.filter((c) => !c.importBatchId)
+          : contacts.filter((c) => c.importBatchId === selectedBatchId);
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return byBatch;
+    return byBatch.filter((c) => {
+      const name = [c.firstName, c.lastName].filter(Boolean).join(" ").toLowerCase();
+      return c.email.toLowerCase().includes(query) || name.includes(query) || (c.company ?? "").toLowerCase().includes(query);
+    });
+  }, [contacts, selectedBatchId, searchQuery]);
+
+  const uncategorizedCount = contacts.filter((c) => !c.importBatchId).length;
+
   return (
     <div>
       <PageHeader title="Leads" description="Import contacts from a CSV and manage your lead list." />
@@ -100,7 +167,18 @@ export function LeadsScreen(): JSX.Element {
       {error && <ErrorBanner message={error} />}
 
       <Card style={{ marginBottom: "var(--space-6)" }}>
-        <CardHeader title="Import contacts from CSV" description="First row must be a header: email, first_name, last_name, company." />
+        <CardHeader title="Import contacts from CSV" description="Choose a CSV file, or paste/edit its contents below. First row must be a header: email, first_name, last_name, company." />
+        <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", marginBottom: "var(--space-3)", flexWrap: "wrap" }}>
+          <input ref={fileInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={handleFileChosen} />
+          <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}>
+            Choose file...
+          </Button>
+          <div style={{ flex: "1 1 220px" }}>
+            <Field label="Import label (shown as the group name)">
+              <Input value={csvFilename} onChange={(e) => setCsvFilename(e.target.value)} placeholder="e.g. leads-march.csv" />
+            </Field>
+          </div>
+        </div>
         <Textarea value={csvText} onChange={(e) => setCsvText(e.target.value)} rows={6} style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px" }} />
         <div style={{ marginTop: "var(--space-4)" }}>
           <Button variant="primary" icon={<UploadIcon size={15} />} loading={busy} onClick={handleImport}>
@@ -129,14 +207,34 @@ export function LeadsScreen(): JSX.Element {
 
       <Card padding="none">
         <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
-          <CardHeader title={`Contacts (${contacts.length})`} />
+          <CardHeader title={`Contacts (${visibleContacts.length} of ${contacts.length})`} />
+        </div>
+        <div style={{ display: "flex", gap: "var(--space-3)", padding: "0 var(--space-6) var(--space-4)", flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 240px" }}>
+            <Field label="Group (by CSV import)">
+              <Select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)}>
+                <option value={ALL_BATCHES}>All contacts ({contacts.length})</option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.filename} ({b.contactCount}) — {formatDateTime(b.importedAt)}
+                  </option>
+                ))}
+                {uncategorizedCount > 0 && <option value={NO_BATCH}>Not imported via CSV ({uncategorizedCount})</option>}
+              </Select>
+            </Field>
+          </div>
+          <div style={{ flex: "1 1 240px" }}>
+            <Field label="Search">
+              <Input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Name, email, or company..." />
+            </Field>
+          </div>
         </div>
         {loading ? (
           <div style={{ display: "flex", justifyContent: "center", padding: "var(--space-8)" }}>
             <Spinner size={22} />
           </div>
-        ) : contacts.length === 0 ? (
-          <EmptyState icon={<UsersIcon size={20} />} title="No contacts yet" description="Import a CSV above to add your first leads." />
+        ) : visibleContacts.length === 0 ? (
+          <EmptyState icon={<UsersIcon size={20} />} title="No contacts found" description="Import a CSV above, or adjust the group/search filter." />
         ) : (
           <Table>
             <thead>
@@ -144,10 +242,11 @@ export function LeadsScreen(): JSX.Element {
                 <Th>Contact</Th>
                 <Th>Company</Th>
                 <Th>Source</Th>
+                <Th align="right">Actions</Th>
               </tr>
             </thead>
             <tbody>
-              {contacts.map((c) => {
+              {visibleContacts.map((c) => {
                 const name = [c.firstName, c.lastName].filter(Boolean).join(" ");
                 return (
                   <TableRow key={c.id}>
@@ -163,6 +262,11 @@ export function LeadsScreen(): JSX.Element {
                     <Td>{c.company ?? "—"}</Td>
                     <Td>
                       <Badge tone="neutral">{c.source}</Badge>
+                    </Td>
+                    <Td align="right">
+                      <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteTarget(c)}>
+                        Delete
+                      </Button>
                     </Td>
                   </TableRow>
                 );
@@ -224,6 +328,17 @@ export function LeadsScreen(): JSX.Element {
         busy={removingBusy}
         onConfirm={handleRemoveSuppression}
         onCancel={() => setRemoveTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this lead?"
+        description={`${deleteTarget?.email ?? "This contact"} will be removed from the Leads list. Any campaign they're actively enrolled in will stop sending to them; past message history and analytics are preserved.`}
+        confirmLabel="Delete"
+        danger
+        busy={deleteBusy}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteTarget(null)}
       />
     </div>
   );

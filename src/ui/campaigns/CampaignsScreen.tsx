@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AccountSummary,
   BusinessHoursProfileSummary,
@@ -99,6 +99,11 @@ export function CampaignsScreen(): JSX.Element {
   const [unsubscribeTarget, setUnsubscribeTarget] = useState<{ contactId: string; email: string } | null>(null);
 
   const [campaignDashboard, setCampaignDashboard] = useState<CampaignDashboardEntrySummary[]>([]);
+  const [enrollCsvTarget, setEnrollCsvTarget] = useState<CampaignDashboardEntrySummary | null>(null);
+  const [enrollCsvText, setEnrollCsvText] = useState("");
+  const [enrollCsvFilename, setEnrollCsvFilename] = useState("");
+  const [enrollCsvBusy, setEnrollCsvBusy] = useState(false);
+  const enrollCsvFileInputRef = useRef<HTMLInputElement>(null);
   const [editCampaignTarget, setEditCampaignTarget] = useState<CampaignDashboardEntrySummary | null>(null);
   const [editCampaignName, setEditCampaignName] = useState("");
   const [editCampaignBusinessHoursProfileId, setEditCampaignBusinessHoursProfileId] = useState("");
@@ -328,17 +333,48 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
-  async function handleEnrollAll(campaignId: string): Promise<void> {
-    setError(null);
+  function handleOpenEnrollCsv(entry: CampaignDashboardEntrySummary): void {
+    setEnrollCsvTarget(entry);
+    setEnrollCsvText("");
+    setEnrollCsvFilename("");
+  }
+
+  function handleEnrollCsvFileChosen(e: React.ChangeEvent<HTMLInputElement>): void {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    file
+      .text()
+      .then((text) => {
+        setEnrollCsvText(text);
+        setEnrollCsvFilename(file.name);
+      })
+      .catch((err) => toast.showToast(String(err), "error"));
+    e.target.value = "";
+  }
+
+  async function handleSubmitEnrollCsv(): Promise<void> {
+    if (!enrollCsvTarget) return;
+    setEnrollCsvBusy(true);
     try {
-      const result = await window.outboundly.enrollContacts({ campaignId, contactIds: contacts.map((c) => c.id) });
-      toast.showToast(`Enrolled ${result.enrolled}. Skipped ${result.skipped.length}.`, "success");
-      if (campaignId === selectedCampaignId) {
-        window.outboundly.listEnrollments({ campaignId }).then(setEnrollments);
+      const result = await window.outboundly.enrollContactsFromCsv({
+        campaignId: enrollCsvTarget.id,
+        csvText: enrollCsvText,
+        filename: enrollCsvFilename || undefined
+      });
+      toast.showToast(
+        `Imported ${result.imported} lead(s), enrolled ${result.enrolled}. Skipped ${result.importSkipped.length + result.enrollSkipped.length}.`,
+        "success"
+      );
+      window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err)));
+      if (enrollCsvTarget.id === selectedCampaignId) {
+        window.outboundly.listEnrollments({ campaignId: enrollCsvTarget.id }).then(setEnrollments);
       }
       refreshCampaignDashboard();
+      setEnrollCsvTarget(null);
     } catch (err) {
-      setError(String(err));
+      toast.showToast(String(err), "error");
+    } finally {
+      setEnrollCsvBusy(false);
     }
   }
 
@@ -738,8 +774,8 @@ export function CampaignsScreen(): JSX.Element {
                                 Resume
                               </Button>
                             )}
-                            <Button variant="secondary" size="sm" disabled={contacts.length === 0} onClick={() => handleEnrollAll(c.id)}>
-                              Enroll all ({contacts.length})
+                            <Button variant="secondary" size="sm" onClick={() => handleOpenEnrollCsv(c)}>
+                              Enroll leads (CSV)
                             </Button>
                             <Button variant="ghost" size="sm" onClick={() => handleOpenEditCampaign(c)}>
                               Edit
@@ -851,6 +887,49 @@ export function CampaignsScreen(): JSX.Element {
           <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
             The sequence and sending account can't be changed once a campaign exists -- pause this one and create a new campaign instead.
           </p>
+        </div>
+      </Modal>
+
+      <Modal
+        open={enrollCsvTarget !== null}
+        onClose={() => setEnrollCsvTarget(null)}
+        title={`Enroll leads — ${enrollCsvTarget?.name ?? ""}`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEnrollCsvTarget(null)} disabled={enrollCsvBusy}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={enrollCsvBusy} disabled={!enrollCsvText.trim()} onClick={handleSubmitEnrollCsv}>
+              Import & enroll
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
+            This campaign only ever sends to the leads uploaded here -- not your whole global contacts list. Each upload is its
+            own isolated batch of leads for this campaign.
+          </p>
+          <input ref={enrollCsvFileInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={handleEnrollCsvFileChosen} />
+          <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", flexWrap: "wrap" }}>
+            <Button variant="secondary" size="sm" onClick={() => enrollCsvFileInputRef.current?.click()}>
+              Choose file...
+            </Button>
+            <div style={{ flex: "1 1 200px" }}>
+              <Field label="Import label">
+                <Input value={enrollCsvFilename} onChange={(e) => setEnrollCsvFilename(e.target.value)} placeholder="e.g. leads-march.csv" />
+              </Field>
+            </div>
+          </div>
+          <Field label="CSV contents">
+            <Textarea
+              value={enrollCsvText}
+              onChange={(e) => setEnrollCsvText(e.target.value)}
+              rows={8}
+              placeholder="email,first_name,last_name,company"
+              style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px" }}
+            />
+          </Field>
         </div>
       </Modal>
 
