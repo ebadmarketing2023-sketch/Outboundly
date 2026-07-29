@@ -73,4 +73,13 @@ describe("settings-support (Section 3 Settings module)", () => {
     setAppPreferences(db, { defaultSendingAccountId: accountId });
     expect(getAppPreferences(db)).toEqual({ defaultBusinessHoursProfileId: "bhp-1", defaultSendingAccountId: accountId });
   });
+
+  it("round-trips the default send-delay range as numbers, not strings", () => {
+    expect(getAppPreferences(db).defaultMinSendDelaySeconds).toBeUndefined();
+
+    setAppPreferences(db, { defaultMinSendDelaySeconds: 60, defaultMaxSendDelaySeconds: 120 });
+    const prefs = getAppPreferences(db);
+    expect(prefs.defaultMinSendDelaySeconds).toBe(60);
+    expect(prefs.defaultMaxSendDelaySeconds).toBe(120);
+  });
 });

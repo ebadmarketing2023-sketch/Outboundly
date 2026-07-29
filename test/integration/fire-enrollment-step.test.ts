@@ -54,6 +54,7 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
         id: accountId,
         provider: "google",
         emailAddress: "me@outboundly.app",
+        displayName: "Ada Lovelace",
         status: "connected",
         connectedAt: now,
         createdAt: now,
@@ -151,6 +152,12 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     expect(reloaded?.status).toBe("active");
     expect(reloaded?.currentStepId).toBe(sequence.steps[1]!.id);
     expect(reloaded?.nextSendAt).toBeDefined();
+
+    // A campaign-driven send must show a real name on the From header, not a bare address (the
+    // sending account's own connected profile name) -- otherwise the recipient sees only an email
+    // id, which reads as unprofessional/spammy.
+    const message = db.select().from(messages).where(eq(messages.id, queueRow!.messageId)).get();
+    expect(message?.fromAddress).toBe('"Ada Lovelace" <me@outboundly.app>');
   });
 
   it("completes the enrollment once the final step is fired, and auto-completes the campaign once every enrollment is terminal", async () => {
@@ -323,6 +330,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
         id: accountId,
         provider: "google",
         emailAddress: "me@outboundly.app",
+        displayName: "Ada Lovelace",
         status: "connected",
         connectedAt: now,
         createdAt: now,

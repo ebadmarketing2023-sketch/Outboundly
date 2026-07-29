@@ -145,7 +145,7 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
 
   const contact = recipientEmail ? await deps.contactRepository.findByEmail(parseNamedAddress(recipientEmail).address.toString()) : undefined;
 
-  const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress) };
+  const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress), displayName: accountRef.displayName };
   const built = deps.draftLifecycle.buildMimeMessage(draft, {
     from,
     sendingDomain: accountRef.emailAddress.split("@")[1]!,

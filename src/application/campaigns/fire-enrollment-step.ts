@@ -118,7 +118,7 @@ export async function fireEnrollmentStep(
   const accountRef = getAccountRef(deps.db, candidate.candidateAccountId);
   if (!accountRef) throw new Error(`Scheduled account ${candidate.candidateAccountId} no longer exists`);
 
-  const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress) };
+  const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress), displayName: accountRef.displayName };
   const to: NamedEmailAddress = {
     address: EmailAddress.parse(contact.email),
     displayName: [contact.firstName, contact.lastName].filter(Boolean).join(" ") || undefined

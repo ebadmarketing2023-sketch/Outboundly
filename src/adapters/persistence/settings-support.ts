@@ -13,7 +13,9 @@ import { accounts, appSettings } from "./schema.js";
 
 export const APP_SETTING_KEYS = {
   defaultBusinessHoursProfileId: "default_business_hours_profile_id",
-  defaultSendingAccountId: "default_sending_account_id"
+  defaultSendingAccountId: "default_sending_account_id",
+  defaultMinSendDelaySeconds: "default_min_send_delay_seconds",
+  defaultMaxSendDelaySeconds: "default_max_send_delay_seconds"
 } as const;
 
 export function getAppSetting(db: OutboundlyDb, key: string): string | undefined {
@@ -41,12 +43,24 @@ export function setAccountSignature(db: OutboundlyDb, accountId: AccountId, sign
 export interface AppPreferences {
   defaultBusinessHoursProfileId?: string;
   defaultSendingAccountId?: string;
+  /** The app-wide randomized send-delay range in seconds (Critical Improvement #1), the Settings
+   * screen's one place to configure pacing -- saving it also applies it to every currently
+   * connected account (see the `settings:updateAppPreferences` IPC handler), since the actual
+   * enforcement is per-account (accounts.minSendDelaySeconds/maxSendDelaySeconds, read by
+   * SqliteRateLimiter). Stored here too so it's remembered as the default for accounts connected
+   * later. */
+  defaultMinSendDelaySeconds?: number;
+  defaultMaxSendDelaySeconds?: number;
 }
 
 export function getAppPreferences(db: OutboundlyDb): AppPreferences {
+  const min = getAppSetting(db, APP_SETTING_KEYS.defaultMinSendDelaySeconds);
+  const max = getAppSetting(db, APP_SETTING_KEYS.defaultMaxSendDelaySeconds);
   return {
     defaultBusinessHoursProfileId: getAppSetting(db, APP_SETTING_KEYS.defaultBusinessHoursProfileId),
-    defaultSendingAccountId: getAppSetting(db, APP_SETTING_KEYS.defaultSendingAccountId)
+    defaultSendingAccountId: getAppSetting(db, APP_SETTING_KEYS.defaultSendingAccountId),
+    defaultMinSendDelaySeconds: min === undefined ? undefined : Number(min),
+    defaultMaxSendDelaySeconds: max === undefined ? undefined : Number(max)
   };
 }
 
@@ -56,5 +70,11 @@ export function setAppPreferences(db: OutboundlyDb, prefs: AppPreferences, now: 
   }
   if (prefs.defaultSendingAccountId !== undefined) {
     setAppSetting(db, APP_SETTING_KEYS.defaultSendingAccountId, prefs.defaultSendingAccountId, now);
+  }
+  if (prefs.defaultMinSendDelaySeconds !== undefined) {
+    setAppSetting(db, APP_SETTING_KEYS.defaultMinSendDelaySeconds, String(prefs.defaultMinSendDelaySeconds), now);
+  }
+  if (prefs.defaultMaxSendDelaySeconds !== undefined) {
+    setAppSetting(db, APP_SETTING_KEYS.defaultMaxSendDelaySeconds, String(prefs.defaultMaxSendDelaySeconds), now);
   }
 }

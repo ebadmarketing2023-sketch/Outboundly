@@ -550,6 +550,7 @@ function registerIpcHandlers() {
         .where(eq(accountsTable.id, accountId))
         .run();
     } else {
+      const defaults = getAppPreferences(db);
       db.insert(accountsTable)
         .values({
           id: accountId,
@@ -557,6 +558,8 @@ function registerIpcHandlers() {
           emailAddress: result.emailAddress,
           displayName: result.displayName,
           status: "connected",
+          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds,
+          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds,
           connectedAt: now,
           createdAt: now,
           updatedAt: now
@@ -603,6 +606,7 @@ function registerIpcHandlers() {
         .where(eq(accountsTable.id, accountId))
         .run();
     } else {
+      const defaults = getAppPreferences(db);
       db.insert(accountsTable)
         .values({
           id: accountId,
@@ -610,6 +614,8 @@ function registerIpcHandlers() {
           emailAddress: result.emailAddress,
           displayName: result.displayName,
           status: "connected",
+          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds,
+          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds,
           connectedAt: now,
           createdAt: now,
           updatedAt: now
@@ -664,6 +670,7 @@ function registerIpcHandlers() {
         .where(eq(accountsTable.id, accountId))
         .run();
     } else {
+      const defaults = getAppPreferences(db);
       db.insert(accountsTable)
         .values({
           id: accountId,
@@ -671,6 +678,8 @@ function registerIpcHandlers() {
           emailAddress: request.emailAddress,
           displayName: request.displayName,
           status: "connected",
+          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds,
+          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds,
           connectedAt: now,
           createdAt: now,
           updatedAt: now
@@ -999,6 +1008,21 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("settings:updateAppPreferences", async (_event, request) => {
+    if (request.defaultMinSendDelaySeconds !== undefined || request.defaultMaxSendDelaySeconds !== undefined) {
+      const min = request.defaultMinSendDelaySeconds;
+      const max = request.defaultMaxSendDelaySeconds;
+      if (min === undefined || max === undefined) {
+        throw new Error("Set both a minimum and maximum send delay.");
+      }
+      if (min < 0 || max < min) {
+        throw new Error("The minimum send delay must be 0 or greater, and no larger than the maximum.");
+      }
+      // Critical Improvement #1: Settings is the one place to configure send pacing, so saving it
+      // here applies immediately to every currently connected account -- not just a default that
+      // silently does nothing until someone also visits the Campaigns screen's per-account fields.
+      // Enforcement itself is unchanged: SqliteRateLimiter reads these same per-account columns.
+      db.update(accountsTable).set({ minSendDelaySeconds: min, maxSendDelaySeconds: max }).run();
+    }
     setAppPreferences(db, request);
     return getAppPreferences(db);
   });

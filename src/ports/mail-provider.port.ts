@@ -5,6 +5,10 @@ import type { ProviderCapabilities } from "./provider-capabilities.port.js";
 export interface AccountRef {
   accountId: AccountId;
   emailAddress: string;
+  /** The connected Google/Microsoft account's own profile name (or a manually set one for
+   * SMTP/IMAP), so campaign-driven sends can put a real name on the From header instead of a bare
+   * address (Critical Improvement: professional sender identity). */
+  displayName?: string;
 }
 
 export interface ProviderSendResult {

@@ -90,5 +90,7 @@ function countRecentSends(db: OutboundlyDb, accountId: AccountId, now: Date): { 
  * building the RFC 5322 From header of a campaign-generated message. */
 export function getAccountRef(db: OutboundlyDb, accountId: AccountId): AccountRef | undefined {
   const account = db.select().from(accounts).where(eq(accounts.id, accountId)).get();
-  return account ? { accountId: asAccountId(account.id), emailAddress: account.emailAddress } : undefined;
+  return account
+    ? { accountId: asAccountId(account.id), emailAddress: account.emailAddress, displayName: account.displayName ?? undefined }
+    : undefined;
 }

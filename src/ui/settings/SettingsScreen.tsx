@@ -33,6 +33,9 @@ export function SettingsScreen(): JSX.Element {
   const [businessHoursProfiles, setBusinessHoursProfiles] = useState<BusinessHoursProfileSummary[]>([]);
   const [preferences, setPreferences] = useState<AppPreferencesSummary>({});
   const [signatureDrafts, setSignatureDrafts] = useState<Record<string, string>>({});
+  const [minDelay, setMinDelay] = useState("");
+  const [maxDelay, setMaxDelay] = useState("");
+  const [delayBusy, setDelayBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportPassphrase, setExportPassphrase] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
@@ -57,7 +60,14 @@ export function SettingsScreen(): JSX.Element {
       })
       .catch((err) => setError(String(err)));
     window.outboundly.listBusinessHoursProfiles().then(setBusinessHoursProfiles).catch((err) => setError(String(err)));
-    window.outboundly.getAppPreferences().then(setPreferences).catch((err) => setError(String(err)));
+    window.outboundly
+      .getAppPreferences()
+      .then((prefs) => {
+        setPreferences(prefs);
+        setMinDelay(prefs.defaultMinSendDelaySeconds?.toString() ?? "");
+        setMaxDelay(prefs.defaultMaxSendDelaySeconds?.toString() ?? "");
+      })
+      .catch((err) => setError(String(err)));
   }
 
   useEffect(() => {
@@ -95,6 +105,31 @@ export function SettingsScreen(): JSX.Element {
       toast.showToast("Default saved.", "success");
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function handleSaveDelay(): Promise<void> {
+    setError(null);
+    const min = Number(minDelay);
+    const max = Number(maxDelay);
+    if (minDelay.trim() === "" || maxDelay.trim() === "" || Number.isNaN(min) || Number.isNaN(max)) {
+      toast.showToast("Enter both a minimum and maximum delay in seconds.", "error");
+      return;
+    }
+    if (min < 0 || max < min) {
+      toast.showToast("The minimum delay must be 0 or greater, and no larger than the maximum.", "error");
+      return;
+    }
+    setDelayBusy(true);
+    try {
+      const updated = await window.outboundly.updateAppPreferences({ defaultMinSendDelaySeconds: min, defaultMaxSendDelaySeconds: max });
+      setPreferences(updated);
+      refresh(); // account rows changed too (every connected account's delay was just applied)
+      toast.showToast(`Applied a ${min}-${max}s random delay between sends to every connected account.`, "success");
+    } catch (err) {
+      toast.showToast(String(err), "error");
+    } finally {
+      setDelayBusy(false);
     }
   }
 
@@ -223,6 +258,28 @@ export function SettingsScreen(): JSX.Element {
               ))}
             </Select>
           </Field>
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: "var(--space-6)" }}>
+        <CardHeader
+          title="Sending delay"
+          description="A random wait between this many seconds is inserted before every send, freshly re-rolled each time -- so consecutive emails from the same account never go out back-to-back. Applies to every connected account immediately, and to any account you connect afterward."
+        />
+        <div style={{ display: "flex", gap: "var(--space-4)", alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ flex: "0 0 140px" }}>
+            <Field label="Minimum (seconds)">
+              <Input type="number" min={0} value={minDelay} onChange={(e) => setMinDelay(e.target.value)} placeholder="60" />
+            </Field>
+          </div>
+          <div style={{ flex: "0 0 140px" }}>
+            <Field label="Maximum (seconds)">
+              <Input type="number" min={0} value={maxDelay} onChange={(e) => setMaxDelay(e.target.value)} placeholder="120" />
+            </Field>
+          </div>
+          <Button variant="primary" loading={delayBusy} onClick={handleSaveDelay}>
+            Save
+          </Button>
         </div>
       </Card>
 

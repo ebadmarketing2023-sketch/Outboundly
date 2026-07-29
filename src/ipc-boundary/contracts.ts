@@ -495,11 +495,17 @@ export interface UpdateAccountSignatureRequest {
 export interface AppPreferencesSummary {
   defaultBusinessHoursProfileId?: string;
   defaultSendingAccountId?: string;
+  /** The randomized per-send delay range in seconds (Critical Improvement #1). Saving this applies
+   * it immediately to every currently connected sending account, not just future ones. */
+  defaultMinSendDelaySeconds?: number;
+  defaultMaxSendDelaySeconds?: number;
 }
 
 export interface UpdateAppPreferencesRequest {
   defaultBusinessHoursProfileId?: string;
   defaultSendingAccountId?: string;
+  defaultMinSendDelaySeconds?: number;
+  defaultMaxSendDelaySeconds?: number;
 }
 
 /** Backup/restore (Section 23: "Exported backups are encrypted with a user-supplied passphrase

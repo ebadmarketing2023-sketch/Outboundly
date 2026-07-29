@@ -34,10 +34,11 @@ import { SqliteErrorLogRepository } from "../../src/adapters/persistence/reposit
 import { accounts, messages, sendQueue } from "../../src/adapters/persistence/schema.js";
 import { asAccountId, generateId } from "../../src/core/shared-kernel/ids.js";
 import type { AccountRef, ChangeSet, MailProvider, NormalizedMessage, NormalizedThread, ProviderDraftRef, ProviderSendResult, SyncCursor } from "../../src/ports/mail-provider.port.js";
+import type { BuiltMimeMessage } from "../../src/core/mime/types.js";
 import { GMAIL_CAPABILITIES, type ProviderCapabilities } from "../../src/ports/provider-capabilities.port.js";
 
 class FakeMailProvider implements MailProvider {
-  createdDrafts: { account: AccountRef }[] = [];
+  createdDrafts: { account: AccountRef; message: BuiltMimeMessage }[] = [];
   sentDrafts: ProviderDraftRef[] = [];
   appended: Buffer[] = [];
   constructor(
@@ -50,14 +51,14 @@ class FakeMailProvider implements MailProvider {
   async sendMessage(): Promise<ProviderSendResult> {
     return { providerMessageId: "unused" };
   }
-  async createDraft(account: AccountRef): Promise<ProviderDraftRef> {
+  async createDraft(account: AccountRef, message: BuiltMimeMessage): Promise<ProviderDraftRef> {
     if (this.smtpResponseCode !== undefined) {
       const err = new Error(`${this.smtpResponseCode} SMTP rejection (simulated)`);
       (err as Error & { responseCode: number }).responseCode = this.smtpResponseCode;
       throw err;
     }
     if (this.failCreateDraft) throw new Error("provider unavailable");
-    this.createdDrafts.push({ account });
+    this.createdDrafts.push({ account, message });
     return { providerDraftId: "fake-draft-1" };
   }
   async sendDraft(_account: AccountRef, draftRef: ProviderDraftRef): Promise<ProviderSendResult> {
@@ -99,6 +100,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
         id: accountId,
         provider: "google",
         emailAddress: "me@outboundly.app",
+        displayName: "Ada Lovelace",
         status: "connected",
         connectedAt: now,
         createdAt: now,
@@ -218,6 +220,13 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(provider.createdDrafts).toHaveLength(1);
     expect(provider.sentDrafts).toEqual([{ providerDraftId: "fake-draft-1" }]);
     expect(provider.appended).toHaveLength(1);
+
+    // The account's own connected profile name must appear on the From header of the actual
+    // dispatched MIME message, not just a bare address -- otherwise every campaign send looks
+    // unprofessional to the recipient regardless of what the account is named in this app.
+    const fromHeader = provider.createdDrafts[0]!.message.headers.find((h) => h.name === "From")?.value;
+    expect(fromHeader).toContain("Ada Lovelace");
+    expect(fromHeader).toContain("me@outboundly.app");
 
     const queueRow = db.select().from(sendQueue).where(eq(sendQueue.id, fireResult.sendQueueEntryId)).get();
     expect(queueRow?.status).toBe("sent");
