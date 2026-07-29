@@ -117,6 +117,14 @@ export interface SyncInboxResponse {
   failedCount: number;
 }
 
+/** Pushed from main -> renderer while a manual sync is running (Critical Improvement #5) -- not a
+ * request/response pair, since a sync's duration isn't known up front. */
+export interface SyncProgressEvent {
+  accountId: string;
+  done: number;
+  total: number;
+}
+
 export interface ListThreadsRequest {
   accountId: string;
   includeArchived?: boolean;
@@ -502,6 +510,8 @@ export interface OutboundlyRendererApi {
   autosaveDraft(request: AutosaveDraftRequest): Promise<DraftSummary>;
   sendDraft(request: SendDraftRequest): Promise<SendDraftResponse>;
   syncInbox(request: SyncInboxRequest): Promise<SyncInboxResponse>;
+  /** Subscribes to sync-progress pushes; returns an unsubscribe function. */
+  onSyncProgress(callback: (event: SyncProgressEvent) => void): () => void;
   listThreads(request: ListThreadsRequest): Promise<ThreadSummary[]>;
   getThreadMessages(request: GetThreadMessagesRequest): Promise<MessageSummary[]>;
   setThreadArchived(request: SetThreadArchivedRequest): Promise<void>;

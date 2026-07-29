@@ -98,6 +98,12 @@ const MICROSOFT_SCOPES = ["Mail.Send", "Mail.ReadWrite"];
 
 let db;
 let dbPath;
+let mainWindow;
+// Section 21.3/Critical Improvement #8's "one active worker" principle applied to inbox sync too:
+// an account currently syncing (whether the periodic worker or a manual "Sync now" click started
+// it) is tracked here so a second concurrent sync attempt for the same account is skipped rather
+// than racing the same sync cursor.
+const accountsCurrentlySyncing = new Set();
 let draftRepository;
 let draftLifecycle;
 let tokenVault;
@@ -136,11 +142,13 @@ let schedulerTickTimer;
 let sendWorkerTickTimer;
 let rollupTickTimer;
 let accountHealthSweepTimer;
+let inboxSyncTickTimer;
 
 const SCHEDULER_TICK_INTERVAL_MS = 60_000;
 const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
 const ROLLUP_TICK_INTERVAL_MS = 60 * 60 * 1000;
 const ACCOUNT_HEALTH_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+const INBOX_SYNC_TICK_INTERVAL_MS = 5 * 60 * 1000;
 
 function initServices() {
   dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -211,6 +219,54 @@ function campaignEngineDeps() {
 async function getProviderForAccount(accountId) {
   const account = db.select().from(accountsTable).where(eq(accountsTable.id, accountId)).get();
   return providerFor(account);
+}
+
+/** Shared by the manual "Sync now" IPC handler and the periodic sync worker (Critical Improvement
+ * #5/#11) so there's exactly one implementation of "sync this account" -- including the
+ * concurrency guard, which prevents a periodic tick and a manual click (or two periodic ticks
+ * overlapping a slow sync) from racing the same account's sync cursor. Callers are responsible for
+ * checking accountsCurrentlySyncing first if they need to react to "already syncing" (the manual
+ * handler does, to surface a clear error instead of a silent no-op); the periodic worker just skips
+ * silently since there's no one to tell. */
+async function syncAccountById(accountId, { reportProgress }) {
+  accountsCurrentlySyncing.add(accountId);
+  try {
+    const account = db.select().from(accountsTable).where(eq(accountsTable.id, accountId)).get();
+    if (!account) throw new Error("Account not found");
+
+    const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
+    const stopEnrollmentDeps = {
+      enrollmentRepository,
+      campaignRepository,
+      sequenceRepository,
+      contactRepository,
+      conversationRepository,
+      eventRepository,
+      notificationRepository
+    };
+    const result = await syncInboxForAccount({
+      accountId: account.id,
+      accountRef,
+      provider: providerFor(account),
+      repo: conversationRepository,
+      onReplyDetected: (fromAddress, threadId) =>
+        handleReplyDetected(stopEnrollmentDeps, fromAddress, { threadId, accountId: account.id }).then(() => undefined),
+      onBounceDetected: (threadId) =>
+        handleBounceDetected(stopEnrollmentDeps, threadId, account.id).then(() => undefined),
+      errorLogRepository,
+      onProgress: reportProgress ? (done, total) => sendToRenderer("inbox:syncProgress", { accountId, done, total }) : undefined
+    });
+
+    if (result.failedRefs.length > 0) {
+      // Full details already went to errorLogRepository per-message above; this is just a
+      // terminal breadcrumb for whoever's watching the process output live.
+      console.error(`inbox:sync — ${result.failedRefs.length} message(s) failed to sync for account ${accountId}`);
+    }
+
+    return result;
+  } finally {
+    accountsCurrentlySyncing.delete(accountId);
+  }
 }
 
 /** Background workers (Section 21.1): fixed-interval Scheduler tick, Send worker, and the
@@ -287,6 +343,22 @@ function startBackgroundWorkers() {
       console.error("[account-health-sweep] failed:", err);
     });
   }, ACCOUNT_HEALTH_SWEEP_INTERVAL_MS);
+
+  // Periodic inbox sync (Critical Improvement #5/#11): the manual "Sync now" button was, until
+  // now, the only way an inbox ever got synced. Every connected account is synced on a fixed
+  // interval too, so replies/bounces/campaign stop-conditions are picked up automatically. Skips
+  // an account already mid-sync (accountsCurrentlySyncing) rather than piling up overlapping
+  // requests against the same provider, and isolates one account's failure from the rest (Section
+  // 21.3) exactly like every other tick worker.
+  inboxSyncTickTimer = setInterval(() => {
+    const connectedAccounts = db.select().from(accountsTable).where(eq(accountsTable.status, "connected")).all();
+    for (const account of connectedAccounts) {
+      if (accountsCurrentlySyncing.has(account.id)) continue;
+      syncAccountById(account.id, { reportProgress: false }).catch((err) => {
+        console.error(`[inbox-sync-tick] failed for account ${account.id}:`, err);
+      });
+    }
+  }, INBOX_SYNC_TICK_INTERVAL_MS);
 }
 
 function stopBackgroundWorkers() {
@@ -294,6 +366,7 @@ function stopBackgroundWorkers() {
   clearInterval(sendWorkerTickTimer);
   clearInterval(rollupTickTimer);
   clearInterval(accountHealthSweepTimer);
+  clearInterval(inboxSyncTickTimer);
 }
 
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
@@ -603,37 +676,10 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("inbox:sync", async (_event, request) => {
-    const account = db.select().from(accountsTable).where(eq(accountsTable.id, request.accountId)).get();
-    if (!account) throw new Error("Account not found");
-
-    const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
-    const stopEnrollmentDeps = {
-      enrollmentRepository,
-      campaignRepository,
-      sequenceRepository,
-      contactRepository,
-      conversationRepository,
-      eventRepository,
-      notificationRepository
-    };
-    const result = await syncInboxForAccount({
-      accountId: account.id,
-      accountRef,
-      provider: providerFor(account),
-      repo: conversationRepository,
-      onReplyDetected: (fromAddress, threadId) =>
-        handleReplyDetected(stopEnrollmentDeps, fromAddress, { threadId, accountId: account.id }).then(() => undefined),
-      onBounceDetected: (threadId) =>
-        handleBounceDetected(stopEnrollmentDeps, threadId, account.id).then(() => undefined),
-      errorLogRepository
-    });
-
-    if (result.failedRefs.length > 0) {
-      // Full details go to the terminal for debugging; the IPC response only exposes a count
-      // (Section 23: don't push raw internal error text into the renderer unnecessarily).
-      console.error("inbox:sync — some messages failed to sync:", result.failedRefs);
+    if (accountsCurrentlySyncing.has(request.accountId)) {
+      throw new Error("This account is already syncing -- please wait for it to finish.");
     }
-
+    const result = await syncAccountById(request.accountId, { reportProgress: true });
     return {
       newMessageCount: result.newMessageCount,
       repliesDetected: result.repliesDetected,
@@ -1052,7 +1098,7 @@ function registerIpcHandlers() {
 }
 
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 960,
     height: 720,
     webPreferences: {
@@ -1065,7 +1111,15 @@ function createWindow() {
       sandbox: true
     }
   });
-  void win.loadFile(join(__dirname, "renderer", "index.html"));
+  void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
+}
+
+/** Pushes a main -> renderer event (Critical Improvement #5's sync-progress feed) -- a no-op if
+ * the window doesn't exist yet or was already closed, since progress updates are best-effort. */
+function sendToRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
 }
 
 app.whenReady().then(async () => {

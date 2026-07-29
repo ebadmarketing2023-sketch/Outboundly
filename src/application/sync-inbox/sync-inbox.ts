@@ -35,6 +35,11 @@ export interface SyncInboxParams {
    * also recorded as a structured, queryable log entry, not just returned in failedRefs. Omitted
    * in most existing tests since it's a pure side effect. */
   errorLogRepository?: ErrorLogRepository;
+  /** Optional (Critical Improvement #5/#11): invoked after every message is processed (whether it
+   * succeeded or failed) with how many of the batch are done so far, so a long sync isn't just a
+   * spinner with zero feedback. `total` is fixed for the whole call -- the size of the change set
+   * fetched once at the start, not re-evaluated as messages are processed. */
+  onProgress?: (done: number, total: number) => void;
 }
 
 export interface SyncInboxResult {
@@ -66,6 +71,8 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
   let repliesDetected = 0;
   let bouncesDetected = 0;
   const failedRefs: { ref: string; error: string }[] = [];
+  const total = changeSet.newOrChangedMessageRefs.length;
+  let done = 0;
 
   for (const ref of changeSet.newOrChangedMessageRefs) {
     try {
@@ -118,6 +125,8 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
         accountId: asAccountId(params.accountId)
       });
     }
+    done++;
+    params.onProgress?.(done, total);
   }
 
   await params.repo.setSyncCursor(params.accountId, changeSet.cursor);

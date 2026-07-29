@@ -26,10 +26,12 @@ const CONVERSATION_STATE_TONE: Record<string, BadgeTone> = {
 };
 
 /**
- * The Phase 2 "minimal" Unified Inbox (Section 11.4): lists threads for one account, shows a
- * thread's messages, and a manual "Sync now" button. No background Sync worker yet (Section
- * 21 — that's Phase 4) and no snooze/search yet — this exists to prove the Conversation Engine
- * round-trip end to end, not to be the final inbox experience.
+ * The Unified Inbox (Section 11.4): lists threads for one account, shows a thread's messages, and
+ * a manual "Sync now" button with live progress feedback (Critical Improvement #5). A periodic
+ * background sync worker (electron/main.js) also syncs every connected account automatically, so
+ * this button is for an on-demand refresh, not the only way sync ever happens. No snooze/search
+ * yet — this exists to prove the Conversation Engine round-trip end to end, not to be the final
+ * inbox experience.
  */
 export function InboxScreen(): JSX.Element {
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -40,6 +42,7 @@ export function InboxScreen(): JSX.Element {
   const [loadingThreads, setLoadingThreads] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{ done: number; total: number } | null>(null);
   const toast = useToast();
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
 
@@ -53,6 +56,15 @@ export function InboxScreen(): JSX.Element {
       .catch((err) => setError(String(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Critical Improvement #5: live "N of M" feedback for a long sync, instead of an indefinite
+  // spinner with zero indication of whether it's actually making progress.
+  useEffect(() => {
+    return window.outboundly.onSyncProgress((event) => {
+      if (event.accountId !== selectedAccountId) return;
+      setSyncProgress({ done: event.done, total: event.total });
+    });
+  }, [selectedAccountId]);
 
   async function loadThreads(accountId: string): Promise<void> {
     const list = await window.outboundly.listThreads({ accountId });
@@ -74,6 +86,7 @@ export function InboxScreen(): JSX.Element {
     if (!selectedAccountId) return;
     setBusy(true);
     setError(null);
+    setSyncProgress(null);
     try {
       const result = await window.outboundly.syncInbox({ accountId: selectedAccountId });
       const failedNote = result.failedCount > 0 ? `, ${result.failedCount} failed to sync` : "";
@@ -84,6 +97,7 @@ export function InboxScreen(): JSX.Element {
       setError(String(err));
     } finally {
       setBusy(false);
+      setSyncProgress(null);
     }
   }
 
@@ -145,7 +159,7 @@ export function InboxScreen(): JSX.Element {
           </Select>
           {selectedAccount && selectedAccount.status !== "connected" && <AccountStatusBadge status={selectedAccount.status} />}
           <Button variant="primary" icon={<RefreshIcon size={15} />} loading={busy} disabled={!selectedAccountId} onClick={handleSync}>
-            Sync now
+            {busy && syncProgress && syncProgress.total > 0 ? `Syncing ${syncProgress.done} of ${syncProgress.total}...` : "Sync now"}
           </Button>
         </div>
       </div>

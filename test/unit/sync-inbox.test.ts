@@ -142,6 +142,42 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
     expect(repo.syncCursors.get("acct-1")).toBe("cursor-1");
   });
 
+  it("reports progress after every message, with a fixed total for the whole batch (Critical Improvement #5/#11)", async () => {
+    const repo = new InMemoryConversationRepository();
+    const provider = new FakeMailProvider({
+      "msg-a": {
+        providerMessageId: "msg-a",
+        messageIdHeader: "<a@x>",
+        from: "someone@example.com",
+        to: ["me@outboundly.app"],
+        subject: "A",
+        date: new Date()
+      },
+      "msg-b": {
+        providerMessageId: "msg-b",
+        messageIdHeader: "<b@x>",
+        from: "someone@example.com",
+        to: ["me@outboundly.app"],
+        subject: "B",
+        date: new Date()
+      }
+    });
+
+    const progressUpdates: Array<{ done: number; total: number }> = [];
+    await syncInboxForAccount({
+      accountId: "acct-1",
+      accountRef,
+      provider,
+      repo,
+      onProgress: (done, total) => progressUpdates.push({ done, total })
+    });
+
+    expect(progressUpdates).toEqual([
+      { done: 1, total: 2 },
+      { done: 2, total: 2 }
+    ]);
+  });
+
   it("isolates a single message's fetch failure instead of aborting the whole sync (Section 21.3)", async () => {
     const repo = new InMemoryConversationRepository();
 

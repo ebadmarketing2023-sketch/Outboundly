@@ -14,6 +14,14 @@ contextBridge.exposeInMainWorld("outboundly", {
   autosaveDraft: (request) => ipcRenderer.invoke("drafts:autosave", request),
   sendDraft: (request) => ipcRenderer.invoke("drafts:send", request),
   syncInbox: (request) => ipcRenderer.invoke("inbox:sync", request),
+  // Main -> renderer push (Critical Improvement #5): the only subscribe-style entry on this
+  // surface, since progress updates during a sync can't be expressed as a single invoke/response.
+  // Returns an unsubscribe function so a screen can detach its listener on unmount.
+  onSyncProgress: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("inbox:syncProgress", listener);
+    return () => ipcRenderer.removeListener("inbox:syncProgress", listener);
+  },
   listThreads: (request) => ipcRenderer.invoke("inbox:listThreads", request),
   getThreadMessages: (request) => ipcRenderer.invoke("inbox:getThreadMessages", request),
   setThreadArchived: (request) => ipcRenderer.invoke("inbox:setThreadArchived", request),
