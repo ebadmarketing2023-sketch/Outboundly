@@ -4,6 +4,7 @@ import { evaluateDeliverability, hasBlockingFindings as hasBlockingDeliverabilit
 import type { DeliverabilityReport } from "../../core/deliverability/types.js";
 import { getAccountRef, buildSchedulingContext, type BuildSchedulingContextDeps } from "../../adapters/persistence/campaign-scheduling-support.js";
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
+import { enqueueAndAdvanceEnrollment } from "../../adapters/persistence/enqueue-and-advance-support.js";
 import type { CampaignEnrollment } from "../../core/campaigns/campaign.js";
 import { contactToPersonalizationValues } from "../../core/campaigns/personalize.js";
 import { selectWeightedVariant } from "../../core/campaigns/variant-selection.js";
@@ -20,7 +21,7 @@ import type { ContactRepository } from "../../ports/contact-repository.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
 import type { DeliverabilityReportRepository } from "../../ports/deliverability-report-repository.port.js";
 import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js";
-import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
+import type { AdvanceEnrollmentInput, EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
 import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
 import type { SendQueueRepository } from "../../ports/send-queue-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
@@ -188,24 +189,35 @@ export async function fireEnrollmentStep(
     occurredAt: now
   });
 
-  const queueEntry = await deps.sendQueueRepository.enqueue({
-    messageId: asMessageId(ingestResult.messageId!),
-    accountId: candidate.candidateAccountId,
-    priority: "campaign",
-    earliestSendAt: candidate.proposedSendAt,
-    idempotencyKey: `${enrollment.id}:${step.id}`
-  });
-
+  // Database Integrity (Critical Improvement #13): the queue insert and the enrollment advance are
+  // the two writes that must never be split by a crash -- an enqueued send with no corresponding
+  // advance would leave the enrollment due again on the very step that already queued a send, and
+  // (absent send_queue's own idempotency key) an advance with no queue row would silently drop a
+  // send. One real db.transaction() makes them succeed or fail together.
   let enrollmentStatus: "active" | "completed";
+  let advancePatch: AdvanceEnrollmentInput;
   if (nextStep) {
     const nextSendAt = new Date(now.getTime() + nextStep.delayDays * 24 * 60 * 60 * 1000 + nextStep.delayHours * 60 * 60 * 1000);
-    await deps.enrollmentRepository.advance(enrollment.id, { currentStepId: nextStep.id, nextSendAt, status: "active" });
+    advancePatch = { currentStepId: nextStep.id, nextSendAt, status: "active" };
     enrollmentStatus = "active";
   } else {
-    await deps.enrollmentRepository.advance(enrollment.id, { status: "completed", nextSendAt: undefined });
+    advancePatch = { status: "completed", nextSendAt: undefined };
     enrollmentStatus = "completed";
-    await maybeCompleteCampaign(deps, enrollment.campaignId);
   }
+
+  const queueEntry = enqueueAndAdvanceEnrollment(deps.db, {
+    queue: {
+      messageId: asMessageId(ingestResult.messageId!),
+      accountId: candidate.candidateAccountId,
+      priority: "campaign",
+      earliestSendAt: candidate.proposedSendAt,
+      idempotencyKey: `${enrollment.id}:${step.id}`
+    },
+    enrollmentId: enrollment.id,
+    advance: advancePatch
+  });
+
+  if (!nextStep) await maybeCompleteCampaign(deps, enrollment.campaignId);
 
   return {
     outcome: "enqueued",

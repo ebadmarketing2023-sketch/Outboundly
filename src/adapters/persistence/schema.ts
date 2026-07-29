@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
@@ -476,7 +477,16 @@ export const campaignEnrollments = sqliteTable(
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull()
   },
   (table) => ({
-    statusNextSendIdx: index("campaign_enrollments_status_next_send_idx").on(table.status, table.nextSendAt)
+    statusNextSendIdx: index("campaign_enrollments_status_next_send_idx").on(table.status, table.nextSendAt),
+    // Database Integrity pass (Critical Improvement #13): a real DB-level guarantee, not just an
+    // application-level check-then-insert, that the same contact can never end up with two
+    // *active* enrollments in the same campaign -- the exact race a concurrent double-click or two
+    // overlapping enroll requests could otherwise hit between the "already enrolled?" select and
+    // the insert. Partial (WHERE status = 'active') rather than a plain unique index because a
+    // contact legitimately gets a new enrollment row after a prior one stops/completes.
+    activeEnrollmentUniqueIdx: uniqueIndex("campaign_enrollments_active_unique_idx")
+      .on(table.campaignId, table.contactId)
+      .where(sql`${table.status} = 'active'`)
   })
 );
 

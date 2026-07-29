@@ -230,6 +230,51 @@ describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, S
     expect(await enrollmentRepo.findActiveByCampaignAndContact(campaign.id, contact.id)).toBeUndefined();
   });
 
+  it("rejects a second active enrollment row for the same campaign+contact at the DB level (Section 24: Database Integrity), but allows re-enrolling after the first stops", async () => {
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({
+      name: "Seq",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }]
+    });
+    const campaign = await campaignRepo.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await contactRepo.upsertByEmail({ email: "lead@example.com", source: "manual" });
+
+    const first = await enrollmentRepo.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date()
+    });
+
+    // A real DB-level guarantee (a partial unique index on (campaign_id, contact_id) WHERE
+    // status = 'active'), not just an application-level check-then-insert, closes the race a
+    // concurrent double-click on "Enroll" could otherwise hit between the "already enrolled?"
+    // select and the insert.
+    await expect(
+      enrollmentRepo.enroll({
+        campaignId: campaign.id,
+        contactId: contact.id,
+        currentStepId: sequence.steps[0]!.id,
+        nextSendAt: new Date()
+      })
+    ).rejects.toThrow();
+
+    await enrollmentRepo.advance(first.id, { status: "stopped_manual" });
+    const second = await enrollmentRepo.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date()
+    });
+    expect(second.id).not.toBe(first.id);
+    expect(second.status).toBe("active");
+  });
+
   it("finds every active enrollment for a contact across multiple campaigns (Section 14.3 fan-out)", async () => {
     const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
     const sequence = await sequenceRepo.create({

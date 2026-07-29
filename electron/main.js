@@ -247,13 +247,23 @@ async function enrollContactIdsIntoCampaign(campaignId, contactIds) {
       skipped.push({ contactId, reason: "Already actively enrolled in this campaign" });
       continue;
     }
-    await enrollmentRepository.enroll({
-      campaignId: campaign.id,
-      contactId,
-      currentStepId: firstStep.id,
-      nextSendAt: new Date()
-    });
-    enrolled++;
+    try {
+      await enrollmentRepository.enroll({
+        campaignId: campaign.id,
+        contactId,
+        currentStepId: firstStep.id,
+        nextSendAt: new Date()
+      });
+      enrolled++;
+    } catch (err) {
+      // Database Integrity (Critical Improvement #13): campaign_enrollments has a real partial
+      // unique index on (campaign_id, contact_id) WHERE status = 'active', so a genuine race
+      // between two overlapping enroll requests for the same contact (the check above passing for
+      // both before either insert lands) throws here instead of silently creating a duplicate
+      // active enrollment. Treated the same as losing the check above -- skip this one contact,
+      // not the rest of the batch.
+      skipped.push({ contactId, reason: "Already actively enrolled in this campaign" });
+    }
   }
   return { enrolled, skipped };
 }

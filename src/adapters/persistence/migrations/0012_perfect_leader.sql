@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `campaign_enrollments_active_unique_idx` ON `campaign_enrollments` (`campaign_id`,`contact_id`) WHERE "campaign_enrollments"."status" = 'active';
