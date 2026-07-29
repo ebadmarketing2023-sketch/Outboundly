@@ -47,4 +47,13 @@ export interface SendQueueRepository {
    * lastError -- for the Rate Limiter's retryAfter (Section 16.2) or a momentarily-ineligible
    * Provider Selector result (Section 16.3), neither of which is a failure of the send itself. */
   releaseForRetry(id: SendQueueId, earliestSendAt: Date): Promise<void>;
+  /** Startup crash recovery (Section 16.2): a row can only ever be left in status='claimed' by a
+   * process that died mid-dispatch (the send worker's own try/catch always resolves a claim to a
+   * terminal or pending state otherwise), and a fresh process starting up has no in-flight
+   * dispatch of its own yet, so every 'claimed' row found at startup is unconditionally orphaned.
+   * Treated the same as a transient dispatch failure (attemptCount incremented, backoff applied,
+   * terminally 'failed' past the max-attempt ceiling) rather than a silent instant retry, since we
+   * genuinely don't know what happened to the previous attempt. Returns the number of rows
+   * recovered, for startup logging. */
+  requeueOrphanedClaims(now: Date): Promise<number>;
 }

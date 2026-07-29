@@ -1009,8 +1009,18 @@ function createWindow() {
   void win.loadFile(join(__dirname, "renderer", "index.html"));
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   initServices();
+
+  // Startup crash recovery (Section 16.2): a row can only ever be left in status='claimed' by a
+  // process that died mid-dispatch, and this fresh process has no in-flight dispatch of its own
+  // yet, so every 'claimed' row found right now is unconditionally orphaned. Runs before any
+  // background worker starts claiming new rows.
+  const recoveredCount = await sendQueueRepository.requeueOrphanedClaims(new Date());
+  if (recoveredCount > 0) {
+    console.warn(`[startup] recovered ${recoveredCount} send_queue row(s) orphaned by an unclean shutdown`);
+  }
+
   registerIpcHandlers();
   startBackgroundWorkers();
   createWindow();

@@ -192,6 +192,76 @@ describe("SendQueue + RateLimiter (Section 5.8, Section 16.2)", () => {
       expect(reloaded?.attemptCount).toBe(5);
     });
 
+    it("requeueOrphanedClaims resets a 'claimed' row back to 'pending', incrementing attemptCount (crash recovery)", async () => {
+      const messageId = insertQueueMessage(accountId);
+      const entry = await queueRepo.enqueue({
+        messageId: asMessageId(messageId),
+        accountId: asAccountId(accountId),
+        priority: "manual",
+        earliestSendAt: new Date(Date.now() - 1000),
+        idempotencyKey: "key-orphan"
+      });
+      const claimed = await queueRepo.claimNext(new Date());
+      expect(claimed?.id).toBe(entry.id); // now status='claimed', simulating a crash right here
+
+      const recoveredCount = await queueRepo.requeueOrphanedClaims(new Date());
+      expect(recoveredCount).toBe(1);
+
+      const reloaded = await queueRepo.findById(entry.id);
+      expect(reloaded?.status).toBe("pending");
+      expect(reloaded?.attemptCount).toBe(1);
+      expect(reloaded?.lastError).toMatch(/unclean shutdown/i);
+    });
+
+    it("requeueOrphanedClaims never touches pending, sent, failed, or cancelled rows", async () => {
+      const pendingId = insertQueueMessage(accountId);
+      await queueRepo.enqueue({
+        messageId: asMessageId(pendingId),
+        accountId: asAccountId(accountId),
+        priority: "manual",
+        earliestSendAt: new Date(),
+        idempotencyKey: "key-still-pending"
+      });
+
+      const sentId = insertQueueMessage(accountId);
+      const sentEntry = await queueRepo.enqueue({
+        messageId: asMessageId(sentId),
+        accountId: asAccountId(accountId),
+        priority: "manual",
+        earliestSendAt: new Date(),
+        idempotencyKey: "key-already-sent"
+      });
+      await queueRepo.markSent(sentEntry.id);
+
+      const recoveredCount = await queueRepo.requeueOrphanedClaims(new Date());
+      expect(recoveredCount).toBe(0);
+      expect((await queueRepo.findById(sentEntry.id))?.status).toBe("sent");
+    });
+
+    it("requeueOrphanedClaims fails a claim terminally once it has already exhausted its retry attempts across repeated crashes", async () => {
+      const messageId = insertQueueMessage(accountId);
+      const entry = await queueRepo.enqueue({
+        messageId: asMessageId(messageId),
+        accountId: asAccountId(accountId),
+        priority: "manual",
+        earliestSendAt: new Date(Date.now() - 1000),
+        idempotencyKey: "key-repeated-crash"
+      });
+
+      // Simulate the same row surviving 5 crash-and-reclaim cycles -- each claimNext call uses a
+      // "now" far enough ahead to clear the previous cycle's backoff (up to a 1-day ceiling).
+      let simulatedNow = new Date();
+      for (let i = 0; i < 5; i++) {
+        simulatedNow = new Date(simulatedNow.getTime() + 2 * 24 * 60 * 60 * 1000);
+        await queueRepo.claimNext(simulatedNow);
+        await queueRepo.requeueOrphanedClaims(simulatedNow);
+      }
+
+      const reloaded = await queueRepo.findById(entry.id);
+      expect(reloaded?.status).toBe("failed");
+      expect(reloaded?.attemptCount).toBe(5);
+    });
+
     it("fails a permanent error immediately without retry", async () => {
       const messageId = insertQueueMessage(accountId);
       const entry = await queueRepo.enqueue({

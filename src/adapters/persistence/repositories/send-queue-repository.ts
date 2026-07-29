@@ -110,12 +110,18 @@ export class SqliteSendQueueRepository implements SendQueueRepository {
       return;
     }
 
+    this.applyTransientFailure(row, error, options.now);
+  }
+
+  /** Shared by markFailed's transient path and requeueOrphanedClaims: increments attemptCount and
+   * reschedules with backoff, or fails terminally once the max-attempt ceiling is reached. */
+  private applyTransientFailure(row: SendQueueRow, error: string, now: Date): void {
     const nextAttemptCount = row.attemptCount + 1;
     if (nextAttemptCount >= MAX_ATTEMPTS) {
       this.db
         .update(sendQueue)
         .set({ status: "failed", attemptCount: nextAttemptCount, lastError: error })
-        .where(eq(sendQueue.id, id))
+        .where(eq(sendQueue.id, row.id))
         .run();
       return;
     }
@@ -126,10 +132,22 @@ export class SqliteSendQueueRepository implements SendQueueRepository {
         status: "pending",
         attemptCount: nextAttemptCount,
         lastError: error,
-        earliestSendAt: new Date(options.now.getTime() + backoffMs(nextAttemptCount))
+        earliestSendAt: new Date(now.getTime() + backoffMs(nextAttemptCount))
       })
-      .where(eq(sendQueue.id, id))
+      .where(eq(sendQueue.id, row.id))
       .run();
+  }
+
+  async requeueOrphanedClaims(now: Date): Promise<number> {
+    const orphaned = this.db.select().from(sendQueue).where(eq(sendQueue.status, "claimed")).all();
+    for (const row of orphaned) {
+      this.applyTransientFailure(
+        row,
+        "Recovered after an unclean shutdown -- the outcome of the previous send attempt is unknown",
+        now
+      );
+    }
+    return orphaned.length;
   }
 
   async markCancelled(id: SendQueueId): Promise<void> {
