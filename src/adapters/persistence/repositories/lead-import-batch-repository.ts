@@ -33,4 +33,8 @@ export class SqliteLeadImportBatchRepository implements LeadImportBatchRepositor
     const row = this.db.select().from(batchesTable).where(eq(batchesTable.id, id)).get();
     return row ? toDomain(row) : undefined;
   }
+
+  async delete(id: LeadImportBatchId): Promise<void> {
+    this.db.delete(batchesTable).where(eq(batchesTable.id, id)).run();
+  }
 }

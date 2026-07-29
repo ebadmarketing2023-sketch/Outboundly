@@ -226,6 +226,14 @@ export interface DeleteContactRequest {
   contactId: string;
 }
 
+/** Deletes an entire CSV import at once (Critical Improvement #3), not one lead at a time -- every
+ * contact in the batch goes through the same stop-active-enrollments-then-soft-delete path a
+ * single deleteContact call would, and the batch itself is removed from the Leads screen's group
+ * switcher. */
+export interface DeleteLeadImportBatchRequest {
+  batchId: string;
+}
+
 export interface CreateTemplateRequest {
   name: string;
   bodyText: string;
@@ -351,6 +359,15 @@ export interface EnrollContactsFromCsvResponse {
   importSkipped: Array<{ row: number; reason: string }>;
   enrolled: number;
   enrollSkipped: Array<{ contactId: string; reason: string }>;
+}
+
+/** Enrolls a campaign from a CSV batch already uploaded earlier (Leads screen or a previous
+ * campaign's own upload) instead of re-uploading/pasting the same file again -- the same
+ * isolation guarantee as EnrollContactsFromCsvRequest (only that batch's contacts, never the
+ * whole global list), just skipping the re-import step since the batch already exists. */
+export interface EnrollContactsFromBatchRequest {
+  campaignId: string;
+  batchId: string;
 }
 
 export interface ListEnrollmentsRequest {
@@ -564,6 +581,7 @@ export interface OutboundlyRendererApi {
   listContacts(): Promise<ContactSummary[]>;
   listLeadImportBatches(): Promise<LeadImportBatchSummary[]>;
   deleteContact(request: DeleteContactRequest): Promise<void>;
+  deleteLeadImportBatch(request: DeleteLeadImportBatchRequest): Promise<void>;
   createTemplate(request: CreateTemplateRequest): Promise<TemplateSummary>;
   listTemplates(): Promise<TemplateSummary[]>;
   createSequence(request: CreateSequenceRequest): Promise<SequenceSummary>;
@@ -576,6 +594,7 @@ export interface OutboundlyRendererApi {
   setCampaignStatus(request: SetCampaignStatusRequest): Promise<void>;
   enrollContacts(request: EnrollContactsRequest): Promise<EnrollContactsResponse>;
   enrollContactsFromCsv(request: EnrollContactsFromCsvRequest): Promise<EnrollContactsFromCsvResponse>;
+  enrollContactsFromBatch(request: EnrollContactsFromBatchRequest): Promise<EnrollContactsResponse>;
   listEnrollments(request: ListEnrollmentsRequest): Promise<EnrollmentSummary[]>;
   createBusinessHoursProfile(request: CreateBusinessHoursProfileRequest): Promise<BusinessHoursProfileSummary>;
   listBusinessHoursProfiles(): Promise<BusinessHoursProfileSummary[]>;

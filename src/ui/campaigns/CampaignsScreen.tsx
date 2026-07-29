@@ -6,6 +6,7 @@ import type {
   CampaignSummary,
   ContactSummary,
   EnrollmentSummary,
+  LeadImportBatchSummary,
   SequenceSummary,
   TemplateSummary
 } from "../../ipc-boundary/contracts.js";
@@ -99,7 +100,9 @@ export function CampaignsScreen(): JSX.Element {
   const [unsubscribeTarget, setUnsubscribeTarget] = useState<{ contactId: string; email: string } | null>(null);
 
   const [campaignDashboard, setCampaignDashboard] = useState<CampaignDashboardEntrySummary[]>([]);
+  const [leadImportBatches, setLeadImportBatches] = useState<LeadImportBatchSummary[]>([]);
   const [enrollCsvTarget, setEnrollCsvTarget] = useState<CampaignDashboardEntrySummary | null>(null);
+  const [enrollBatchId, setEnrollBatchId] = useState("");
   const [enrollCsvText, setEnrollCsvText] = useState("");
   const [enrollCsvFilename, setEnrollCsvFilename] = useState("");
   const [enrollCsvBusy, setEnrollCsvBusy] = useState(false);
@@ -133,6 +136,7 @@ export function CampaignsScreen(): JSX.Element {
       })
       .catch((err) => setError(String(err)));
     window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err)));
+    window.outboundly.listLeadImportBatches().then(setLeadImportBatches).catch((err) => setError(String(err)));
     window.outboundly.listTemplates().then(setTemplates).catch((err) => setError(String(err)));
     window.outboundly.listSequences().then(setSequences).catch((err) => setError(String(err)));
     window.outboundly.listCampaigns().then(setCampaigns).catch((err) => setError(String(err)));
@@ -336,6 +340,7 @@ export function CampaignsScreen(): JSX.Element {
 
   function handleOpenEnrollCsv(entry: CampaignDashboardEntrySummary): void {
     setEnrollCsvTarget(entry);
+    setEnrollBatchId("");
     setEnrollCsvText("");
     setEnrollCsvFilename("");
   }
@@ -346,6 +351,7 @@ export function CampaignsScreen(): JSX.Element {
     file
       .text()
       .then((text) => {
+        setEnrollBatchId("");
         setEnrollCsvText(text);
         setEnrollCsvFilename(file.name);
       })
@@ -353,24 +359,34 @@ export function CampaignsScreen(): JSX.Element {
     e.target.value = "";
   }
 
+  function refreshAfterEnrollment(campaignId: string): void {
+    window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err)));
+    window.outboundly.listLeadImportBatches().then(setLeadImportBatches).catch((err) => setError(String(err)));
+    if (campaignId === selectedCampaignId) {
+      window.outboundly.listEnrollments({ campaignId }).then(setEnrollments);
+    }
+    refreshCampaignDashboard();
+  }
+
   async function handleSubmitEnrollCsv(): Promise<void> {
     if (!enrollCsvTarget) return;
     setEnrollCsvBusy(true);
     try {
-      const result = await window.outboundly.enrollContactsFromCsv({
-        campaignId: enrollCsvTarget.id,
-        csvText: enrollCsvText,
-        filename: enrollCsvFilename || undefined
-      });
-      toast.showToast(
-        `Imported ${result.imported} lead(s), enrolled ${result.enrolled}. Skipped ${result.importSkipped.length + result.enrollSkipped.length}.`,
-        "success"
-      );
-      window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err)));
-      if (enrollCsvTarget.id === selectedCampaignId) {
-        window.outboundly.listEnrollments({ campaignId: enrollCsvTarget.id }).then(setEnrollments);
+      if (enrollBatchId) {
+        const result = await window.outboundly.enrollContactsFromBatch({ campaignId: enrollCsvTarget.id, batchId: enrollBatchId });
+        toast.showToast(`Enrolled ${result.enrolled}. Skipped ${result.skipped.length}.`, "success");
+      } else {
+        const result = await window.outboundly.enrollContactsFromCsv({
+          campaignId: enrollCsvTarget.id,
+          csvText: enrollCsvText,
+          filename: enrollCsvFilename || undefined
+        });
+        toast.showToast(
+          `Imported ${result.imported} lead(s), enrolled ${result.enrolled}. Skipped ${result.importSkipped.length + result.enrollSkipped.length}.`,
+          "success"
+        );
       }
-      refreshCampaignDashboard();
+      refreshAfterEnrollment(enrollCsvTarget.id);
       setEnrollCsvTarget(null);
     } catch (err) {
       toast.showToast(String(err), "error");
@@ -898,37 +914,69 @@ export function CampaignsScreen(): JSX.Element {
             <Button variant="secondary" onClick={() => setEnrollCsvTarget(null)} disabled={enrollCsvBusy}>
               Cancel
             </Button>
-            <Button variant="primary" loading={enrollCsvBusy} disabled={!enrollCsvText.trim()} onClick={handleSubmitEnrollCsv}>
-              Import & enroll
+            <Button
+              variant="primary"
+              loading={enrollCsvBusy}
+              disabled={!enrollBatchId && !enrollCsvText.trim()}
+              onClick={handleSubmitEnrollCsv}
+            >
+              {enrollBatchId ? "Enroll" : "Import & enroll"}
             </Button>
           </>
         }
       >
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
           <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
-            This campaign only ever sends to the leads uploaded here -- not your whole global contacts list. Each upload is its
+            This campaign only ever sends to the leads chosen here -- not your whole global contacts list. Each import is its
             own isolated batch of leads for this campaign.
           </p>
-          <input ref={enrollCsvFileInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={handleEnrollCsvFileChosen} />
-          <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", flexWrap: "wrap" }}>
-            <Button variant="secondary" size="sm" onClick={() => enrollCsvFileInputRef.current?.click()}>
-              Choose file...
-            </Button>
-            <div style={{ flex: "1 1 200px" }}>
-              <Field label="Import label">
-                <Input value={enrollCsvFilename} onChange={(e) => setEnrollCsvFilename(e.target.value)} placeholder="e.g. leads-march.csv" />
+
+          {leadImportBatches.length > 0 && (
+            <Field label="Use a previous import">
+              <Select
+                value={enrollBatchId}
+                onChange={(e) => {
+                  setEnrollBatchId(e.target.value);
+                  if (e.target.value) {
+                    setEnrollCsvText("");
+                    setEnrollCsvFilename("");
+                  }
+                }}
+              >
+                <option value="">Upload a new CSV instead...</option>
+                {leadImportBatches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.filename} ({b.contactCount}) — {formatDateTime(b.importedAt)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+
+          {!enrollBatchId && (
+            <>
+              <input ref={enrollCsvFileInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={handleEnrollCsvFileChosen} />
+              <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", flexWrap: "wrap" }}>
+                <Button variant="secondary" size="sm" onClick={() => enrollCsvFileInputRef.current?.click()}>
+                  Choose file...
+                </Button>
+                <div style={{ flex: "1 1 200px" }}>
+                  <Field label="Import label">
+                    <Input value={enrollCsvFilename} onChange={(e) => setEnrollCsvFilename(e.target.value)} placeholder="e.g. leads-march.csv" />
+                  </Field>
+                </div>
+              </div>
+              <Field label="CSV contents">
+                <Textarea
+                  value={enrollCsvText}
+                  onChange={(e) => setEnrollCsvText(e.target.value)}
+                  rows={8}
+                  placeholder="email,first_name,last_name,company"
+                  style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px" }}
+                />
               </Field>
-            </div>
-          </div>
-          <Field label="CSV contents">
-            <Textarea
-              value={enrollCsvText}
-              onChange={(e) => setEnrollCsvText(e.target.value)}
-              rows={8}
-              placeholder="email,first_name,last_name,company"
-              style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px" }}
-            />
-          </Field>
+            </>
+          )}
         </div>
       </Modal>
 

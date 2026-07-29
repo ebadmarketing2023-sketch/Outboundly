@@ -52,6 +52,8 @@ export function LeadsScreen(): JSX.Element {
   const [removingBusy, setRemovingBusy] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ContactSummary | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteBatchTarget, setDeleteBatchTarget] = useState<LeadImportBatchSummary | null>(null);
+  const [deleteBatchBusy, setDeleteBatchBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
@@ -143,6 +145,23 @@ export function LeadsScreen(): JSX.Element {
     }
   }
 
+  async function handleConfirmDeleteBatch(): Promise<void> {
+    if (!deleteBatchTarget) return;
+    setDeleteBatchBusy(true);
+    try {
+      await window.outboundly.deleteLeadImportBatch({ batchId: deleteBatchTarget.id });
+      setSelectedBatchId(ALL_BATCHES);
+      refreshContacts();
+      refreshBatches();
+      toast.showToast(`"${deleteBatchTarget.filename}" deleted.`, "success");
+    } catch (err) {
+      toast.showToast(String(err), "error");
+    } finally {
+      setDeleteBatchBusy(false);
+      setDeleteBatchTarget(null);
+    }
+  }
+
   const visibleContacts = useMemo(() => {
     const byBatch =
       selectedBatchId === ALL_BATCHES
@@ -209,7 +228,7 @@ export function LeadsScreen(): JSX.Element {
         <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
           <CardHeader title={`Contacts (${visibleContacts.length} of ${contacts.length})`} />
         </div>
-        <div style={{ display: "flex", gap: "var(--space-3)", padding: "0 var(--space-6) var(--space-4)", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: "var(--space-3)", padding: "0 var(--space-6) var(--space-4)", flexWrap: "wrap", alignItems: "flex-end" }}>
           <div style={{ flex: "1 1 240px" }}>
             <Field label="Group (by CSV import)">
               <Select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)}>
@@ -228,6 +247,19 @@ export function LeadsScreen(): JSX.Element {
               <Input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Name, email, or company..." />
             </Field>
           </div>
+          {selectedBatchId !== ALL_BATCHES && selectedBatchId !== NO_BATCH && (
+            <Button
+              variant="danger-ghost"
+              size="sm"
+              icon={<TrashIcon size={14} />}
+              onClick={() => {
+                const batch = batches.find((b) => b.id === selectedBatchId);
+                if (batch) setDeleteBatchTarget(batch);
+              }}
+            >
+              Delete this import
+            </Button>
+          )}
         </div>
         {loading ? (
           <div style={{ display: "flex", justifyContent: "center", padding: "var(--space-8)" }}>
@@ -339,6 +371,17 @@ export function LeadsScreen(): JSX.Element {
         busy={deleteBusy}
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteBatchTarget !== null}
+        title="Delete this entire import?"
+        description={`Every contact from "${deleteBatchTarget?.filename ?? "this import"}" (${deleteBatchTarget?.contactCount ?? 0} contact(s)) will be removed from the Leads list. Any campaign they're actively enrolled in will stop sending to them; past message history and analytics are preserved. This can't be undone.`}
+        confirmLabel="Delete import"
+        danger
+        busy={deleteBatchBusy}
+        onConfirm={handleConfirmDeleteBatch}
+        onCancel={() => setDeleteBatchTarget(null)}
       />
     </div>
   );

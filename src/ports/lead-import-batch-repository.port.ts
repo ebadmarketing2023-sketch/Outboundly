@@ -17,4 +17,8 @@ export interface LeadImportBatchRepository {
   create(input: NewLeadImportBatchInput): Promise<LeadImportBatch>;
   list(): Promise<LeadImportBatch[]>;
   findById(id: LeadImportBatchId): Promise<LeadImportBatch | undefined>;
+  /** The caller is responsible for clearing contacts.importBatchId for every contact tagged with
+   * this batch first (see deleteLeadImportBatch) -- contacts.import_batch_id is a real FK, so this
+   * throws if any row still references it. */
+  delete(id: LeadImportBatchId): Promise<void>;
 }

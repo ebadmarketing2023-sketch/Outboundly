@@ -6,11 +6,11 @@ import electronUpdaterPkg from "electron-updater";
 const { autoUpdater } = electronUpdaterPkg;
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import { openDatabase } from "../dist/adapters/persistence/db.js";
 import { getOrCreateDatabaseEncryptionKey } from "../dist/adapters/persistence/database-key.js";
-import { accounts as accountsTable } from "../dist/adapters/persistence/schema.js";
+import { accounts as accountsTable, contacts as contactsTable } from "../dist/adapters/persistence/schema.js";
 import { SqliteDraftRepository } from "../dist/adapters/persistence/repositories/draft-repository.js";
 import { SqliteConversationRepository } from "../dist/adapters/persistence/repositories/conversation-repository.js";
 import { InboxViewRepository } from "../dist/adapters/persistence/repositories/inbox-view-repository.js";
@@ -70,6 +70,7 @@ import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.j
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
 import { importContactsCsv } from "../dist/application/leads/import-contacts-csv.js";
 import { deleteContact } from "../dist/application/leads/delete-contact.js";
+import { deleteLeadImportBatch } from "../dist/application/leads/delete-lead-import-batch.js";
 import { SqliteLeadImportBatchRepository } from "../dist/adapters/persistence/repositories/lead-import-batch-repository.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -879,6 +880,13 @@ function registerIpcHandlers() {
     );
   });
 
+  ipcMain.handle("leadImportBatches:delete", async (_event, request) => {
+    await deleteLeadImportBatch(
+      { db, enrollmentRepository, campaignRepository, sequenceRepository, contactRepository, leadImportBatchRepository },
+      request.batchId
+    );
+  });
+
   ipcMain.handle("templates:create", async (_event, request) => {
     const template = await templateRepository.create({ name: request.name, document: parsePlainTextToDocument(request.bodyText) });
     return { id: template.id, name: template.name };
@@ -1092,6 +1100,18 @@ function registerIpcHandlers() {
       enrolled: enrollResult.enrolled,
       enrollSkipped: enrollResult.skipped
     };
+  });
+
+  // Critical Improvement #2, extended: picking an already-uploaded batch (instead of uploading
+  // the same CSV again) still only ever enrolls that exact batch's contacts -- same isolation
+  // guarantee as campaigns:enrollFromCsv, just skipping the redundant re-import.
+  ipcMain.handle("campaigns:enrollFromBatch", async (_event, request) => {
+    const batchContacts = db
+      .select({ id: contactsTable.id })
+      .from(contactsTable)
+      .where(and(eq(contactsTable.importBatchId, request.batchId), isNull(contactsTable.deletedAt)))
+      .all();
+    return enrollContactIdsIntoCampaign(request.campaignId, batchContacts.map((c) => c.id));
   });
 
   ipcMain.handle("campaigns:listEnrollments", async (_event, request) => {
