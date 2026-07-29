@@ -2,9 +2,11 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { computeAccountHealthSnapshot } from "../../src/application/account-health/compute-account-health-snapshot.js";
 import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/db.js";
+import { SqliteAccountDirectory } from "../../src/adapters/persistence/repositories/account-directory.js";
 import { SqliteAccountHealthMetricsSource } from "../../src/adapters/persistence/repositories/account-health-metrics-source.js";
 import { SqliteAccountHealthRepository } from "../../src/adapters/persistence/repositories/account-health-repository.js";
 import { SqliteNotificationRepository } from "../../src/adapters/persistence/repositories/notification-repository.js";
@@ -113,5 +115,56 @@ describe("computeAccountHealthSnapshot (Section 19, notifications surfaced per S
     });
     expect(result.riskLevel).toBe("healthy");
     expect(await notificationRepository.findUnread(10)).toEqual([]);
+  });
+
+  it("flips accounts.status to reauth_required when the live auth check fails and an accountDirectory is provided", async () => {
+    const accountDirectory = new SqliteAccountDirectory(db);
+    await computeAccountHealthSnapshot({
+      accountRef,
+      provider: new FakeMailProvider(false),
+      metricsSource: new SqliteAccountHealthMetricsSource(db),
+      authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
+      repository: new SqliteAccountHealthRepository(db),
+      notificationRepository,
+      providerName: "google",
+      accountDirectory
+    });
+
+    const entries = await accountDirectory.list();
+    expect(entries.find((e) => e.id === accountId)?.status).toBe("reauth_required");
+  });
+
+  it("flips accounts.status back to connected once a subsequent live auth check succeeds", async () => {
+    const accountDirectory = new SqliteAccountDirectory(db);
+    const commonParams = {
+      accountRef,
+      metricsSource: new SqliteAccountHealthMetricsSource(db),
+      authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
+      repository: new SqliteAccountHealthRepository(db),
+      notificationRepository,
+      providerName: "google",
+      accountDirectory
+    };
+
+    await computeAccountHealthSnapshot({ ...commonParams, provider: new FakeMailProvider(false) });
+    expect((await accountDirectory.list()).find((e) => e.id === accountId)?.status).toBe("reauth_required");
+
+    await computeAccountHealthSnapshot({ ...commonParams, provider: new FakeMailProvider(true) });
+    expect((await accountDirectory.list()).find((e) => e.id === accountId)?.status).toBe("connected");
+  });
+
+  it("leaves accounts.status untouched when no accountDirectory is passed (manual-trigger backward compatibility)", async () => {
+    await computeAccountHealthSnapshot({
+      accountRef,
+      provider: new FakeMailProvider(false),
+      metricsSource: new SqliteAccountHealthMetricsSource(db),
+      authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
+      repository: new SqliteAccountHealthRepository(db),
+      notificationRepository,
+      providerName: "google"
+    });
+
+    const row = db.select().from(accounts).where(eq(accounts.id, accountId)).get();
+    expect(row?.status).toBe("connected");
   });
 });

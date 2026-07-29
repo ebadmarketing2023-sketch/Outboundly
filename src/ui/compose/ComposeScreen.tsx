@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AccountSummary, DraftSummary, SendDraftResponse } from "../../ipc-boundary/contracts.js";
 import {
+  AccountStatusBadge,
   Avatar,
   Badge,
   type BadgeTone,
@@ -196,10 +197,18 @@ export function ComposeScreen(): JSX.Element {
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
+                  {a.status === "reauth_required" ? " (reconnect needed)" : ""}
                 </option>
               ))}
             </Select>
+            {selectedAccount && selectedAccount.status !== "connected" && <AccountStatusBadge status={selectedAccount.status} />}
           </div>
+        )}
+        {selectedAccount?.status === "reauth_required" && (
+          <p style={{ fontSize: "13px", color: "var(--color-warning-text, var(--color-text-secondary))", marginBottom: "var(--space-4)" }}>
+            This account's authentication is failing — sends will not go through until you reconnect it using the
+            buttons below.
+          </p>
         )}
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           <Button variant="secondary" size="sm" disabled={busy} onClick={handleConnectGoogle}>

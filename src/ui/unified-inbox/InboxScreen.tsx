@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AccountSummary, MessageSummary, ThreadSummary } from "../../ipc-boundary/contracts.js";
 import {
+  AccountStatusBadge,
   ArchiveIcon,
   Badge,
   type BadgeTone,
@@ -40,6 +41,7 @@ export function InboxScreen(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
+  const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
 
   useEffect(() => {
     window.outboundly
@@ -136,9 +138,11 @@ export function InboxScreen(): JSX.Element {
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
+                {a.status === "reauth_required" ? " (reconnect needed)" : ""}
               </option>
             ))}
           </Select>
+          {selectedAccount && selectedAccount.status !== "connected" && <AccountStatusBadge status={selectedAccount.status} />}
           <Button variant="primary" icon={<RefreshIcon size={15} />} loading={busy} disabled={!selectedAccountId} onClick={handleSync}>
             Sync now
           </Button>

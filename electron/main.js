@@ -21,6 +21,8 @@ import { SqliteAccountHealthMetricsSource } from "../dist/adapters/persistence/r
 import { SqliteAccountHealthRepository } from "../dist/adapters/persistence/repositories/account-health-repository.js";
 import { DnsDomainAuthChecker } from "../dist/adapters/dns/dns-domain-auth-checker.js";
 import { computeAccountHealthSnapshot } from "../dist/application/account-health/compute-account-health-snapshot.js";
+import { runAccountHealthSweep } from "../dist/application/account-health/account-health-sweep.js";
+import { SqliteAccountDirectory } from "../dist/adapters/persistence/repositories/account-directory.js";
 import { DraftLifecycleService } from "../dist/core/drafts/draft-lifecycle.js";
 import { SystemClock } from "../dist/ports/clock.port.js";
 import { parsePlainTextToDocument } from "../dist/core/rendering/plain-text-parser.js";
@@ -105,6 +107,7 @@ let inboxViewRepository;
 let deliverabilityReportRepository;
 let accountHealthMetricsSource;
 let accountHealthRepository;
+let accountDirectory;
 let domainAuthChecker;
 let labReportRepository;
 let contactRepository;
@@ -129,10 +132,12 @@ let insightRepository;
 let schedulerTickTimer;
 let sendWorkerTickTimer;
 let rollupTickTimer;
+let accountHealthSweepTimer;
 
 const SCHEDULER_TICK_INTERVAL_MS = 60_000;
 const SEND_WORKER_TICK_INTERVAL_MS = 30_000;
 const ROLLUP_TICK_INTERVAL_MS = 60 * 60 * 1000;
+const ACCOUNT_HEALTH_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 
 function initServices() {
   dbPath = join(app.getPath("userData"), "outboundly.sqlite");
@@ -151,6 +156,7 @@ function initServices() {
   deliverabilityReportRepository = new SqliteDeliverabilityReportRepository(db);
   accountHealthMetricsSource = new SqliteAccountHealthMetricsSource(db);
   accountHealthRepository = new SqliteAccountHealthRepository(db);
+  accountDirectory = new SqliteAccountDirectory(db);
   domainAuthChecker = new DnsDomainAuthChecker();
   labReportRepository = new SqliteLabReportRepository(db);
   contactRepository = new SqliteContactRepository(db);
@@ -254,12 +260,33 @@ function startBackgroundWorkers() {
         console.error("[rollup-tick] failed:", err);
       });
   }, ROLLUP_TICK_INTERVAL_MS);
+
+  // Account Health sweep (Section 17.3's "Periodic (background)" mode): re-runs the same live
+  // auth check the manual "Recompute" button triggers, for every non-disconnected account, so a
+  // revoked/expired token is caught and reflected in accounts.status without waiting for a send or
+  // sync to fail first.
+  accountHealthSweepTimer = setInterval(() => {
+    runAccountHealthSweep(
+      {
+        accountDirectory,
+        getProviderForAccount: (account) => providerFor(account),
+        metricsSource: accountHealthMetricsSource,
+        authChecker: domainAuthChecker,
+        repository: accountHealthRepository,
+        notificationRepository
+      },
+      new Date()
+    ).catch((err) => {
+      console.error("[account-health-sweep] failed:", err);
+    });
+  }, ACCOUNT_HEALTH_SWEEP_INTERVAL_MS);
 }
 
 function stopBackgroundWorkers() {
   clearInterval(schedulerTickTimer);
   clearInterval(sendWorkerTickTimer);
   clearInterval(rollupTickTimer);
+  clearInterval(accountHealthSweepTimer);
 }
 
 /** Picks the MailProvider matching an account row's `provider` column (Section 12.1). */
@@ -626,7 +653,8 @@ function registerIpcHandlers() {
       authChecker: domainAuthChecker,
       repository: accountHealthRepository,
       notificationRepository,
-      providerName: account.provider
+      providerName: account.provider,
+      accountDirectory
     });
 
     const record = await accountHealthRepository.getLatest(account.id);

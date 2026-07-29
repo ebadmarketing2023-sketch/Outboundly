@@ -1,5 +1,6 @@
 import { computeAccountHealth } from "../../core/account-health/engine.js";
 import type { AccountHealthResult } from "../../core/account-health/types.js";
+import type { AccountDirectory } from "../../ports/account-directory.port.js";
 import type { AccountHealthMetricsSource } from "../../ports/account-health-metrics.port.js";
 import type { AccountHealthRepository } from "../../ports/account-health-repository.port.js";
 import type { DomainAuthChecker } from "../../ports/domain-auth-checker.port.js";
@@ -9,9 +10,8 @@ import type { NotificationRepository } from "../../ports/notification-repository
 /**
  * Orchestrates an Account Health snapshot (Section 19): gathers real local metrics, a real DNS
  * auth-posture check, and a real live authentication attempt, then runs the pure scoring engine
- * and persists the result. Manually triggered in this phase — a periodic background sweep
- * (Section 17.3's "Periodic (background)" mode) needs the Scheduler, which doesn't exist until
- * Phase 4.
+ * and persists the result. Triggered both manually (the "Recompute" button) and periodically (the
+ * Account Health sweep worker, Section 17.3's "Periodic (background)" mode).
  */
 
 export interface ComputeAccountHealthSnapshotParams {
@@ -22,6 +22,10 @@ export interface ComputeAccountHealthSnapshotParams {
   repository: AccountHealthRepository;
   notificationRepository: NotificationRepository;
   providerName: string;
+  /** Optional: when provided, the live auth check's outcome also flips accounts.status between
+   * 'connected' and 'reauth_required' (Section 13.3), so a revoked/expired token becomes visible
+   * in the UI instead of only surfacing the next time a send/sync actually fails. */
+  accountDirectory?: AccountDirectory;
   now?: Date;
 }
 
@@ -49,6 +53,13 @@ export async function computeAccountHealthSnapshot(
     input,
     result
   });
+
+  if (params.accountDirectory) {
+    await params.accountDirectory.updateStatus(
+      params.accountRef.accountId,
+      liveAuthCheckPassed ? "connected" : "reauth_required"
+    );
+  }
 
   // Risk warnings/recovery recommendations surface to Notifications (Section 19.2 diagram); a
   // "healthy"/"watch" result isn't alert-worthy on its own, only a real degradation is.

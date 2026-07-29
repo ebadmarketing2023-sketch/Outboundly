@@ -9,6 +9,7 @@ import type {
   TemplateSummary
 } from "../../ipc-boundary/contracts.js";
 import {
+  AccountStatusBadge,
   Button,
   Card,
   CardHeader,
@@ -319,6 +320,7 @@ export function CampaignsScreen(): JSX.Element {
               <thead>
                 <tr>
                   <Th>Account</Th>
+                  <Th>Status</Th>
                   <Th>Daily limit</Th>
                   <Th>Hourly limit</Th>
                   <Th></Th>
@@ -330,6 +332,9 @@ export function CampaignsScreen(): JSX.Element {
                   return (
                     <TableRow key={a.id}>
                       <Td>{a.emailAddress}</Td>
+                      <Td>
+                        <AccountStatusBadge status={a.status} />
+                      </Td>
                       <Td>
                         <Input
                           type="number"
@@ -547,6 +552,7 @@ export function CampaignsScreen(): JSX.Element {
                     {accounts.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.emailAddress}
+                        {a.status === "reauth_required" ? " (reconnect needed)" : ""}
                       </option>
                     ))}
                   </Select>
