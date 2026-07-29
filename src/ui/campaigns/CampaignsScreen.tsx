@@ -8,6 +8,31 @@ import type {
   SequenceSummary,
   TemplateSummary
 } from "../../ipc-boundary/contracts.js";
+import {
+  Button,
+  Card,
+  CardHeader,
+  Checkbox,
+  EmptyState,
+  EnrollmentStatusBadge,
+  ErrorBanner,
+  Field,
+  Input,
+  MegaphoneIcon,
+  PageHeader,
+  PlusIcon,
+  Select,
+  StatusBadge,
+  Table,
+  TableRow,
+  Tabs,
+  Td,
+  Textarea,
+  Th,
+  TrashIcon,
+  useToast
+} from "../components/index.js";
+import { formatDate } from "../lib/format.js";
 
 const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 const WEEKDAY_LABELS: Record<string, string> = {
@@ -20,6 +45,8 @@ const WEEKDAY_LABELS: Record<string, string> = {
   sunday: "Sun"
 };
 
+type SectionKey = "accounts" | "business-hours" | "templates" | "sequences" | "campaigns";
+
 /**
  * The Phase 4 "minimal" Campaign UI (Section 14): sending-account limits, business hours
  * profiles, template/sequence/campaign creation, and enrollment monitoring — proves the Campaign
@@ -30,6 +57,7 @@ const WEEKDAY_LABELS: Record<string, string> = {
  * start/end window to every selected day, not the full per-weekday/multi-window data model.
  */
 export function CampaignsScreen(): JSX.Element {
+  const [section, setSection] = useState<SectionKey>("campaigns");
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [contacts, setContacts] = useState<ContactSummary[]>([]);
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -37,6 +65,7 @@ export function CampaignsScreen(): JSX.Element {
   const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
   const [businessHoursProfiles, setBusinessHoursProfiles] = useState<BusinessHoursProfileSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   const [accountLimitDrafts, setAccountLimitDrafts] = useState<Record<string, { daily: string; hourly: string }>>({});
 
@@ -130,6 +159,7 @@ export function CampaignsScreen(): JSX.Element {
         hourlySendLimit: draft.hourly.trim() === "" ? undefined : Number(draft.hourly)
       });
       setAccounts((prev) => prev.map((a) => (a.id === accountId ? updated : a)));
+      toast.showToast("Limits saved.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -138,15 +168,10 @@ export function CampaignsScreen(): JSX.Element {
   async function handleCreateBusinessHoursProfile(): Promise<void> {
     setError(null);
     try {
-      await window.outboundly.createBusinessHoursProfile({
-        name: bhpName,
-        timezone: bhpTimezone,
-        days: [...bhpDays],
-        start: bhpStart,
-        end: bhpEnd
-      });
+      await window.outboundly.createBusinessHoursProfile({ name: bhpName, timezone: bhpTimezone, days: [...bhpDays], start: bhpStart, end: bhpEnd });
       setBhpName("");
       refreshAll();
+      toast.showToast("Business hours profile created.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -158,6 +183,7 @@ export function CampaignsScreen(): JSX.Element {
       await window.outboundly.createTemplate({ name: templateName, bodyText: templateBody });
       setTemplateName("");
       refreshAll();
+      toast.showToast("Template created.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -190,6 +216,7 @@ export function CampaignsScreen(): JSX.Element {
       setSequenceName("");
       setSequenceSteps([{ delayDays: "0", delayHours: "0", templateId: "", subjectText: "Quick question" }]);
       refreshAll();
+      toast.showToast("Sequence created.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -206,6 +233,7 @@ export function CampaignsScreen(): JSX.Element {
       });
       setCampaignName("");
       refreshAll();
+      toast.showToast("Campaign created.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -216,6 +244,7 @@ export function CampaignsScreen(): JSX.Element {
     try {
       await window.outboundly.setCampaignStatus({ campaignId, status: "running" });
       refreshAll();
+      toast.showToast("Campaign started.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -225,7 +254,7 @@ export function CampaignsScreen(): JSX.Element {
     setError(null);
     try {
       const result = await window.outboundly.enrollContacts({ campaignId, contactIds: contacts.map((c) => c.id) });
-      window.alert(`Enrolled ${result.enrolled}. Skipped ${result.skipped.length}.`);
+      toast.showToast(`Enrolled ${result.enrolled}. Skipped ${result.skipped.length}.`, "success");
       if (campaignId === selectedCampaignId) {
         window.outboundly.listEnrollments({ campaignId }).then(setEnrollments);
       }
@@ -238,6 +267,7 @@ export function CampaignsScreen(): JSX.Element {
     setError(null);
     try {
       await window.outboundly.markConversion({ campaignId, contactId });
+      toast.showToast("Marked as converted.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -248,317 +278,381 @@ export function CampaignsScreen(): JSX.Element {
     try {
       await window.outboundly.unsubscribeContact({ campaignId, contactId });
       window.outboundly.listEnrollments({ campaignId }).then(setEnrollments);
+      toast.showToast("Contact unsubscribed.", "success");
     } catch (err) {
       setError(String(err));
     }
   }
 
   return (
-    <div style={{ fontFamily: "sans-serif", maxWidth: 900, margin: "2rem auto" }}>
-      <h1>Outboundly — Campaigns (Phase 4)</h1>
+    <div>
+      <PageHeader title="Campaigns" description="Sending accounts, business hours, templates, sequences, and enrollment monitoring." />
 
-      {error && (
-        <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>
-          <strong>Error:</strong> {error}
-        </p>
-      )}
+      {error && <ErrorBanner message={error} />}
 
-      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>1. Sending accounts &amp; limits</h2>
-        <p style={{ color: "#666", fontSize: "0.85rem" }}>
-          Caps applied per account by the Rate Limit Policy and the authoritative Rate Limiter — leave blank for no limit.
-        </p>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-              <th>Account</th>
-              <th>Daily limit</th>
-              <th>Hourly limit</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {accounts.map((a) => {
-              const draft = accountLimitDrafts[a.id] ?? { daily: "", hourly: "" };
-              return (
-                <tr key={a.id} style={{ borderBottom: "1px solid #eee" }}>
-                  <td>{a.emailAddress}</td>
-                  <td>
-                    <input
-                      type="number"
-                      min={0}
-                      value={draft.daily}
-                      onChange={(e) =>
-                        setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, daily: e.target.value } }))
-                      }
-                      style={{ width: "6rem" }}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      min={0}
-                      value={draft.hourly}
-                      onChange={(e) =>
-                        setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, hourly: e.target.value } }))
-                      }
-                      style={{ width: "6rem" }}
-                    />
-                  </td>
-                  <td>
-                    <button onClick={() => handleSaveAccountLimits(a.id)}>Save</button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {accounts.length === 0 && <p>No accounts connected yet.</p>}
-      </section>
+      <Tabs
+        active={section}
+        onChange={(k) => setSection(k as SectionKey)}
+        items={[
+          { key: "accounts", label: "Sending accounts", count: accounts.length },
+          { key: "business-hours", label: "Business hours", count: businessHoursProfiles.length },
+          { key: "templates", label: "Templates", count: templates.length },
+          { key: "sequences", label: "Sequences", count: sequences.length },
+          { key: "campaigns", label: "Campaigns", count: campaigns.length }
+        ]}
+      />
 
-      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>2. Business hours profiles ({businessHoursProfiles.length})</h2>
-        <p style={{ color: "#666", fontSize: "0.85rem" }}>
-          When a campaign bound to this profile is allowed to send, in the profile's own timezone.
-        </p>
-        <input
-          placeholder="Profile name"
-          value={bhpName}
-          onChange={(e) => setBhpName(e.target.value)}
-          style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
-        />
-        <input
-          placeholder="IANA timezone, e.g. America/New_York"
-          value={bhpTimezone}
-          onChange={(e) => setBhpTimezone(e.target.value)}
-          style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
-        />
-        <div style={{ marginBottom: "0.5rem" }}>
-          {WEEKDAYS.map((day) => (
-            <label key={day} style={{ marginRight: "0.75rem" }}>
-              <input type="checkbox" checked={bhpDays.has(day)} onChange={() => toggleBhpDay(day)} /> {WEEKDAY_LABELS[day]}
-            </label>
-          ))}
-        </div>
-        <label style={{ marginRight: "0.5rem" }}>
-          From <input type="time" value={bhpStart} onChange={(e) => setBhpStart(e.target.value)} />
-        </label>
-        <label style={{ marginRight: "0.5rem" }}>
-          To <input type="time" value={bhpEnd} onChange={(e) => setBhpEnd(e.target.value)} />
-        </label>
-        <button onClick={handleCreateBusinessHoursProfile} disabled={!bhpName || !bhpTimezone || bhpDays.size === 0}>
-          Create profile
-        </button>
-        <ul>
-          {businessHoursProfiles.map((p) => (
-            <li key={p.id}>
-              {p.name} — {p.timezone}, {Object.keys(p.windows).length} day(s) active
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>3. Templates ({templates.length})</h2>
-        <input
-          placeholder="Template name"
-          value={templateName}
-          onChange={(e) => setTemplateName(e.target.value)}
-          style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
-        />
-        <textarea
-          value={templateBody}
-          onChange={(e) => setTemplateBody(e.target.value)}
-          rows={4}
-          style={{ width: "100%", marginBottom: "0.5rem" }}
-        />
-        <button onClick={handleCreateTemplate} disabled={!templateName}>
-          Create template
-        </button>
-        <ul>
-          {templates.map((t) => (
-            <li key={t.id}>{t.name}</li>
-          ))}
-        </ul>
-      </section>
-
-      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>4. Sequences ({sequences.length})</h2>
-        <input
-          placeholder="Sequence name"
-          value={sequenceName}
-          onChange={(e) => setSequenceName(e.target.value)}
-          style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
-        />
-        {sequenceSteps.map((step, index) => (
-          <div key={index} style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
-            <strong style={{ width: "3.5rem" }}>Step {index + 1}</strong>
-            <select value={step.templateId} onChange={(e) => updateSequenceStep(index, { templateId: e.target.value })}>
-              <option value="">Select template...</option>
-              {templates.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-            <input
-              placeholder="Subject"
-              value={step.subjectText}
-              onChange={(e) => updateSequenceStep(index, { subjectText: e.target.value })}
-            />
-            <label>
-              Wait
-              <input
-                type="number"
-                min={0}
-                value={step.delayDays}
-                onChange={(e) => updateSequenceStep(index, { delayDays: e.target.value })}
-                style={{ width: "4rem", margin: "0 0.25rem" }}
-              />
-              day(s)
-            </label>
-            <label>
-              <input
-                type="number"
-                min={0}
-                max={23}
-                value={step.delayHours}
-                onChange={(e) => updateSequenceStep(index, { delayHours: e.target.value })}
-                style={{ width: "4rem", margin: "0 0.25rem" }}
-              />
-              hour(s) after the previous step
-            </label>
-            <button onClick={() => removeSequenceStep(index)} disabled={sequenceSteps.length === 1}>
-              Remove
-            </button>
+      {section === "accounts" && (
+        <Card padding="none">
+          <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
+            <CardHeader title="Sending accounts & limits" description="Caps applied per account by the Rate Limit Policy — leave blank for no limit." />
           </div>
-        ))}
-        <div style={{ marginBottom: "0.5rem" }}>
-          <button onClick={addSequenceStep}>+ Add another step</button>
-        </div>
-        <button
-          onClick={handleCreateSequence}
-          disabled={!sequenceName || sequenceSteps.some((s) => !s.templateId || !s.subjectText)}
-        >
-          Create sequence ({sequenceSteps.length} step{sequenceSteps.length === 1 ? "" : "s"})
-        </button>
-        <ul>
-          {sequences.map((s) => (
-            <li key={s.id}>
-              {s.name} ({s.stepCount} step{s.stepCount === 1 ? "" : "s"})
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>5. Campaigns ({campaigns.length})</h2>
-        <input
-          placeholder="Campaign name"
-          value={campaignName}
-          onChange={(e) => setCampaignName(e.target.value)}
-          style={{ display: "block", width: "100%", marginBottom: "0.5rem" }}
-        />
-        <select value={campaignSequenceId} onChange={(e) => setCampaignSequenceId(e.target.value)} style={{ marginRight: "0.5rem" }}>
-          <option value="">Select sequence...</option>
-          {sequences.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-        <select value={campaignAccountId} onChange={(e) => setCampaignAccountId(e.target.value)} style={{ marginRight: "0.5rem" }}>
-          <option value="">Select sending account...</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.emailAddress}
-            </option>
-          ))}
-        </select>
-        <select
-          value={campaignBusinessHoursProfileId}
-          onChange={(e) => setCampaignBusinessHoursProfileId(e.target.value)}
-          style={{ marginRight: "0.5rem" }}
-        >
-          <option value="">Select business hours...</option>
-          {businessHoursProfiles.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={handleCreateCampaign}
-          disabled={!campaignName || !campaignSequenceId || !campaignAccountId || !campaignBusinessHoursProfileId}
-        >
-          Create campaign
-        </button>
-
-        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "0.75rem" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-              <th>Name</th>
-              <th>Status</th>
-              <th>Business hours</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {campaigns.map((c) => (
-              <tr key={c.id} style={{ borderBottom: "1px solid #eee" }}>
-                <td>
-                  <button onClick={() => setSelectedCampaignId(c.id)} style={{ fontWeight: c.id === selectedCampaignId ? "bold" : "normal" }}>
-                    {c.name}
-                  </button>
-                </td>
-                <td>{c.status}</td>
-                <td>{businessHoursProfiles.find((p) => p.id === c.businessHoursProfileId)?.name ?? "—"}</td>
-                <td>
-                  {c.status === "draft" && <button onClick={() => handleStartCampaign(c.id)}>Start</button>}
-                  <button onClick={() => handleEnrollAll(c.id)} disabled={contacts.length === 0}>
-                    Enroll all contacts ({contacts.length})
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      {selectedCampaignId && (
-        <section>
-          <h2>Enrollments for {campaigns.find((c) => c.id === selectedCampaignId)?.name}</h2>
-          {enrollments.length === 0 && <p>No enrollments yet.</p>}
-          {enrollments.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          {accounts.length === 0 ? (
+            <EmptyState icon={<MegaphoneIcon size={20} />} title="No accounts connected yet" description="Connect a sending account from the Compose screen first." />
+          ) : (
+            <Table>
               <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                  <th>Contact</th>
-                  <th>Status</th>
-                  <th>Next send</th>
-                  <th>Enrolled</th>
-                  <th></th>
+                <tr>
+                  <Th>Account</Th>
+                  <Th>Daily limit</Th>
+                  <Th>Hourly limit</Th>
+                  <Th></Th>
                 </tr>
               </thead>
               <tbody>
-                {enrollments.map((e) => (
-                  <tr key={e.id} style={{ borderBottom: "1px solid #eee" }}>
-                    <td>{contacts.find((c) => c.id === e.contactId)?.email ?? e.contactId}</td>
-                    <td>{e.status}</td>
-                    <td>{e.nextSendAt ?? "—"}</td>
-                    <td>{e.enrolledAt}</td>
-                    <td>
-                      <button onClick={() => handleMarkConversion(selectedCampaignId, e.contactId)}>Mark converted</button>
-                      <button onClick={() => handleUnsubscribe(selectedCampaignId, e.contactId)} style={{ marginLeft: "0.25rem" }}>
-                        Unsubscribe
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {accounts.map((a) => {
+                  const draft = accountLimitDrafts[a.id] ?? { daily: "", hourly: "" };
+                  return (
+                    <TableRow key={a.id}>
+                      <Td>{a.emailAddress}</Td>
+                      <Td>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={draft.daily}
+                          onChange={(e) => setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, daily: e.target.value } }))}
+                          style={{ width: "6rem" }}
+                        />
+                      </Td>
+                      <Td>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={draft.hourly}
+                          onChange={(e) => setAccountLimitDrafts((prev) => ({ ...prev, [a.id]: { ...draft, hourly: e.target.value } }))}
+                          style={{ width: "6rem" }}
+                        />
+                      </Td>
+                      <Td align="right">
+                        <Button variant="secondary" size="sm" onClick={() => handleSaveAccountLimits(a.id)}>
+                          Save
+                        </Button>
+                      </Td>
+                    </TableRow>
+                  );
+                })}
               </tbody>
-            </table>
+            </Table>
           )}
-        </section>
+        </Card>
+      )}
+
+      {section === "business-hours" && (
+        <Card>
+          <CardHeader title="Create a business hours profile" description="When a campaign bound to this profile is allowed to send, in the profile's own timezone." />
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", maxWidth: 480, marginBottom: "var(--space-6)" }}>
+            <Field label="Profile name">
+              <Input value={bhpName} onChange={(e) => setBhpName(e.target.value)} />
+            </Field>
+            <Field label="Timezone" hint="IANA timezone, e.g. America/New_York">
+              <Input value={bhpTimezone} onChange={(e) => setBhpTimezone(e.target.value)} />
+            </Field>
+            <Field label="Active days">
+              <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+                {WEEKDAYS.map((day) => (
+                  <Checkbox key={day} checked={bhpDays.has(day)} onChange={() => toggleBhpDay(day)} label={WEEKDAY_LABELS[day]} />
+                ))}
+              </div>
+            </Field>
+            <div style={{ display: "flex", gap: "1rem" }}>
+              <Field label="From">
+                <Input type="time" value={bhpStart} onChange={(e) => setBhpStart(e.target.value)} />
+              </Field>
+              <Field label="To">
+                <Input type="time" value={bhpEnd} onChange={(e) => setBhpEnd(e.target.value)} />
+              </Field>
+            </div>
+            <div>
+              <Button variant="primary" icon={<PlusIcon size={15} />} disabled={!bhpName || !bhpTimezone || bhpDays.size === 0} onClick={handleCreateBusinessHoursProfile}>
+                Create profile
+              </Button>
+            </div>
+          </div>
+
+          {businessHoursProfiles.length === 0 ? (
+            <EmptyState title="No profiles yet" description="Create one above to use it on a campaign." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+              {businessHoursProfiles.map((p) => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px" }}>
+                  <strong>{p.name}</strong>
+                  <span style={{ color: "var(--color-text-secondary)" }}>
+                    {p.timezone} · {Object.keys(p.windows).length} day(s) active
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {section === "templates" && (
+        <Card>
+          <CardHeader title="Create a template" />
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", marginBottom: "var(--space-6)" }}>
+            <Field label="Template name">
+              <Input value={templateName} onChange={(e) => setTemplateName(e.target.value)} />
+            </Field>
+            <Field label="Body">
+              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} rows={5} />
+            </Field>
+            <div>
+              <Button variant="primary" icon={<PlusIcon size={15} />} disabled={!templateName} onClick={handleCreateTemplate}>
+                Create template
+              </Button>
+            </div>
+          </div>
+
+          {templates.length === 0 ? (
+            <EmptyState title="No templates yet" description="Create one above to use it in a sequence." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+              {templates.map((t) => (
+                <div key={t.id} style={{ padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px", fontWeight: 550 }}>
+                  {t.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {section === "sequences" && (
+        <Card>
+          <CardHeader title="Create a sequence" />
+          <div style={{ marginBottom: "var(--space-6)" }}>
+            <div style={{ maxWidth: 420, marginBottom: "var(--space-4)" }}>
+              <Field label="Sequence name">
+                <Input value={sequenceName} onChange={(e) => setSequenceName(e.target.value)} />
+              </Field>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+              {sequenceSteps.map((step, index) => (
+                <div key={index} style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-3)", padding: "var(--space-3)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)" }}>
+                  <strong style={{ width: "3.5rem", fontSize: "12.5px", paddingBottom: "8px" }}>Step {index + 1}</strong>
+                  <div style={{ flex: 1 }}>
+                    <Field label="Template">
+                      <Select value={step.templateId} onChange={(e) => updateSequenceStep(index, { templateId: e.target.value })}>
+                        <option value="">Select template...</option>
+                        {templates.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <Field label="Subject">
+                      <Input value={step.subjectText} onChange={(e) => updateSequenceStep(index, { subjectText: e.target.value })} />
+                    </Field>
+                  </div>
+                  <div style={{ width: 70 }}>
+                    <Field label="Days">
+                      <Input type="number" min={0} value={step.delayDays} onChange={(e) => updateSequenceStep(index, { delayDays: e.target.value })} />
+                    </Field>
+                  </div>
+                  <div style={{ width: 70 }}>
+                    <Field label="Hours">
+                      <Input type="number" min={0} max={23} value={step.delayHours} onChange={(e) => updateSequenceStep(index, { delayHours: e.target.value })} />
+                    </Field>
+                  </div>
+                  <Button variant="ghost" size="sm" icon={<TrashIcon size={14} />} disabled={sequenceSteps.length === 1} onClick={() => removeSequenceStep(index)} />
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: "var(--space-3)", display: "flex", gap: "0.5rem" }}>
+              <Button variant="secondary" size="sm" icon={<PlusIcon size={14} />} onClick={addSequenceStep}>
+                Add another step
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!sequenceName || sequenceSteps.some((s) => !s.templateId || !s.subjectText)}
+                onClick={handleCreateSequence}
+              >
+                Create sequence ({sequenceSteps.length} step{sequenceSteps.length === 1 ? "" : "s"})
+              </Button>
+            </div>
+          </div>
+
+          {sequences.length === 0 ? (
+            <EmptyState title="No sequences yet" description="Create one above to use it in a campaign." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+              {sequences.map((s) => (
+                <div key={s.id} style={{ display: "flex", justifyContent: "space-between", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px" }}>
+                  <strong>{s.name}</strong>
+                  <span style={{ color: "var(--color-text-secondary)" }}>
+                    {s.stepCount} step{s.stepCount === 1 ? "" : "s"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {section === "campaigns" && (
+        <>
+          <Card style={{ marginBottom: "var(--space-6)" }}>
+            <CardHeader title="Create a campaign" />
+            <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "var(--space-4)" }}>
+              <div style={{ flex: "1 1 220px" }}>
+                <Field label="Campaign name">
+                  <Input value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
+                </Field>
+              </div>
+              <div style={{ flex: "1 1 180px" }}>
+                <Field label="Sequence">
+                  <Select value={campaignSequenceId} onChange={(e) => setCampaignSequenceId(e.target.value)}>
+                    <option value="">Select sequence...</option>
+                    {sequences.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              <div style={{ flex: "1 1 180px" }}>
+                <Field label="Sending account">
+                  <Select value={campaignAccountId} onChange={(e) => setCampaignAccountId(e.target.value)}>
+                    <option value="">Select account...</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.emailAddress}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              <div style={{ flex: "1 1 180px" }}>
+                <Field label="Business hours">
+                  <Select value={campaignBusinessHoursProfileId} onChange={(e) => setCampaignBusinessHoursProfileId(e.target.value)}>
+                    <option value="">Select profile...</option>
+                    {businessHoursProfiles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              <Button
+                variant="primary"
+                icon={<PlusIcon size={15} />}
+                disabled={!campaignName || !campaignSequenceId || !campaignAccountId || !campaignBusinessHoursProfileId}
+                onClick={handleCreateCampaign}
+              >
+                Create
+              </Button>
+            </div>
+
+            {campaigns.length === 0 ? (
+              <EmptyState icon={<MegaphoneIcon size={20} />} title="No campaigns yet" description="Create your first campaign above." />
+            ) : (
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Name</Th>
+                    <Th>Status</Th>
+                    <Th>Business hours</Th>
+                    <Th align="right">Actions</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {campaigns.map((c) => (
+                    <TableRow key={c.id} onClick={() => setSelectedCampaignId(c.id)} style={{ background: c.id === selectedCampaignId ? "var(--color-primary-light)" : undefined }}>
+                      <Td style={{ fontWeight: 600 }}>{c.name}</Td>
+                      <Td>
+                        <StatusBadge status={c.status} />
+                      </Td>
+                      <Td>{businessHoursProfiles.find((p) => p.id === c.businessHoursProfileId)?.name ?? "—"}</Td>
+                      <Td align="right">
+                        <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }} onClick={(e) => e.stopPropagation()}>
+                          {c.status === "draft" && (
+                            <Button variant="secondary" size="sm" onClick={() => handleStartCampaign(c.id)}>
+                              Start
+                            </Button>
+                          )}
+                          <Button variant="secondary" size="sm" disabled={contacts.length === 0} onClick={() => handleEnrollAll(c.id)}>
+                            Enroll all ({contacts.length})
+                          </Button>
+                        </div>
+                      </Td>
+                    </TableRow>
+                  ))}
+                </tbody>
+              </Table>
+            )}
+          </Card>
+
+          {selectedCampaignId && (
+            <Card padding="none">
+              <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
+                <CardHeader title={`Enrollments — ${campaigns.find((c) => c.id === selectedCampaignId)?.name ?? ""}`} />
+              </div>
+              {enrollments.length === 0 ? (
+                <EmptyState title="No enrollments yet" description="Enroll contacts from the campaigns table above." />
+              ) : (
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>Contact</Th>
+                      <Th>Status</Th>
+                      <Th>Next send</Th>
+                      <Th>Enrolled</Th>
+                      <Th align="right">Actions</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {enrollments.map((e) => (
+                      <TableRow key={e.id}>
+                        <Td>{contacts.find((c) => c.id === e.contactId)?.email ?? e.contactId}</Td>
+                        <Td>
+                          <EnrollmentStatusBadge status={e.status} />
+                        </Td>
+                        <Td>{e.nextSendAt ? formatDate(e.nextSendAt) : "—"}</Td>
+                        <Td>{formatDate(e.enrolledAt)}</Td>
+                        <Td align="right">
+                          <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
+                            <Button variant="secondary" size="sm" onClick={() => handleMarkConversion(selectedCampaignId, e.contactId)}>
+                              Mark converted
+                            </Button>
+                            <Button variant="danger-ghost" size="sm" onClick={() => handleUnsubscribe(selectedCampaignId, e.contactId)}>
+                              Unsubscribe
+                            </Button>
+                          </div>
+                        </Td>
+                      </TableRow>
+                    ))}
+                  </tbody>
+                </Table>
+              )}
+            </Card>
+          )}
+        </>
       )}
     </div>
   );

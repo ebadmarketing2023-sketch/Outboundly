@@ -1,11 +1,21 @@
 import { useEffect, useState } from "react";
 import type { CampaignAnalyticsSummary, CampaignSummary, InsightSummary } from "../../ipc-boundary/contracts.js";
-
-function pct(rate: number | undefined): string {
-  return rate === undefined ? "—" : `${Math.round(rate * 100)}%`;
-}
-
-const SEVERITY_COLOR: Record<string, string> = { info: "#555", warning: "#a67c00", critical: "crimson" };
+import {
+  BarChartIcon,
+  Button,
+  Card,
+  CardHeader,
+  EmptyState,
+  ErrorBanner,
+  Field,
+  PageHeader,
+  Select,
+  SeverityBadge,
+  Spinner,
+  StatCard,
+  TargetIcon
+} from "../components/index.js";
+import { formatDateTime, formatPercent, humanizeSnakeCase } from "../lib/format.js";
 
 /**
  * The Phase 5 "minimal" Analytics & Insights dashboard (Section 20.5): one campaign's primary
@@ -18,6 +28,8 @@ export function AnalyticsScreen(): JSX.Element {
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [analytics, setAnalytics] = useState<CampaignAnalyticsSummary | null>(null);
   const [insights, setInsights] = useState<InsightSummary[]>([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(true);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function refreshInsights(): void {
@@ -31,7 +43,8 @@ export function AnalyticsScreen(): JSX.Element {
         setCampaigns(list);
         if (list.length > 0 && !selectedCampaignId) setSelectedCampaignId(list[0]!.id);
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoadingCampaigns(false));
     refreshInsights();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -41,10 +54,12 @@ export function AnalyticsScreen(): JSX.Element {
       setAnalytics(null);
       return;
     }
+    setLoadingAnalytics(true);
     window.outboundly
       .getCampaignAnalytics({ campaignId: selectedCampaignId })
       .then(setAnalytics)
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoadingAnalytics(false));
   }, [selectedCampaignId]);
 
   async function handleDismiss(insightId: string): Promise<void> {
@@ -56,111 +71,139 @@ export function AnalyticsScreen(): JSX.Element {
     }
   }
 
+  const maxFunnelSent = analytics ? Math.max(1, ...analytics.stepFunnel.map((s) => s.sentCount)) : 1;
+
   return (
-    <div style={{ fontFamily: "sans-serif", maxWidth: 900, margin: "2rem auto" }}>
-      <h1>Outboundly — Analytics &amp; Insights (Phase 5)</h1>
+    <div>
+      <PageHeader title="Analytics" description="Campaign performance and the Insights Engine's running feed." />
 
-      {error && (
-        <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>
-          <strong>Error:</strong> {error}
-        </p>
-      )}
+      {error && <ErrorBanner message={error} />}
 
-      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>Campaign dashboard</h2>
-        <select value={selectedCampaignId} onChange={(e) => setSelectedCampaignId(e.target.value)}>
-          <option value="">Select a campaign...</option>
-          {campaigns.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-
-        {!selectedCampaignId && <p>Select a campaign to view its metrics.</p>}
-
-        {analytics && (
+      <Card style={{ marginBottom: "var(--space-6)" }}>
+        <CardHeader title="Campaign dashboard" />
+        {loadingCampaigns ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: "var(--space-6)" }}>
+            <Spinner size={22} />
+          </div>
+        ) : campaigns.length === 0 ? (
+          <EmptyState icon={<BarChartIcon size={20} />} title="No campaigns yet" description="Create a campaign to see its metrics here." />
+        ) : (
           <>
-            <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "0.75rem" }}>
-              <tbody>
-                <tr>
-                  <td>Sent</td>
-                  <td>{analytics.sentCount}</td>
-                  <td>Delivery rate</td>
-                  <td>{pct(analytics.deliveryRate)}</td>
-                </tr>
-                <tr>
-                  <td>Reply rate</td>
-                  <td>{pct(analytics.replyRate)}</td>
-                  <td>Positive reply rate</td>
-                  <td>{pct(analytics.positiveReplyRate)}</td>
-                </tr>
-                <tr>
-                  <td>Bounce rate</td>
-                  <td>{pct(analytics.bounceRate)}</td>
-                  <td>Conversions</td>
-                  <td>{analytics.conversionCount}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p style={{ color: "#666", fontSize: "0.85rem", marginTop: "0.5rem" }}>
-              Open/click rate aren't shown: this is a local desktop app with no publicly reachable server to receive
-              pixel/redirect hits, so they can't be honestly tracked (Section 20.2). Delivery rate is approximated as
-              sent-minus-bounced — there's no real delivery-confirmation signal.
-            </p>
+            <div style={{ maxWidth: 340, marginBottom: "var(--space-5)" }}>
+              <Field label="Campaign">
+                <Select value={selectedCampaignId} onChange={(e) => setSelectedCampaignId(e.target.value)}>
+                  {campaigns.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
 
-            <h3>Per-step funnel</h3>
-            {analytics.stepFunnel.length === 0 && <p>No steps sent yet.</p>}
-            {analytics.stepFunnel.length > 0 && (
-              <ul>
-                {analytics.stepFunnel.map((step) => (
-                  <li key={step.stepOrder}>
-                    Step {step.stepOrder}: {step.sentCount} sent
-                  </li>
-                ))}
-              </ul>
-            )}
+            {loadingAnalytics ? (
+              <div style={{ display: "flex", justifyContent: "center", padding: "var(--space-6)" }}>
+                <Spinner size={22} />
+              </div>
+            ) : analytics ? (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "var(--space-4)", marginBottom: "var(--space-6)" }}>
+                  <StatCard label="Sent" value={analytics.sentCount} />
+                  <StatCard label="Delivery rate" value={formatPercent(analytics.deliveryRate)} />
+                  <StatCard label="Reply rate" value={formatPercent(analytics.replyRate)} />
+                  <StatCard label="Positive reply rate" value={formatPercent(analytics.positiveReplyRate)} />
+                  <StatCard label="Bounce rate" value={formatPercent(analytics.bounceRate)} />
+                  <StatCard label="Conversions" value={analytics.conversionCount} icon={<TargetIcon size={14} />} />
+                </div>
 
-            <h3>Stop-reason breakdown</h3>
-            <ul>
-              <li>Active: {analytics.stopReasonBreakdown.active}</li>
-              <li>Completed: {analytics.stopReasonBreakdown.completed}</li>
-              <li>Stopped (reply): {analytics.stopReasonBreakdown.stopped_reply}</li>
-              <li>Stopped (bounce): {analytics.stopReasonBreakdown.stopped_bounce}</li>
-              <li>Stopped (manual): {analytics.stopReasonBreakdown.stopped_manual}</li>
-              <li>Stopped (unsubscribed): {analytics.stopReasonBreakdown.stopped_suppressed}</li>
-            </ul>
+                <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", marginBottom: "var(--space-6)" }}>
+                  Open/click rate aren't shown: this is a local desktop app with no publicly reachable server to receive pixel/redirect hits, so
+                  they can't be honestly tracked. Delivery rate is approximated as sent-minus-bounced.
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-6)" }}>
+                  <div>
+                    <h3 style={{ fontSize: "13px", fontWeight: 600, marginBottom: "var(--space-3)" }}>Per-step funnel</h3>
+                    {analytics.stepFunnel.length === 0 ? (
+                      <p style={{ fontSize: "13px", color: "var(--color-text-tertiary)" }}>No steps sent yet.</p>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                        {analytics.stepFunnel.map((step) => (
+                          <div key={step.stepOrder}>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: "2px" }}>
+                              <span>Step {step.stepOrder}</span>
+                              <span style={{ color: "var(--color-text-secondary)" }}>{step.sentCount} sent</span>
+                            </div>
+                            <div style={{ height: 6, borderRadius: "var(--radius-full)", background: "var(--color-surface-hover)" }}>
+                              <div
+                                style={{
+                                  height: "100%",
+                                  width: `${(step.sentCount / maxFunnelSent) * 100}%`,
+                                  borderRadius: "var(--radius-full)",
+                                  background: "var(--color-primary)"
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <h3 style={{ fontSize: "13px", fontWeight: 600, marginBottom: "var(--space-3)" }}>Stop-reason breakdown</h3>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-2)", fontSize: "12.5px" }}>
+                      {Object.entries(analytics.stopReasonBreakdown).map(([reason, count]) => (
+                        <div key={reason} style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", background: "var(--color-surface-hover)", borderRadius: "var(--radius-sm)" }}>
+                          <span style={{ color: "var(--color-text-secondary)" }}>{humanizeSnakeCase(reason)}</span>
+                          <strong>{count}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : null}
           </>
         )}
-      </section>
+      </Card>
 
-      <section>
-        <h2>Insights feed ({insights.length})</h2>
-        {insights.length === 0 && <p>No active insights right now.</p>}
-        {insights.length > 0 && (
-          <ul style={{ listStyle: "none", padding: 0 }}>
-            {insights.map((i) => (
-              <li key={i.id} style={{ border: "1px solid #ddd", padding: "0.75rem", marginBottom: "0.5rem" }}>
-                <strong style={{ color: SEVERITY_COLOR[i.severity] ?? "#555" }}>
-                  [{i.severity}] {i.message}
-                </strong>
-                <div>{i.explanation}</div>
-                {i.recommendedAction && (
-                  <div>
-                    <em>Recommendation: {i.recommendedAction}</em>
+      <Card padding="none">
+        <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
+          <CardHeader title={`Insights feed (${insights.length})`} />
+        </div>
+        {insights.length === 0 ? (
+          <EmptyState icon={<BarChartIcon size={20} />} title="No active insights" description="Trends, warnings, and anomalies will show up here as they're detected." />
+        ) : (
+          <div>
+            {insights.map((i, idx) => (
+              <div key={i.id} style={{ padding: "var(--space-4) var(--space-6)", borderTop: idx === 0 ? "1px solid var(--color-border)" : "1px solid var(--color-border)" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "var(--space-4)" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "4px" }}>
+                      <SeverityBadge severity={i.severity} />
+                      <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{i.message}</span>
+                    </div>
+                    <p style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{i.explanation}</p>
+                    {i.recommendedAction && (
+                      <p style={{ fontSize: "13px", color: "var(--color-text-primary)", marginTop: "4px" }}>
+                        <strong>Recommendation:</strong> {i.recommendedAction}
+                      </p>
+                    )}
+                    <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginTop: "6px" }}>
+                      {i.scope}
+                      {i.scopeId ? ` · ${i.scopeId}` : ""} · {formatDateTime(i.generatedAt)}
+                    </p>
                   </div>
-                )}
-                <div style={{ fontSize: "0.8rem", color: "#666" }}>
-                  {i.scope} {i.scopeId ? `(${i.scopeId})` : ""} — {i.generatedAt}
+                  <Button variant="ghost" size="sm" onClick={() => handleDismiss(i.id)} style={{ flexShrink: 0 }}>
+                    Dismiss
+                  </Button>
                 </div>
-                <button onClick={() => handleDismiss(i.id)} style={{ marginTop: "0.25rem" }}>
-                  Dismiss
-                </button>
-              </li>
+              </div>
             ))}
-          </ul>
+          </div>
         )}
-      </section>
+      </Card>
     </div>
   );
 }

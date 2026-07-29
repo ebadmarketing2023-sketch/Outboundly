@@ -1,9 +1,26 @@
 import { useEffect, useState } from "react";
-import type {
-  AccountSummary,
-  DraftSummary,
-  SendDraftResponse
-} from "../../ipc-boundary/contracts.js";
+import type { AccountSummary, DraftSummary, SendDraftResponse } from "../../ipc-boundary/contracts.js";
+import {
+  Avatar,
+  Badge,
+  type BadgeTone,
+  Button,
+  Card,
+  CardHeader,
+  Checkbox,
+  ConfirmDialog,
+  ErrorBanner,
+  Field,
+  Input,
+  Modal,
+  PageHeader,
+  PlusIcon,
+  Select,
+  SendIcon,
+  Textarea,
+  useToast
+} from "../components/index.js";
+import { formatDateTime } from "../lib/format.js";
 
 /**
  * The Phase 1 "minimal" compose UI (Task 9): plain To/Subject/Body fields exercising the real
@@ -21,8 +38,10 @@ export function ComposeScreen(): JSX.Element {
   const [sendResult, setSendResult] = useState<SendDraftResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmSendOpen, setConfirmSendOpen] = useState(false);
+  const toast = useToast();
 
-  const [showSmtpImapForm, setShowSmtpImapForm] = useState(false);
+  const [showSmtpImapModal, setShowSmtpImapModal] = useState(false);
   const [smtpImapEmail, setSmtpImapEmail] = useState("");
   const [smtpImapDisplayName, setSmtpImapDisplayName] = useState("");
   const [smtpImapUsername, setSmtpImapUsername] = useState("");
@@ -62,6 +81,7 @@ export function ComposeScreen(): JSX.Element {
       const account = await window.outboundly.connectGoogleAccount();
       setAccounts((prev) => [...prev, account]);
       setSelectedAccountId(account.id);
+      toast.showToast(`Connected ${account.emailAddress}.`, "success");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -76,6 +96,7 @@ export function ComposeScreen(): JSX.Element {
       const account = await window.outboundly.connectMicrosoftAccount();
       setAccounts((prev) => [...prev, account]);
       setSelectedAccountId(account.id);
+      toast.showToast(`Connected ${account.emailAddress}.`, "success");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -101,7 +122,8 @@ export function ComposeScreen(): JSX.Element {
       });
       setAccounts((prev) => [...prev, account]);
       setSelectedAccountId(account.id);
-      setShowSmtpImapForm(false);
+      setShowSmtpImapModal(false);
+      toast.showToast(`Connected ${account.emailAddress}.`, "success");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -122,14 +144,10 @@ export function ComposeScreen(): JSX.Element {
         const updated = await window.outboundly.autosaveDraft({ draftId: draft.id, subject, body });
         setDraft(updated);
       } else {
-        const created = await window.outboundly.createDraft({
-          accountId: selectedAccountId,
-          subject,
-          to: toList,
-          body
-        });
+        const created = await window.outboundly.createDraft({ accountId: selectedAccountId, subject, to: toList, body });
         setDraft(created);
       }
+      toast.showToast("Draft saved.", "success");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -142,12 +160,14 @@ export function ComposeScreen(): JSX.Element {
       setError("Save the draft before sending.");
       return;
     }
+    setConfirmSendOpen(false);
     setError(null);
     setBusy(true);
     setSendResult(null);
     try {
       const result = await window.outboundly.sendDraft({ draftId: draft.id });
       setSendResult(result);
+      toast.showToast(result.sent ? "Message sent." : "Send was blocked — see the report below.", result.sent ? "success" : "error");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -155,171 +175,192 @@ export function ComposeScreen(): JSX.Element {
     }
   }
 
+  const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
+
   return (
-    <div style={{ fontFamily: "sans-serif", maxWidth: 640, margin: "2rem auto" }}>
-      <h1>Outboundly — Compose (Phase 1)</h1>
+    <div style={{ maxWidth: 720 }}>
+      <PageHeader title="Compose" description="Write and send a message through one of your connected accounts." />
 
-      <section style={{ marginBottom: "1.5rem" }}>
-        <h2>Account</h2>
-        {accounts.length === 0 && <p>No connected accounts yet.</p>}
-        <select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
-            </option>
-          ))}
-        </select>
-        <button onClick={handleConnectGoogle} disabled={busy} style={{ marginLeft: "0.5rem" }}>
-          Sign in with Google
-        </button>
-        <button onClick={handleConnectMicrosoft} disabled={busy} style={{ marginLeft: "0.5rem" }}>
-          Sign in with Microsoft
-        </button>
-        <button onClick={() => setShowSmtpImapForm((v) => !v)} disabled={busy} style={{ marginLeft: "0.5rem" }}>
-          Other (SMTP/IMAP)
-        </button>
+      {error && <ErrorBanner message={error} />}
 
-        {showSmtpImapForm && (
-          <div
-            style={{
-              marginTop: "0.75rem",
-              padding: "0.75rem",
-              border: "1px solid #ccc",
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.5rem",
-              maxWidth: 360
-            }}
-          >
-            <input
-              placeholder="Email address"
-              value={smtpImapEmail}
-              onChange={(e) => setSmtpImapEmail(e.target.value)}
-            />
-            <input
-              placeholder="Display name (optional)"
-              value={smtpImapDisplayName}
-              onChange={(e) => setSmtpImapDisplayName(e.target.value)}
-            />
-            <input
-              placeholder="Username (defaults to email)"
-              value={smtpImapUsername}
-              onChange={(e) => setSmtpImapUsername(e.target.value)}
-            />
-            <input
-              placeholder="Password"
-              type="password"
-              value={smtpImapPassword}
-              onChange={(e) => setSmtpImapPassword(e.target.value)}
-            />
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input
-                placeholder="SMTP host"
-                value={smtpHost}
-                onChange={(e) => setSmtpHost(e.target.value)}
-                style={{ flex: 1 }}
-              />
-              <input
-                placeholder="Port"
-                value={smtpPort}
-                onChange={(e) => setSmtpPort(e.target.value)}
-                style={{ width: 70 }}
-              />
-              <label style={{ whiteSpace: "nowrap" }}>
-                <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} /> TLS
-              </label>
-            </div>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input
-                placeholder="IMAP host"
-                value={imapHost}
-                onChange={(e) => setImapHost(e.target.value)}
-                style={{ flex: 1 }}
-              />
-              <input
-                placeholder="Port"
-                value={imapPort}
-                onChange={(e) => setImapPort(e.target.value)}
-                style={{ width: 70 }}
-              />
-              <label style={{ whiteSpace: "nowrap" }}>
-                <input type="checkbox" checked={imapSecure} onChange={(e) => setImapSecure(e.target.checked)} /> TLS
-              </label>
-            </div>
-            <button onClick={handleConnectSmtpImap} disabled={busy}>
-              Connect
-            </button>
+      <Card style={{ marginBottom: "var(--space-6)" }}>
+        <CardHeader title="Sending account" />
+        {accounts.length === 0 ? (
+          <p style={{ fontSize: "13.5px", color: "var(--color-text-secondary)", marginBottom: "var(--space-4)" }}>
+            No accounts connected yet — connect one below to start composing.
+          </p>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "var(--space-4)" }}>
+            {selectedAccount && <Avatar name={selectedAccount.displayName ?? selectedAccount.emailAddress} />}
+            <Select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)} style={{ maxWidth: 360 }}>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
+                </option>
+              ))}
+            </Select>
           </div>
         )}
-      </section>
-
-      <section>
-        <h2>Message</h2>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-          <input placeholder="To" value={to} onChange={(e) => setTo(e.target.value)} />
-          <input placeholder="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
-          <textarea
-            placeholder="Write your message..."
-            rows={10}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-          />
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          <Button variant="secondary" size="sm" disabled={busy} onClick={handleConnectGoogle}>
+            Sign in with Google
+          </Button>
+          <Button variant="secondary" size="sm" disabled={busy} onClick={handleConnectMicrosoft}>
+            Sign in with Microsoft
+          </Button>
+          <Button variant="secondary" size="sm" icon={<PlusIcon size={14} />} disabled={busy} onClick={() => setShowSmtpImapModal(true)}>
+            Other (SMTP/IMAP)
+          </Button>
         </div>
-        <div style={{ marginTop: "0.75rem" }}>
-          <button onClick={handleSaveDraft} disabled={busy || !selectedAccountId}>
+      </Card>
+
+      <Card>
+        <CardHeader title="Message" />
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <Field label="To">
+            <Input value={to} onChange={(e) => setTo(e.target.value)} placeholder="recipient@example.com, another@example.com" />
+          </Field>
+          <Field label="Subject">
+            <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" />
+          </Field>
+          <Field label="Body">
+            <Textarea rows={11} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your message..." />
+          </Field>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginTop: "var(--space-5)" }}>
+          <Button variant="secondary" loading={busy && !draft} disabled={!selectedAccountId} onClick={handleSaveDraft}>
             {draft ? "Save draft" : "Create draft"}
-          </button>
-          <button onClick={handleSend} disabled={busy || !draft} style={{ marginLeft: "0.5rem" }}>
+          </Button>
+          <Button variant="primary" icon={<SendIcon size={15} />} disabled={!draft} onClick={() => setConfirmSendOpen(true)}>
             Send
-          </button>
+          </Button>
+          {draft && (
+            <span style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
+              Saved (v{draft.autosaveVersion}) · {formatDateTime(draft.lastSavedAt)}
+            </span>
+          )}
         </div>
-      </section>
+      </Card>
 
-      {error && (
-        <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>
-          <strong>Error:</strong> {error}
+      {sendResult && <SendResultCard result={sendResult} />}
+
+      <Modal open={showSmtpImapModal} onClose={() => setShowSmtpImapModal(false)} title="Connect an SMTP/IMAP account" width={460}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+          <Field label="Email address">
+            <Input value={smtpImapEmail} onChange={(e) => setSmtpImapEmail(e.target.value)} />
+          </Field>
+          <Field label="Display name (optional)">
+            <Input value={smtpImapDisplayName} onChange={(e) => setSmtpImapDisplayName(e.target.value)} />
+          </Field>
+          <Field label="Username (defaults to email)">
+            <Input value={smtpImapUsername} onChange={(e) => setSmtpImapUsername(e.target.value)} />
+          </Field>
+          <Field label="Password">
+            <Input type="password" value={smtpImapPassword} onChange={(e) => setSmtpImapPassword(e.target.value)} />
+          </Field>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}>
+              <Field label="SMTP host">
+                <Input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} />
+              </Field>
+            </div>
+            <div style={{ width: 80 }}>
+              <Field label="Port">
+                <Input value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} />
+              </Field>
+            </div>
+            <div style={{ paddingBottom: "8px" }}>
+              <Checkbox checked={smtpSecure} onChange={setSmtpSecure} label="TLS" />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}>
+              <Field label="IMAP host">
+                <Input value={imapHost} onChange={(e) => setImapHost(e.target.value)} />
+              </Field>
+            </div>
+            <div style={{ width: 80 }}>
+              <Field label="Port">
+                <Input value={imapPort} onChange={(e) => setImapPort(e.target.value)} />
+              </Field>
+            </div>
+            <div style={{ paddingBottom: "8px" }}>
+              <Checkbox checked={imapSecure} onChange={setImapSecure} label="TLS" />
+            </div>
+          </div>
+          <Button variant="primary" loading={busy} onClick={handleConnectSmtpImap} style={{ marginTop: "var(--space-2)" }}>
+            Connect
+          </Button>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={confirmSendOpen}
+        title="Send this message?"
+        description={`This will send the message to ${to || "the recipient(s) you entered"} right now.`}
+        confirmLabel="Send"
+        busy={busy}
+        onConfirm={handleSend}
+        onCancel={() => setConfirmSendOpen(false)}
+      />
+    </div>
+  );
+}
+
+function SendResultCard({ result }: { result: SendDraftResponse }): JSX.Element {
+  return (
+    <Card style={{ marginTop: "var(--space-6)" }}>
+      <CardHeader
+        title="Send result"
+        actions={<Badge tone={result.sent ? "success" : "danger"}>{result.sent ? "Sent" : "Blocked"}</Badge>}
+      />
+      {result.sent && result.providerMessageId && (
+        <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "var(--space-4)" }}>
+          Provider message id: <code style={{ fontFamily: "var(--font-mono)" }}>{result.providerMessageId}</code>
         </p>
       )}
 
-      {draft && (
-        <p style={{ color: "#555" }}>
-          Draft saved (autosave v{draft.autosaveVersion}, {draft.lastSavedAt})
-        </p>
+      <ReportSection title="Gmail Compatibility" score={result.compatibilityReport.score} findings={result.compatibilityReport.findings} />
+      {result.deliverabilityReport && (
+        <ReportSection title="Deliverability" score={result.deliverabilityReport.score} findings={result.deliverabilityReport.findings} />
       )}
+    </Card>
+  );
+}
 
-      {sendResult && (
-        <section>
-          <h2>Result</h2>
-          <p>{sendResult.sent ? `Sent — provider message id ${sendResult.providerMessageId}` : "Blocked before sending"}</p>
-          <p>Gmail Compatibility score: {sendResult.compatibilityReport.score}</p>
-          {sendResult.compatibilityReport.findings.length > 0 && (
-            <ul>
-              {sendResult.compatibilityReport.findings.map((f) => (
-                <li key={f.ruleId}>
-                  <strong>[{f.severity}] {f.message}</strong>
-                  <div>{f.explanation}</div>
-                  <div><em>Fix: {f.recommendedFix}</em></div>
-                </li>
-              ))}
-            </ul>
-          )}
-          {sendResult.deliverabilityReport && (
-            <>
-              <p>Deliverability score: {sendResult.deliverabilityReport.score}</p>
-              {sendResult.deliverabilityReport.findings.length > 0 && (
-                <ul>
-                  {sendResult.deliverabilityReport.findings.map((f, i) => (
-                    <li key={`${f.ruleId}-${i}`}>
-                      <strong>[{f.severity}] [{f.category}] {f.message}</strong>
-                      <div>{f.explanation}</div>
-                      {f.recommendedFix && <div><em>Fix: {f.recommendedFix}</em></div>}
-                    </li>
-                  ))}
-                </ul>
+function ReportSection({
+  title,
+  score,
+  findings
+}: {
+  title: string;
+  score: number;
+  findings: { ruleId: string; severity: string; category?: string; message: string; explanation: string; recommendedFix?: string }[];
+}): JSX.Element {
+  const tone: BadgeTone = score >= 85 ? "success" : score >= 60 ? "warning" : "danger";
+  return (
+    <div style={{ marginTop: "var(--space-4)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "var(--space-2)" }}>
+        <h3 style={{ fontSize: "13.5px", fontWeight: 600 }}>{title}</h3>
+        <Badge tone={tone}>Score {score}</Badge>
+      </div>
+      {findings.length === 0 ? (
+        <p style={{ fontSize: "13px", color: "var(--color-text-tertiary)" }}>No issues found.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {findings.map((f, i) => (
+            <div key={`${f.ruleId}-${i}`} style={{ padding: "var(--space-3)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)" }}>
+              <div style={{ fontSize: "13px", fontWeight: 600 }}>[{f.severity}] {f.message}</div>
+              <div style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{f.explanation}</div>
+              {f.recommendedFix && (
+                <div style={{ fontSize: "12.5px", color: "var(--color-text-primary)", marginTop: "2px" }}>
+                  <em>Fix: {f.recommendedFix}</em>
+                </div>
               )}
-            </>
-          )}
-        </section>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

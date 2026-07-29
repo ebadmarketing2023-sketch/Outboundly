@@ -1,5 +1,21 @@
 import { useEffect, useState } from "react";
 import type { AccountSummary, AppPreferencesSummary, BusinessHoursProfileSummary } from "../../ipc-boundary/contracts.js";
+import {
+  Avatar,
+  Button,
+  Card,
+  CardHeader,
+  ConfirmDialog,
+  DownloadIcon,
+  ErrorBanner,
+  Field,
+  Input,
+  PageHeader,
+  Select,
+  Textarea,
+  UploadIcon,
+  useToast
+} from "../components/index.js";
 
 /**
  * The Phase 5 "minimal" Settings screen (Section 3: "User preferences, sending defaults,
@@ -13,10 +29,11 @@ export function SettingsScreen(): JSX.Element {
   const [preferences, setPreferences] = useState<AppPreferencesSummary>({});
   const [signatureDrafts, setSignatureDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [exportPassphrase, setExportPassphrase] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
   const [backupBusy, setBackupBusy] = useState(false);
+  const [confirmRestoreOpen, setConfirmRestoreOpen] = useState(false);
+  const toast = useToast();
 
   function refresh(): void {
     window.outboundly
@@ -42,15 +59,11 @@ export function SettingsScreen(): JSX.Element {
 
   async function handleSaveSignature(accountId: string): Promise<void> {
     setError(null);
-    setSavedMessage(null);
     try {
       const text = signatureDrafts[accountId] ?? "";
-      const updated = await window.outboundly.updateAccountSignature({
-        accountId,
-        signatureText: text.trim() === "" ? undefined : text
-      });
+      const updated = await window.outboundly.updateAccountSignature({ accountId, signatureText: text.trim() === "" ? undefined : text });
       setAccounts((prev) => prev.map((a) => (a.id === accountId ? updated : a)));
-      setSavedMessage("Signature saved.");
+      toast.showToast("Signature saved.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -61,6 +74,7 @@ export function SettingsScreen(): JSX.Element {
     try {
       const updated = await window.outboundly.updateAppPreferences({ defaultBusinessHoursProfileId: profileId || undefined });
       setPreferences(updated);
+      toast.showToast("Default saved.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -71,6 +85,7 @@ export function SettingsScreen(): JSX.Element {
     try {
       const updated = await window.outboundly.updateAppPreferences({ defaultSendingAccountId: accountId || undefined });
       setPreferences(updated);
+      toast.showToast("Default saved.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -78,16 +93,15 @@ export function SettingsScreen(): JSX.Element {
 
   async function handleExportBackup(): Promise<void> {
     setError(null);
-    setSavedMessage(null);
     if (exportPassphrase.trim() === "") {
-      setError("Enter a passphrase for the backup first.");
+      toast.showToast("Enter a passphrase for the backup first.", "error");
       return;
     }
     setBackupBusy(true);
     try {
       const result = await window.outboundly.exportBackup({ passphrase: exportPassphrase });
       if (result.exported) {
-        setSavedMessage(`Backup exported to ${result.filePath}. Keep the passphrase safe -- it's required to restore it.`);
+        toast.showToast(`Backup exported to ${result.filePath}. Keep the passphrase safe.`, "success");
         setExportPassphrase("");
       }
     } catch (err) {
@@ -98,17 +112,8 @@ export function SettingsScreen(): JSX.Element {
   }
 
   async function handleRestoreBackup(): Promise<void> {
+    setConfirmRestoreOpen(false);
     setError(null);
-    setSavedMessage(null);
-    if (restorePassphrase.trim() === "") {
-      setError("Enter the backup's passphrase first.");
-      return;
-    }
-    const confirmed = window.confirm(
-      "Restoring replaces all current data in this app with the backup's contents, and the app will restart. This cannot be undone. Continue?"
-    );
-    if (!confirmed) return;
-
     setBackupBusy(true);
     try {
       const result = await window.outboundly.restoreBackup({ passphrase: restorePassphrase });
@@ -120,99 +125,115 @@ export function SettingsScreen(): JSX.Element {
   }
 
   return (
-    <div style={{ fontFamily: "sans-serif", maxWidth: 700, margin: "2rem auto" }}>
-      <h1>Outboundly — Settings (Phase 5)</h1>
+    <div style={{ maxWidth: 720 }}>
+      <PageHeader title="Settings" description="Sending defaults, signatures, and backup & restore." />
 
-      {error && (
-        <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>
-          <strong>Error:</strong> {error}
-        </p>
-      )}
-      {savedMessage && <p style={{ color: "green" }}>{savedMessage}</p>}
+      {error && <ErrorBanner message={error} />}
 
-      <section style={{ marginBottom: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>Sending defaults</h2>
-        <p style={{ color: "#666", fontSize: "0.85rem" }}>
-          Pre-fills the Campaigns screen's "create campaign" form -- doesn't change any existing campaign.
-        </p>
-        <label style={{ display: "block", marginBottom: "0.5rem" }}>
-          Default business hours profile:{" "}
-          <select
-            value={preferences.defaultBusinessHoursProfileId ?? ""}
-            onChange={(e) => handleSaveDefaultBusinessHours(e.target.value)}
-          >
-            <option value="">None</option>
-            {businessHoursProfiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label style={{ display: "block" }}>
-          Default sending account:{" "}
-          <select value={preferences.defaultSendingAccountId ?? ""} onChange={(e) => handleSaveDefaultAccount(e.target.value)}>
-            <option value="">None</option>
+      <Card style={{ marginBottom: "var(--space-6)" }}>
+        <CardHeader title="Sending defaults" description="Pre-fills the Campaigns screen's create-campaign form — doesn't change any existing campaign." />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-4)" }}>
+          <Field label="Default business hours profile">
+            <Select value={preferences.defaultBusinessHoursProfileId ?? ""} onChange={(e) => handleSaveDefaultBusinessHours(e.target.value)}>
+              <option value="">None</option>
+              {businessHoursProfiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Default sending account">
+            <Select value={preferences.defaultSendingAccountId ?? ""} onChange={(e) => handleSaveDefaultAccount(e.target.value)}>
+              <option value="">None</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.emailAddress}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: "var(--space-6)" }}>
+        <CardHeader title="Signatures by account" />
+        {accounts.length === 0 ? (
+          <p style={{ fontSize: "13.5px", color: "var(--color-text-secondary)" }}>No accounts connected yet.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
             {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.emailAddress}
-              </option>
+              <div key={a.id}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "8px" }}>
+                  <Avatar name={a.displayName ?? a.emailAddress} size={24} />
+                  <strong style={{ fontSize: "13.5px" }}>{a.emailAddress}</strong>
+                </div>
+                <Textarea
+                  value={signatureDrafts[a.id] ?? ""}
+                  onChange={(e) => setSignatureDrafts((prev) => ({ ...prev, [a.id]: e.target.value }))}
+                  rows={3}
+                  placeholder={"Best,\nYour name"}
+                />
+                <div style={{ marginTop: "8px" }}>
+                  <Button variant="secondary" size="sm" onClick={() => handleSaveSignature(a.id)}>
+                    Save signature
+                  </Button>
+                </div>
+              </div>
             ))}
-          </select>
-        </label>
-      </section>
-
-      <section style={{ border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>Signatures by account</h2>
-        {accounts.length === 0 && <p>No accounts connected yet.</p>}
-        {accounts.map((a) => (
-          <div key={a.id} style={{ marginBottom: "1rem" }}>
-            <label style={{ display: "block", marginBottom: "0.25rem" }}>
-              <strong>{a.emailAddress}</strong>
-            </label>
-            <textarea
-              value={signatureDrafts[a.id] ?? ""}
-              onChange={(e) => setSignatureDrafts((prev) => ({ ...prev, [a.id]: e.target.value }))}
-              rows={3}
-              style={{ width: "100%", marginBottom: "0.25rem" }}
-              placeholder="Best,&#10;Your name"
-            />
-            <button onClick={() => handleSaveSignature(a.id)}>Save signature</button>
           </div>
-        ))}
-      </section>
+        )}
+      </Card>
 
-      <section style={{ marginTop: "1.5rem", border: "1px solid #ddd", padding: "0.75rem" }}>
-        <h2>Backup &amp; restore</h2>
-        <p style={{ color: "#666", fontSize: "0.85rem" }}>
-          Backups are encrypted with a passphrase you choose here, separate from this app's own at-rest encryption key
-          (Section 23). Losing the passphrase means the backup can't be restored -- there is no recovery mechanism.
-        </p>
-        <div style={{ marginBottom: "1rem" }}>
-          <input
-            type="password"
-            placeholder="Backup passphrase"
-            value={exportPassphrase}
-            onChange={(e) => setExportPassphrase(e.target.value)}
-            style={{ marginRight: "0.5rem" }}
-          />
-          <button onClick={handleExportBackup} disabled={backupBusy}>
-            Export backup...
-          </button>
+      <Card>
+        <CardHeader
+          title="Backup & restore"
+          description="Backups are encrypted with a passphrase you choose here, separate from this app's own at-rest encryption key. Losing the passphrase means the backup can't be restored."
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Backup passphrase">
+                <Input type="password" value={exportPassphrase} onChange={(e) => setExportPassphrase(e.target.value)} />
+              </Field>
+            </div>
+            <Button variant="primary" icon={<DownloadIcon size={15} />} loading={backupBusy} onClick={handleExportBackup}>
+              Export backup...
+            </Button>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Backup's passphrase">
+                <Input
+                  type="password"
+                  value={restorePassphrase}
+                  onChange={(e) => setRestorePassphrase(e.target.value)}
+                />
+              </Field>
+            </div>
+            <Button
+              variant="secondary"
+              icon={<UploadIcon size={15} />}
+              loading={backupBusy}
+              disabled={restorePassphrase.trim() === ""}
+              onClick={() => setConfirmRestoreOpen(true)}
+            >
+              Restore from backup...
+            </Button>
+          </div>
         </div>
-        <div>
-          <input
-            type="password"
-            placeholder="Backup's passphrase"
-            value={restorePassphrase}
-            onChange={(e) => setRestorePassphrase(e.target.value)}
-            style={{ marginRight: "0.5rem" }}
-          />
-          <button onClick={handleRestoreBackup} disabled={backupBusy}>
-            Restore from backup...
-          </button>
-        </div>
-      </section>
+      </Card>
+
+      <ConfirmDialog
+        open={confirmRestoreOpen}
+        title="Restore from backup?"
+        description="Restoring replaces all current data in this app with the backup's contents, and the app will restart. This cannot be undone."
+        confirmLabel="Restore"
+        danger
+        busy={backupBusy}
+        onConfirm={handleRestoreBackup}
+        onCancel={() => setConfirmRestoreOpen(false)}
+      />
     </div>
   );
 }

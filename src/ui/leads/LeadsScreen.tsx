@@ -1,5 +1,24 @@
 import { useEffect, useState } from "react";
 import type { ContactSummary, ImportContactsCsvResponse } from "../../ipc-boundary/contracts.js";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  EmptyState,
+  ErrorBanner,
+  PageHeader,
+  Spinner,
+  Table,
+  TableRow,
+  Td,
+  Textarea,
+  Th,
+  UploadIcon,
+  UsersIcon,
+  useToast
+} from "../components/index.js";
 
 /**
  * The Phase 4 "minimal" Leads UI (Section 5.5): paste-a-CSV import and a plain contact list —
@@ -10,14 +29,17 @@ export function LeadsScreen(): JSX.Element {
   const [contacts, setContacts] = useState<ContactSummary[]>([]);
   const [csvText, setCsvText] = useState("email,first_name,last_name,company\nlead@example.com,Ada,Lovelace,Analytical Engines");
   const [importResult, setImportResult] = useState<ImportContactsCsvResponse | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   function refreshContacts(): void {
     window.outboundly
       .listContacts()
       .then(setContacts)
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
@@ -32,6 +54,7 @@ export function LeadsScreen(): JSX.Element {
       const result = await window.outboundly.importContactsCsv({ csvText });
       setImportResult(result);
       refreshContacts();
+      toast.showToast(`Imported ${result.imported} contact(s).`, result.skipped.length > 0 ? "info" : "success");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -40,35 +63,28 @@ export function LeadsScreen(): JSX.Element {
   }
 
   return (
-    <div style={{ fontFamily: "sans-serif", maxWidth: 800, margin: "2rem auto" }}>
-      <h1>Outboundly — Leads (Phase 4)</h1>
+    <div>
+      <PageHeader title="Leads" description="Import contacts from a CSV and manage your lead list." />
 
-      <section style={{ marginBottom: "1.5rem" }}>
-        <h2>Import contacts from CSV</h2>
-        <textarea
-          value={csvText}
-          onChange={(e) => setCsvText(e.target.value)}
-          rows={6}
-          style={{ width: "100%", fontFamily: "monospace" }}
-        />
-        <div style={{ marginTop: "0.5rem" }}>
-          <button onClick={handleImport} disabled={busy}>
-            {busy ? "Importing..." : "Import"}
-          </button>
+      {error && <ErrorBanner message={error} />}
+
+      <Card style={{ marginBottom: "var(--space-6)" }}>
+        <CardHeader title="Import contacts from CSV" description="First row must be a header: email, first_name, last_name, company." />
+        <Textarea value={csvText} onChange={(e) => setCsvText(e.target.value)} rows={6} style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px" }} />
+        <div style={{ marginTop: "var(--space-4)" }}>
+          <Button variant="primary" icon={<UploadIcon size={15} />} loading={busy} onClick={handleImport}>
+            Import
+          </Button>
         </div>
 
-        {error && (
-          <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>
-            <strong>Error:</strong> {error}
-          </p>
-        )}
-
         {importResult && (
-          <p>
-            Imported {importResult.imported} contact(s).
-            {importResult.skipped.length > 0 && ` Skipped ${importResult.skipped.length}:`}
+          <div style={{ marginTop: "var(--space-4)", fontSize: "13px", color: "var(--color-text-secondary)" }}>
+            <p>
+              Imported <strong style={{ color: "var(--color-text-primary)" }}>{importResult.imported}</strong> contact(s).
+              {importResult.skipped.length > 0 && ` Skipped ${importResult.skipped.length}:`}
+            </p>
             {importResult.skipped.length > 0 && (
-              <ul>
+              <ul style={{ marginTop: "6px", paddingLeft: "1.1rem" }}>
                 {importResult.skipped.map((s, i) => (
                   <li key={i}>
                     Row {s.row}: {s.reason}
@@ -76,36 +92,54 @@ export function LeadsScreen(): JSX.Element {
                 ))}
               </ul>
             )}
-          </p>
+          </div>
         )}
-      </section>
+      </Card>
 
-      <section>
-        <h2>Contacts ({contacts.length})</h2>
-        {contacts.length === 0 && <p>No contacts yet.</p>}
-        {contacts.length > 0 && (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <Card padding="none">
+        <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
+          <CardHeader title={`Contacts (${contacts.length})`} />
+        </div>
+        {loading ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: "var(--space-8)" }}>
+            <Spinner size={22} />
+          </div>
+        ) : contacts.length === 0 ? (
+          <EmptyState icon={<UsersIcon size={20} />} title="No contacts yet" description="Import a CSV above to add your first leads." />
+        ) : (
+          <Table>
             <thead>
-              <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                <th>Email</th>
-                <th>Name</th>
-                <th>Company</th>
-                <th>Source</th>
+              <tr>
+                <Th>Contact</Th>
+                <Th>Company</Th>
+                <Th>Source</Th>
               </tr>
             </thead>
             <tbody>
-              {contacts.map((c) => (
-                <tr key={c.id} style={{ borderBottom: "1px solid #eee" }}>
-                  <td>{c.email}</td>
-                  <td>{[c.firstName, c.lastName].filter(Boolean).join(" ") || "—"}</td>
-                  <td>{c.company ?? "—"}</td>
-                  <td>{c.source}</td>
-                </tr>
-              ))}
+              {contacts.map((c) => {
+                const name = [c.firstName, c.lastName].filter(Boolean).join(" ");
+                return (
+                  <TableRow key={c.id}>
+                    <Td>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                        <Avatar name={name || c.email} size={26} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 550 }}>{name || "—"}</div>
+                          <div style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>{c.email}</div>
+                        </div>
+                      </div>
+                    </Td>
+                    <Td>{c.company ?? "—"}</Td>
+                    <Td>
+                      <Badge tone="neutral">{c.source}</Badge>
+                    </Td>
+                  </TableRow>
+                );
+              })}
             </tbody>
-          </table>
+          </Table>
         )}
-      </section>
+      </Card>
     </div>
   );
 }

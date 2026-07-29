@@ -1,5 +1,24 @@
 import { useEffect, useState } from "react";
 import type { AccountSummary, LabAnalysisResponse } from "../../ipc-boundary/contracts.js";
+import {
+  Badge,
+  type BadgeTone,
+  Button,
+  Card,
+  CardHeader,
+  Checkbox,
+  EmptyState,
+  ErrorBanner,
+  Field,
+  FlaskIcon,
+  Input,
+  PageHeader,
+  Select,
+  SeverityBadge,
+  Spinner,
+  Textarea
+} from "../components/index.js";
+import { humanizeSnakeCase } from "../lib/format.js";
 
 /**
  * The Phase 3 "minimal" Deliverability Lab (Section 18): a sandbox to test a hypothetical
@@ -18,6 +37,7 @@ export function DeliverabilityLabScreen(): JSX.Element {
   const [checkDomainAuth, setCheckDomainAuth] = useState(false);
   const [result, setResult] = useState<LabAnalysisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -27,7 +47,8 @@ export function DeliverabilityLabScreen(): JSX.Element {
         setAccounts(list);
         if (list.length > 0 && !selectedAccountId) setSelectedAccountId(list[0]!.id);
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoadingAccounts(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -59,73 +80,84 @@ export function DeliverabilityLabScreen(): JSX.Element {
     }
   }
 
+  const scoreTone: BadgeTone = result ? (result.score >= 85 ? "success" : result.score >= 60 ? "warning" : "danger") : "neutral";
+
   return (
-    <div style={{ fontFamily: "sans-serif", maxWidth: 700, margin: "2rem auto" }}>
-      <h1>Outboundly — Deliverability Lab (Phase 3)</h1>
-      <p style={{ color: "#555" }}>
-        Test a hypothetical message before you write it for real. Nothing here is saved as a draft,
-        queued, or sent — this is a sandbox.
-      </p>
+    <div>
+      <PageHeader
+        title="Deliverability Lab"
+        description="Test a hypothetical message before you write it for real. Nothing here is saved, queued, or sent."
+      />
 
-      <section style={{ marginBottom: "1rem" }}>
-        <label>
-          From (borrowed identity, never authenticated or sent from):{" "}
-          <select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
-              </option>
-            ))}
-          </select>
-        </label>
-      </section>
+      {error && <ErrorBanner message={error} />}
 
-      <section>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-          <input placeholder="Sample To (comma-separated)" value={to} onChange={(e) => setTo(e.target.value)} />
-          <input placeholder="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
-          <textarea
-            placeholder="Write a hypothetical message..."
-            rows={10}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-          />
+      {loadingAccounts ? (
+        <Card>
+          <div style={{ display: "flex", justifyContent: "center", padding: "var(--space-6)" }}>
+            <Spinner size={22} />
+          </div>
+        </Card>
+      ) : accounts.length === 0 ? (
+        <Card padding="none">
+          <EmptyState icon={<FlaskIcon size={20} />} title="No accounts connected yet" description="Connect a sending account from the Compose screen first." />
+        </Card>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-6)", alignItems: "start" }}>
+          <Card>
+            <CardHeader title="Hypothetical message" />
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+              <Field label="From (borrowed identity — never authenticated or sent from)">
+                <Select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}>
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.displayName ? `${a.displayName} <${a.emailAddress}>` : a.emailAddress}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Sample recipient(s)">
+                <Input value={to} onChange={(e) => setTo(e.target.value)} placeholder="sample@example.com" />
+              </Field>
+              <Field label="Subject">
+                <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" />
+              </Field>
+              <Field label="Body">
+                <Textarea rows={9} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write a hypothetical message..." />
+              </Field>
+              <Checkbox checked={checkDomainAuth} onChange={setCheckDomainAuth} label="Also check SPF/DKIM/DMARC for the selected account's domain" />
+              <Button variant="primary" loading={busy} onClick={handleRunAnalysis}>
+                Run analysis
+              </Button>
+            </div>
+          </Card>
+
+          <Card padding="none">
+            <div style={{ padding: "var(--space-6) var(--space-6) 0" }}>
+              <CardHeader
+                title="Result"
+                actions={result ? <Badge tone={scoreTone}>Score {result.score}</Badge> : undefined}
+              />
+            </div>
+            {!result ? (
+              <EmptyState icon={<FlaskIcon size={20} />} title="No analysis yet" description="Run an analysis to see the deliverability score and findings." />
+            ) : result.findings.length === 0 ? (
+              <EmptyState icon={<FlaskIcon size={20} />} title="No issues found" description="This hypothetical message looks clean." />
+            ) : (
+              <div style={{ paddingBottom: "var(--space-2)" }}>
+                {result.findings.map((f, i) => (
+                  <div key={`${f.ruleId}-${i}`} style={{ padding: "var(--space-4) var(--space-6)", borderTop: i === 0 ? "1px solid var(--color-border)" : "1px solid var(--color-border)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "4px", flexWrap: "wrap" }}>
+                      <SeverityBadge severity={f.severity} />
+                      <Badge tone="neutral">{humanizeSnakeCase(f.category)}</Badge>
+                    </div>
+                    <p style={{ fontSize: "13.5px", fontWeight: 600 }}>{f.message}</p>
+                    <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{f.explanation}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
         </div>
-        <div style={{ marginTop: "0.5rem" }}>
-          <label>
-            <input type="checkbox" checked={checkDomainAuth} onChange={(e) => setCheckDomainAuth(e.target.checked)} />{" "}
-            Also check SPF/DKIM/DMARC for the selected account's domain
-          </label>
-        </div>
-        <div style={{ marginTop: "0.75rem" }}>
-          <button onClick={handleRunAnalysis} disabled={busy}>
-            {busy ? "Analyzing..." : "Run analysis"}
-          </button>
-        </div>
-      </section>
-
-      {error && (
-        <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>
-          <strong>Error:</strong> {error}
-        </p>
-      )}
-
-      {result && (
-        <section>
-          <h2>Result</h2>
-          <p>Score: {result.score}</p>
-          {result.findings.length === 0 && <p>No issues found.</p>}
-          {result.findings.length > 0 && (
-            <ul>
-              {result.findings.map((f, i) => (
-                <li key={`${f.ruleId}-${i}`}>
-                  <strong>[{f.severity}] [{f.category}] {f.message}</strong>
-                  <div>{f.explanation}</div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
       )}
     </div>
   );
