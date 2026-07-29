@@ -39,10 +39,21 @@ describe("computeInsights (Section 20.3, Section 21.1 Insights worker)", () => {
       })
       .run();
 
+    // Genuinely every day (not just Monday), matching the fix in send-worker-tick.test.ts -- this
+    // avoids the same class of day-of-week fragility even where the current assertions don't
+    // happen to exercise the send_queue claim query's earliestSendAt <= now filter.
     const businessHoursProfile = await new SqliteBusinessHoursProfileRepository(db).create({
       name: "Always open",
       timezone: "UTC",
-      windows: { monday: [{ start: "00:00", end: "23:59" }] }
+      windows: {
+        sunday: [{ start: "00:00", end: "23:59" }],
+        monday: [{ start: "00:00", end: "23:59" }],
+        tuesday: [{ start: "00:00", end: "23:59" }],
+        wednesday: [{ start: "00:00", end: "23:59" }],
+        thursday: [{ start: "00:00", end: "23:59" }],
+        friday: [{ start: "00:00", end: "23:59" }],
+        saturday: [{ start: "00:00", end: "23:59" }]
+      }
     });
     const template = await new SqliteTemplateRepository(db).create({ name: "T", document: { blocks: [] } });
     const sequence = await new SqliteSequenceRepository(db).create({

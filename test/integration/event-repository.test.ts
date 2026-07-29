@@ -39,10 +39,21 @@ describe("SqliteEventRepository (Section 5.9, Section 20.1)", () => {
       .run();
 
     const businessHoursProfileRepository = new SqliteBusinessHoursProfileRepository(db);
+    // Genuinely every day (not just Monday), matching the fix in send-worker-tick.test.ts -- this
+    // avoids the same class of day-of-week fragility even where the current assertions don't
+    // happen to exercise the send_queue claim query's earliestSendAt <= now filter.
     const businessHoursProfile = await businessHoursProfileRepository.create({
       name: "Always open",
       timezone: "UTC",
-      windows: { monday: [{ start: "00:00", end: "23:59" }] }
+      windows: {
+        sunday: [{ start: "00:00", end: "23:59" }],
+        monday: [{ start: "00:00", end: "23:59" }],
+        tuesday: [{ start: "00:00", end: "23:59" }],
+        wednesday: [{ start: "00:00", end: "23:59" }],
+        thursday: [{ start: "00:00", end: "23:59" }],
+        friday: [{ start: "00:00", end: "23:59" }],
+        saturday: [{ start: "00:00", end: "23:59" }]
+      }
     });
 
     const templateRepository = new SqliteTemplateRepository(db);
