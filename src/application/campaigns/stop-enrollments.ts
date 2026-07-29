@@ -9,6 +9,7 @@ import type { EventRepository } from "../../ports/event-repository.port.js";
 import type { NotificationRepository } from "../../ports/notification-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
 import type { SuppressionListRepository } from "../../ports/suppression-list.port.js";
+import { maybeCompleteCampaign } from "./maybe-complete-campaign.js";
 
 export type StopReason = "stopped_reply" | "stopped_bounce" | "stopped_manual" | "stopped_suppressed";
 
@@ -39,6 +40,7 @@ export async function stopEnrollmentsForContact(
     }
     await deps.enrollmentRepository.advance(enrollment.id, { status: reason, nextSendAt: undefined });
     stopped.push(enrollment.id);
+    await maybeCompleteCampaign(deps, enrollment.campaignId);
   }
 
   return stopped;

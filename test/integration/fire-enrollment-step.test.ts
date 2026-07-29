@@ -152,8 +152,9 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     expect(reloaded?.nextSendAt).toBeDefined();
   });
 
-  it("completes the enrollment once the final step is fired", async () => {
+  it("completes the enrollment once the final step is fired, and auto-completes the campaign once every enrollment is terminal", async () => {
     const { campaign, sequence } = await setUpTwoStepCampaign();
+    await deps.campaignRepository.setStatus(campaign.id, "running");
     const contact = await deps.contactRepository.upsertByEmail({ email: "lead2@example.com", firstName: "Bob", source: "manual" });
 
     const enrollment = await deps.enrollmentRepository.enroll({
@@ -173,6 +174,41 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     // is no longer "active", since findDueForScheduling filters on status first.
     const reloaded = await deps.enrollmentRepository.findById(enrollment.id);
     expect(reloaded?.status).toBe("completed");
+
+    // With this contact's enrollment now the campaign's only one and it's terminal, the campaign
+    // itself should have auto-transitioned to 'completed' (Section 14.1).
+    const reloadedCampaign = await deps.campaignRepository.findById(campaign.id);
+    expect(reloadedCampaign?.status).toBe("completed");
+  });
+
+  it("does not auto-complete the campaign while another enrollment is still active", async () => {
+    const { campaign, sequence } = await setUpTwoStepCampaign();
+    await deps.campaignRepository.setStatus(campaign.id, "running");
+
+    const finishing = await deps.contactRepository.upsertByEmail({ email: "finishing@example.com", source: "manual" });
+    const finishingEnrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: finishing.id,
+      currentStepId: sequence.steps[1]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    // A second contact still mid-sequence, not yet due -- must keep the campaign 'running'.
+    const stillActive = await deps.contactRepository.upsertByEmail({ email: "still-active@example.com", source: "manual" });
+    await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: stillActive.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() + 60_000)
+    });
+
+    const result = await fireEnrollmentStep(deps, finishingEnrollment, new Date());
+    expect(result.outcome).toBe("enqueued");
+    if (result.outcome !== "enqueued") return;
+    expect(result.enrollmentStatus).toBe("completed");
+
+    const reloadedCampaign = await deps.campaignRepository.findById(campaign.id);
+    expect(reloadedCampaign?.status).toBe("running");
   });
 
   it("is idempotent: firing the same step twice enqueues only one send_queue row", async () => {
@@ -525,7 +561,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
     expect(unread[0]?.relatedCampaignId).toBeUndefined();
   });
 
-  it("unsubscribeContact suppresses the contact, records an event, and stops their active enrollments", async () => {
+  it("unsubscribeContact suppresses the contact, records an event, stops their active enrollments, and auto-completes a campaign left with no active enrollments", async () => {
     const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
     const sequence = await deps.sequenceRepository.create({
       name: "Seq",
@@ -537,6 +573,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
       sendingAccountIds: [asAccountId(accountId)],
       businessHoursProfileId
     });
+    await deps.campaignRepository.setStatus(campaign.id, "running");
     const contact = await deps.contactRepository.upsertByEmail({ email: "unsub@example.com", source: "manual" });
     const enrollment = await deps.enrollmentRepository.enroll({
       campaignId: campaign.id,
@@ -552,6 +589,10 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
 
     const events = await eventRepository.findByCampaignInWindow(campaign.id, new Date(0), new Date(Date.now() + 60_000));
     expect(events.map((e) => e.eventType)).toEqual(["unsubscribed"]);
+
+    // This was the campaign's only enrollment -- stopping it (Section 14.1) should have flipped
+    // the campaign itself to 'completed', same as the natural end-of-sequence path.
+    expect((await deps.campaignRepository.findById(campaign.id))?.status).toBe("completed");
   });
 
   it("recordConversion records a conversion event scoped to the campaign", async () => {

@@ -28,6 +28,7 @@ import type { SuppressionListRepository } from "../../ports/suppression-list.por
 import type { TemplateRepository } from "../../ports/template-repository.port.js";
 import type { TemplateVariantRepository } from "../../ports/template-variant-repository.port.js";
 import { ingestMessage } from "../sync-inbox/ingest-message.js";
+import { maybeCompleteCampaign } from "./maybe-complete-campaign.js";
 import { stopEnrollmentsForContact } from "./stop-enrollments.js";
 
 export type FireEnrollmentStepResult =
@@ -198,6 +199,7 @@ export async function fireEnrollmentStep(
   } else {
     await deps.enrollmentRepository.advance(enrollment.id, { status: "completed", nextSendAt: undefined });
     enrollmentStatus = "completed";
+    await maybeCompleteCampaign(deps, enrollment.campaignId);
   }
 
   return {
