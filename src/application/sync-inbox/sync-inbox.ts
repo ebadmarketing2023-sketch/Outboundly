@@ -1,8 +1,10 @@
 import { looksLikeBounceNotification } from "../../core/campaigns/bounce-detection.js";
 import { sanitizeInboundHtml } from "../../core/rendering/sanitize-html.js";
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
+import { asAccountId } from "../../core/shared-kernel/ids.js";
 import type { AccountRef, MailProvider } from "../../ports/mail-provider.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
+import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
 import { ingestMessage } from "./ingest-message.js";
 
 /**
@@ -29,6 +31,10 @@ export interface SyncInboxParams {
    * not detected (see bounce-detection.ts's docblock). Mutually exclusive with onReplyDetected:
    * an automated bounce is never counted as a genuine reply. */
   onBounceDetected?: (threadId: string) => Promise<void>;
+  /** Optional (Critical Improvement #12): when provided, a per-message fetch/ingest failure is
+   * also recorded as a structured, queryable log entry, not just returned in failedRefs. Omitted
+   * in most existing tests since it's a pure side effect. */
+  errorLogRepository?: ErrorLogRepository;
 }
 
 export interface SyncInboxResult {
@@ -102,7 +108,15 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
     } catch (err) {
       // One message's failure (deleted/moved since being listed, a transient API error) must not
       // abort the rest of the sync or lose the cursor advance below — isolate and continue.
-      failedRefs.push({ ref, error: err instanceof Error ? err.message : String(err) });
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      failedRefs.push({ ref, error: errorMessage });
+      await params.errorLogRepository?.record({
+        occurredAt: new Date(),
+        source: "inbox-sync",
+        errorType: "message_fetch_failed",
+        errorMessage,
+        accountId: asAccountId(params.accountId)
+      });
     }
   }
 

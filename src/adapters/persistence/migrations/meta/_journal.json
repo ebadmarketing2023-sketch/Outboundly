@@ -71,6 +71,13 @@
       "when": 1785335483127,
       "tag": "0009_high_kylun",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1785336911034,
+      "tag": "0010_daily_shriek",
+      "breakpoints": true
     }
   ]
 }

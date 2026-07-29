@@ -10,6 +10,7 @@ import type { CampaignRepository } from "../../ports/campaign-repository.port.js
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
 import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
+import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
 import type { EventRepository } from "../../ports/event-repository.port.js";
 import type { MailProvider } from "../../ports/mail-provider.port.js";
 import type { NotificationRepository } from "../../ports/notification-repository.port.js";
@@ -37,9 +38,30 @@ export interface SendWorkerDeps {
   notificationRepository: NotificationRepository;
   draftRepository: Repository<Draft, DraftId>;
   draftLifecycle: DraftLifecycleService;
+  /** Optional (Critical Improvement #12): when provided, every dispatch failure this worker
+   * handles is also recorded as a structured, queryable log entry, not just returned in this
+   * tick's own result object. Omitted in most existing tests since it's a pure side effect. */
+  errorLogRepository?: ErrorLogRepository;
   /** Concrete MailProvider construction by account/provider type is main-process wiring (Section
    * 12.3), not application logic — injected so this stays testable against a fake. */
   getProviderForAccount: (accountId: AccountId) => Promise<MailProvider>;
+}
+
+async function logSendFailure(
+  deps: SendWorkerDeps,
+  now: Date,
+  opts: { errorType: string; errorMessage: string; campaignId?: CampaignId; accountId?: AccountId; recipientEmail?: string; retryCount?: number }
+): Promise<void> {
+  await deps.errorLogRepository?.record({
+    occurredAt: now,
+    source: "send-worker",
+    errorType: opts.errorType,
+    errorMessage: opts.errorMessage,
+    campaignId: opts.campaignId,
+    accountId: opts.accountId,
+    recipientEmail: opts.recipientEmail,
+    retryCount: opts.retryCount
+  });
 }
 
 export interface SendWorkerTickResult {
@@ -60,10 +82,9 @@ type DispatchOutcome = "sent" | "retried" | "failed" | "bounced";
 async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: Date): Promise<DispatchOutcome> {
   const message = await deps.conversationRepository.findMessageById(claimed.messageId);
   if (!message) {
-    await deps.sendQueueRepository.markFailed(claimed.id, `send_queue row ${claimed.id} references a message that no longer exists`, {
-      permanent: true,
-      now
-    });
+    const errorMessage = `send_queue row ${claimed.id} references a message that no longer exists`;
+    await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: true, now });
+    await logSendFailure(deps, now, { errorType: "message_missing", errorMessage, accountId: claimed.accountId });
     return "failed";
   }
 
@@ -98,26 +119,30 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     return "retried";
   }
 
+  const recipientEmail = message.toAddresses[0];
+
   if (!message.draftId) {
-    await deps.sendQueueRepository.markFailed(claimed.id, "queued message has no associated draft to build MIME from", {
-      permanent: true,
-      now
-    });
+    const errorMessage = "queued message has no associated draft to build MIME from";
+    await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: true, now });
+    await logSendFailure(deps, now, { errorType: "draft_missing", errorMessage, campaignId, accountId: selection.accountId, recipientEmail });
     return "failed";
   }
   const draft = await deps.draftRepository.findById(asDraftId(message.draftId));
   if (!draft) {
-    await deps.sendQueueRepository.markFailed(claimed.id, `draft ${message.draftId} no longer exists`, { permanent: true, now });
+    const errorMessage = `draft ${message.draftId} no longer exists`;
+    await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: true, now });
+    await logSendFailure(deps, now, { errorType: "draft_missing", errorMessage, campaignId, accountId: selection.accountId, recipientEmail });
     return "failed";
   }
 
   const accountRef = getAccountRef(deps.db, selection.accountId);
   if (!accountRef) {
-    await deps.sendQueueRepository.markFailed(claimed.id, `account ${selection.accountId} no longer exists`, { permanent: true, now });
+    const errorMessage = `account ${selection.accountId} no longer exists`;
+    await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: true, now });
+    await logSendFailure(deps, now, { errorType: "account_missing", errorMessage, campaignId, accountId: selection.accountId, recipientEmail });
     return "failed";
   }
 
-  const recipientEmail = message.toAddresses[0];
   const contact = recipientEmail ? await deps.contactRepository.findByEmail(parseNamedAddress(recipientEmail).address.toString()) : undefined;
 
   const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress) };
@@ -156,6 +181,14 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
       relatedAccountId: selection.accountId,
       relatedCampaignId: campaignId,
       createdAt: now
+    });
+    await logSendFailure(deps, now, {
+      errorType: "permanent_smtp_rejection",
+      errorMessage,
+      campaignId,
+      accountId: selection.accountId,
+      recipientEmail,
+      retryCount: claimed.attemptCount
     });
     if (contact) await stopEnrollmentsForContact(deps, contact.id, "stopped_bounce");
     return "bounced";
@@ -203,6 +236,12 @@ export async function runSendWorkerTick(deps: SendWorkerDeps, now: Date): Promis
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: false, now });
+      await logSendFailure(deps, now, {
+        errorType: "transient_dispatch_failure",
+        errorMessage,
+        accountId: claimed.accountId,
+        retryCount: claimed.attemptCount + 1
+      });
       result.failed++;
       result.failures.push({ sendQueueEntryId: claimed.id, error: errorMessage });
     }

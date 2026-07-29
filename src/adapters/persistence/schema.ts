@@ -630,6 +630,32 @@ export const notifications = sqliteTable(
   })
 );
 
+/** Structured error logging (Critical Improvement #12): every worker-level failure (send,
+ * scheduling, inbox sync, account health check) gets one row here, carrying exactly the fields
+ * needed to troubleshoot without digging through console output -- which campaign, which sending
+ * account, which recipient, what kind of error, the message, and how many attempts so far. A
+ * brand-new table, so real FKs on campaignId/accountId are safe (same reasoning as
+ * notifications above). Deliberately separate from `notifications` (Section 3): notifications are
+ * a curated, user-facing subset meant to be read and dismissed; this table is a complete,
+ * append-only diagnostic trail meant to be searched, not triaged. */
+export const errorLogs = sqliteTable(
+  "error_logs",
+  {
+    id: text("id").primaryKey(),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+    source: text("source").notNull(), // 'send-worker' | 'scheduler' | 'inbox-sync' | 'account-health-sweep'
+    errorType: text("error_type").notNull(),
+    errorMessage: text("error_message").notNull(),
+    campaignId: text("campaign_id").references(() => campaigns.id),
+    accountId: text("account_id").references(() => accounts.id),
+    recipientEmail: text("recipient_email"),
+    retryCount: integer("retry_count")
+  },
+  (table) => ({
+    occurredAtIdx: index("error_logs_occurred_at_idx").on(table.occurredAt)
+  })
+);
+
 /** Settings module (Section 3: "User preferences, sending defaults ... business hours"). A plain
  * key-value store rather than one column per preference -- Section 3's own list of what belongs
  * here (defaults, business hours references) is small and app-preference shape tends to grow, so a

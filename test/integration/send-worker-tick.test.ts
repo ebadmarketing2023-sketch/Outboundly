@@ -30,6 +30,7 @@ import { SqliteWarmupProfileRepository } from "../../src/adapters/persistence/re
 import { SqliteProviderSelector } from "../../src/adapters/persistence/provider-selector.js";
 import { SqliteRateLimiter } from "../../src/adapters/persistence/rate-limiter.js";
 import { SqliteEventRepository } from "../../src/adapters/persistence/repositories/event-repository.js";
+import { SqliteErrorLogRepository } from "../../src/adapters/persistence/repositories/error-log-repository.js";
 import { accounts, messages, sendQueue } from "../../src/adapters/persistence/schema.js";
 import { asAccountId, generateId } from "../../src/core/shared-kernel/ids.js";
 import type { AccountRef, ChangeSet, MailProvider, NormalizedMessage, NormalizedThread, ProviderDraftRef, ProviderSendResult, SyncCursor } from "../../src/ports/mail-provider.port.js";
@@ -169,6 +170,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       draftLifecycle,
       eventRepository: new SqliteEventRepository(db),
       notificationRepository: new SqliteNotificationRepository(db),
+      errorLogRepository: new SqliteErrorLogRepository(db),
       getProviderForAccount: async () => provider
     };
   });
@@ -261,6 +263,11 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     const row = db.select().from(sendQueue).all()[0];
     expect(row?.status).toBe("pending");
     expect(row?.attemptCount).toBe(1);
+
+    const logged = await sendWorkerDeps.errorLogRepository!.listRecent(10, "send-worker");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ errorType: "transient_dispatch_failure", retryCount: 1 });
+    expect(logged[0]?.errorMessage).toMatch(/provider unavailable/);
   });
 
   it("treats a permanent (5xx) SMTP rejection as a bounce: fails the row terminally and stops the enrollment", async () => {
@@ -285,6 +292,11 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(unread).toHaveLength(1);
     expect(unread[0]?.notificationType).toBe("send_failure");
     expect(unread[0]?.relatedCampaignId).toBe(campaignId);
+
+    const logged = await sendWorkerDeps.errorLogRepository!.listRecent(10, "send-worker");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ errorType: "permanent_smtp_rejection", campaignId });
+    expect(logged[0]?.recipientEmail).toContain("lead@example.com");
   });
 
   it("does not treat a transient (4xx) SMTP error as a bounce -- it retries normally instead", async () => {

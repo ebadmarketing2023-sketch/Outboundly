@@ -3,8 +3,10 @@ import type { AccountDirectory, AccountDirectoryEntry } from "../../ports/accoun
 import type { AccountHealthMetricsSource } from "../../ports/account-health-metrics.port.js";
 import type { AccountHealthRepository } from "../../ports/account-health-repository.port.js";
 import type { DomainAuthChecker } from "../../ports/domain-auth-checker.port.js";
+import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
 import type { MailProvider } from "../../ports/mail-provider.port.js";
 import type { NotificationRepository } from "../../ports/notification-repository.port.js";
+import { asAccountId } from "../../core/shared-kernel/ids.js";
 
 export interface AccountHealthSweepDeps {
   accountDirectory: AccountDirectory;
@@ -13,6 +15,10 @@ export interface AccountHealthSweepDeps {
   authChecker: DomainAuthChecker;
   repository: AccountHealthRepository;
   notificationRepository: NotificationRepository;
+  /** Optional (Critical Improvement #12): when provided, one account's check throwing is also
+   * recorded as a structured, queryable log entry. Omitted in most existing tests since it's a
+   * pure side effect. */
+  errorLogRepository?: ErrorLogRepository;
 }
 
 export interface AccountHealthSweepResult {
@@ -57,7 +63,15 @@ export async function runAccountHealthSweep(deps: AccountHealthSweepDeps, now: D
         now
       });
     } catch (err) {
-      failures.push({ accountId: account.id, error: err instanceof Error ? err.message : String(err) });
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      failures.push({ accountId: account.id, error: errorMessage });
+      await deps.errorLogRepository?.record({
+        occurredAt: now,
+        source: "account-health-sweep",
+        errorType: "health_check_failed",
+        errorMessage,
+        accountId: asAccountId(account.id)
+      });
     }
   }
 

@@ -49,7 +49,15 @@ export async function runSchedulerTick(deps: FireEnrollmentStepDeps, now: Date):
         result.missingPersonalization++;
       }
     } catch (err) {
-      result.failures.push({ enrollmentId: enrollment.id, error: err instanceof Error ? err.message : String(err) });
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      result.failures.push({ enrollmentId: enrollment.id, error: errorMessage });
+      await deps.errorLogRepository?.record({
+        occurredAt: now,
+        source: "scheduler",
+        errorType: "enrollment_step_failed",
+        errorMessage,
+        campaignId: enrollment.campaignId
+      });
     }
   }
 

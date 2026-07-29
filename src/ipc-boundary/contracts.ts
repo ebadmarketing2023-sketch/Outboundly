@@ -421,6 +421,25 @@ export interface MarkNotificationReadRequest {
   notificationId: string;
 }
 
+/** Structured error logging (Critical Improvement #12): a complete diagnostic trail across every
+ * background worker, distinct from Notifications above (a curated, dismissible subset). */
+export interface ErrorLogEntrySummary {
+  id: string;
+  occurredAt: string;
+  source: string;
+  errorType: string;
+  errorMessage: string;
+  campaignId?: string;
+  accountId?: string;
+  recipientEmail?: string;
+  retryCount?: number;
+}
+
+export interface ListErrorLogsRequest {
+  limit: number;
+  source?: string;
+}
+
 export interface UpdateAccountSignatureRequest {
   accountId: string;
   /** undefined/omitted clears the signature. */
@@ -517,6 +536,7 @@ export interface OutboundlyRendererApi {
   removeSuppressionEntry(request: RemoveSuppressionEntryRequest): Promise<void>;
   setReplyClassification(request: SetReplyClassificationRequest): Promise<void>;
   listUnreadNotifications(): Promise<NotificationSummary[]>;
+  listErrorLogs(request: ListErrorLogsRequest): Promise<ErrorLogEntrySummary[]>;
   markNotificationRead(request: MarkNotificationReadRequest): Promise<void>;
   updateAccountSignature(request: UpdateAccountSignatureRequest): Promise<AccountSummary>;
   getAppPreferences(): Promise<AppPreferencesSummary>;

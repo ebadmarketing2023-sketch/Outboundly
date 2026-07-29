@@ -21,6 +21,7 @@ import type { ConversationRepository } from "../../ports/conversation-repository
 import type { DeliverabilityReportRepository } from "../../ports/deliverability-report-repository.port.js";
 import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js";
 import type { EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
+import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
 import type { SendQueueRepository } from "../../ports/send-queue-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
 import type { SubjectVariantRepository } from "../../ports/subject-variant-repository.port.js";
@@ -52,6 +53,10 @@ export interface FireEnrollmentStepDeps extends BuildSchedulingContextDeps {
   deliverabilityReportRepository: DeliverabilityReportRepository;
   conversationRepository: ConversationRepository;
   draftLifecycle: DraftLifecycleService;
+  /** Optional (Critical Improvement #12): when provided, the scheduler tick's own per-enrollment
+   * failure isolation also records a structured, queryable log entry. Omitted in most existing
+   * tests since it's a pure side effect. */
+  errorLogRepository?: ErrorLogRepository;
 }
 
 /**

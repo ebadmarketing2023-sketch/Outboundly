@@ -17,6 +17,7 @@ import { SqliteDelayPolicyConfigRepository } from "../../src/adapters/persistenc
 import { SqliteDeliverabilityReportRepository } from "../../src/adapters/persistence/repositories/deliverability-report-repository.js";
 import { SqliteDraftRepository } from "../../src/adapters/persistence/repositories/draft-repository.js";
 import { SqliteEnrollmentRepository } from "../../src/adapters/persistence/repositories/enrollment-repository.js";
+import { SqliteErrorLogRepository } from "../../src/adapters/persistence/repositories/error-log-repository.js";
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteSubjectVariantRepository } from "../../src/adapters/persistence/repositories/subject-variant-repository.js";
@@ -74,7 +75,8 @@ describe("runSchedulerTick (Section 21.1)", () => {
       sendQueueRepository: new SqliteSendQueueRepository(db),
       deliverabilityReportRepository: new SqliteDeliverabilityReportRepository(db),
       conversationRepository: new SqliteConversationRepository(db),
-      draftLifecycle: new DraftLifecycleService(new SqliteDraftRepository(db), new SystemClock())
+      draftLifecycle: new DraftLifecycleService(new SqliteDraftRepository(db), new SystemClock()),
+      errorLogRepository: new SqliteErrorLogRepository(db)
     };
   });
 
@@ -130,6 +132,11 @@ describe("runSchedulerTick (Section 21.1)", () => {
 
     const reloadedGood = await deps.enrollmentRepository.findById(goodEnrollment.id);
     expect(reloadedGood?.status).toBe("completed");
+
+    const logged = await deps.errorLogRepository!.listRecent(10, "scheduler");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ errorType: "enrollment_step_failed", campaignId: campaign.id });
+    expect(logged[0]?.errorMessage).toMatch(/is not part of its sequence/);
   });
 
   it("never fires a still-draft campaign's due enrollments, and Pause/Resume actually gate scheduling (Section 14.2)", async () => {

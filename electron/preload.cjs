@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld("outboundly", {
   removeSuppressionEntry: (request) => ipcRenderer.invoke("suppressionList:remove", request),
   setReplyClassification: (request) => ipcRenderer.invoke("inbox:setReplyClassification", request),
   listUnreadNotifications: () => ipcRenderer.invoke("notifications:listUnread"),
+  listErrorLogs: (request) => ipcRenderer.invoke("logs:listRecent", request),
   markNotificationRead: (request) => ipcRenderer.invoke("notifications:markRead", request),
   updateAccountSignature: (request) => ipcRenderer.invoke("accounts:updateSignature", request),
   getAppPreferences: () => ipcRenderer.invoke("settings:getAppPreferences"),

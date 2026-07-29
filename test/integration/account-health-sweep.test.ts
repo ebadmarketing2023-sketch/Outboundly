@@ -8,6 +8,7 @@ import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/
 import { SqliteAccountDirectory } from "../../src/adapters/persistence/repositories/account-directory.js";
 import { SqliteAccountHealthMetricsSource } from "../../src/adapters/persistence/repositories/account-health-metrics-source.js";
 import { SqliteAccountHealthRepository } from "../../src/adapters/persistence/repositories/account-health-repository.js";
+import { SqliteErrorLogRepository } from "../../src/adapters/persistence/repositories/error-log-repository.js";
 import { SqliteNotificationRepository } from "../../src/adapters/persistence/repositories/notification-repository.js";
 import { accounts } from "../../src/adapters/persistence/schema.js";
 import { generateId } from "../../src/core/shared-kernel/ids.js";
@@ -152,5 +153,35 @@ describe("runAccountHealthSweep (Section 17.3 periodic mode, Section 21.1)", () 
     const accountDirectory = new SqliteAccountDirectory(db);
     const entries = await accountDirectory.list();
     expect(entries.find((e) => e.id === healthyAccountId)?.status).toBe("connected");
+  });
+
+  it("records a genuine unexpected error (e.g. the auth checker throwing) as a structured log entry, isolated per account", async () => {
+    const errorLogRepository = new SqliteErrorLogRepository(db);
+    const throwingAuthChecker: { check: () => Promise<never> } = {
+      check: async () => {
+        throw new Error("DNS resolver unavailable");
+      }
+    };
+
+    const result = await runAccountHealthSweep(
+      {
+        accountDirectory: new SqliteAccountDirectory(db),
+        getProviderForAccount: () => new FakeMailProvider(true),
+        metricsSource: new SqliteAccountHealthMetricsSource(db),
+        authChecker: throwingAuthChecker as unknown as DomainAuthChecker,
+        repository: new SqliteAccountHealthRepository(db),
+        notificationRepository: new SqliteNotificationRepository(db),
+        errorLogRepository
+      },
+      new Date()
+    );
+
+    expect(result.failures).toHaveLength(2); // healthy + failing accounts both hit the throwing auth checker
+    expect(result.failures.every((f) => f.error === "DNS resolver unavailable")).toBe(true);
+
+    const logged = await errorLogRepository.listRecent(10, "account-health-sweep");
+    expect(logged).toHaveLength(2);
+    expect(logged.every((e) => e.errorType === "health_check_failed" && e.errorMessage === "DNS resolver unavailable")).toBe(true);
+    expect(logged.map((e) => e.accountId).sort()).toEqual([failingAccountId, healthyAccountId].sort());
   });
 });

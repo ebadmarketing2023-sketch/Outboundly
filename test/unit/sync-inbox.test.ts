@@ -12,6 +12,7 @@ import type {
 } from "../../src/ports/mail-provider.port.js";
 import { GMAIL_CAPABILITIES, type ProviderCapabilities } from "../../src/ports/provider-capabilities.port.js";
 import type { ConversationRepository, NewMessageInput } from "../../src/ports/conversation-repository.port.js";
+import type { RecordErrorLogInput } from "../../src/ports/error-log-repository.port.js";
 import type { DerivedParticipant } from "../../src/core/conversation/participants.js";
 import type { ConversationState } from "../../src/core/conversation/conversation-engine.js";
 import { asAccountId } from "../../src/core/shared-kernel/ids.js";
@@ -166,7 +167,10 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
       new Set(["msg-gone"])
     );
 
-    const result = await syncInboxForAccount({ accountId: "acct-1", accountRef, provider, repo });
+    const loggedErrors: RecordErrorLogInput[] = [];
+    const errorLogRepository = { record: async (entry: RecordErrorLogInput) => void loggedErrors.push(entry) };
+
+    const result = await syncInboxForAccount({ accountId: "acct-1", accountRef, provider, repo, errorLogRepository });
 
     // The failing message doesn't prevent the healthy one from being ingested...
     expect(result.newMessageCount).toBe(1);
@@ -175,6 +179,10 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
 
     // ...the failure is reported, not silently swallowed...
     expect(result.failedRefs).toEqual([{ ref: "msg-gone", error: "Requested entity was not found." }]);
+
+    // ...and recorded as a structured log entry (Critical Improvement #12)...
+    expect(loggedErrors).toHaveLength(1);
+    expect(loggedErrors[0]).toMatchObject({ source: "inbox-sync", errorType: "message_fetch_failed", accountId: "acct-1" });
 
     // ...and the cursor still advances, so the sync isn't stuck retrying the same batch forever.
     expect(repo.syncCursors.get("acct-1")).toBe("cursor-1");

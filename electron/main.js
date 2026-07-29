@@ -59,6 +59,7 @@ import { SqliteSendQueueRepository } from "../dist/adapters/persistence/reposito
 import { SqliteRateLimiter } from "../dist/adapters/persistence/rate-limiter.js";
 import { SqliteEventRepository } from "../dist/adapters/persistence/repositories/event-repository.js";
 import { SqliteNotificationRepository } from "../dist/adapters/persistence/repositories/notification-repository.js";
+import { SqliteErrorLogRepository } from "../dist/adapters/persistence/repositories/error-log-repository.js";
 import { SqliteCampaignMetricsRollupRepository } from "../dist/adapters/persistence/repositories/campaign-metrics-rollup-repository.js";
 import { SqliteAccountMetricsRollupRepository } from "../dist/adapters/persistence/repositories/account-metrics-rollup-repository.js";
 import { computeRollups } from "../dist/adapters/persistence/compute-rollups.js";
@@ -127,6 +128,7 @@ let rateLimiter;
 let providerSelector;
 let eventRepository;
 let notificationRepository;
+let errorLogRepository;
 let campaignMetricsRollupRepository;
 let accountMetricsRollupRepository;
 let insightRepository;
@@ -176,6 +178,7 @@ function initServices() {
   providerSelector = new SqliteProviderSelector(db, accountHealthRepository, rateLimiter);
   eventRepository = new SqliteEventRepository(db);
   notificationRepository = new SqliteNotificationRepository(db);
+  errorLogRepository = new SqliteErrorLogRepository(db);
   campaignMetricsRollupRepository = new SqliteCampaignMetricsRollupRepository(db);
   accountMetricsRollupRepository = new SqliteAccountMetricsRollupRepository(db);
   insightRepository = new SqliteInsightRepository(db);
@@ -200,7 +203,8 @@ function campaignEngineDeps() {
     sendQueueRepository,
     deliverabilityReportRepository,
     conversationRepository,
-    draftLifecycle
+    draftLifecycle,
+    errorLogRepository
   };
 }
 
@@ -237,6 +241,7 @@ function startBackgroundWorkers() {
         draftLifecycle,
         eventRepository,
         notificationRepository,
+        errorLogRepository,
         getProviderForAccount
       },
       new Date()
@@ -274,7 +279,8 @@ function startBackgroundWorkers() {
         metricsSource: accountHealthMetricsSource,
         authChecker: domainAuthChecker,
         repository: accountHealthRepository,
-        notificationRepository
+        notificationRepository,
+        errorLogRepository
       },
       new Date()
     ).catch((err) => {
@@ -618,7 +624,8 @@ function registerIpcHandlers() {
       onReplyDetected: (fromAddress, threadId) =>
         handleReplyDetected(stopEnrollmentDeps, fromAddress, { threadId, accountId: account.id }).then(() => undefined),
       onBounceDetected: (threadId) =>
-        handleBounceDetected(stopEnrollmentDeps, threadId, account.id).then(() => undefined)
+        handleBounceDetected(stopEnrollmentDeps, threadId, account.id).then(() => undefined),
+      errorLogRepository
     });
 
     if (result.failedRefs.length > 0) {
@@ -1021,6 +1028,21 @@ function registerIpcHandlers() {
       relatedAccountId: n.relatedAccountId,
       relatedCampaignId: n.relatedCampaignId,
       createdAt: n.createdAt.toISOString()
+    }));
+  });
+
+  ipcMain.handle("logs:listRecent", async (_event, request) => {
+    const list = await errorLogRepository.listRecent(request.limit, request.source);
+    return list.map((e) => ({
+      id: e.id,
+      occurredAt: e.occurredAt.toISOString(),
+      source: e.source,
+      errorType: e.errorType,
+      errorMessage: e.errorMessage,
+      campaignId: e.campaignId,
+      accountId: e.accountId,
+      recipientEmail: e.recipientEmail,
+      retryCount: e.retryCount
     }));
   });
 
