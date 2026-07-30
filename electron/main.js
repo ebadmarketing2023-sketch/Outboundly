@@ -7,6 +7,10 @@ const { autoUpdater } = electronUpdaterPkg;
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
+import {
+  GOOGLE_CLIENT_ID as GENERATED_GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET as GENERATED_GOOGLE_CLIENT_SECRET
+} from "./generated-oauth-config.js";
 
 import { openDatabase } from "../dist/adapters/persistence/db.js";
 import { getOrCreateDatabaseEncryptionKey } from "../dist/adapters/persistence/database-key.js";
@@ -76,8 +80,12 @@ import { SqliteLeadImportBatchRepository } from "../dist/adapters/persistence/re
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Section 13: the app owns one registered OAuth application; the user never configures this.
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+// GENERATED_GOOGLE_CLIENT_ID/SECRET come from electron/generated-oauth-config.js, written at
+// build time by generate-oauth-config.mjs and gitignored -- Outboundly's shared Google Cloud
+// OAuth client credentials never live in source control. The env vars remain an override for
+// local dev against a different Google Cloud project.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? GENERATED_GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? GENERATED_GOOGLE_CLIENT_SECRET;
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/gmail.compose",

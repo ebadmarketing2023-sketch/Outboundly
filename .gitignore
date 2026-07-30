@@ -2,6 +2,7 @@ node_modules/
 dist/
 release/
 electron/renderer/bundle.js
+electron/generated-oauth-config.js
 tsconfig.tsbuildinfo
 *.log
 .env

@@ -6,8 +6,9 @@
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
-    "build": "npm run build:info && tsc -b && npm run copy:migrations && npm run build:renderer",
+    "build": "npm run build:info && npm run build:oauth-config && tsc -b && npm run copy:migrations && npm run build:renderer",
     "build:info": "node electron/generate-build-info.mjs",
+    "build:oauth-config": "node electron/generate-oauth-config.mjs",
     "copy:migrations": "node electron/copy-migrations.mjs",
     "build:renderer": "node electron/build-renderer.mjs",
     "test": "vitest run",
