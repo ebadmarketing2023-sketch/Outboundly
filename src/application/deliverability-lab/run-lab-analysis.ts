@@ -71,8 +71,7 @@ export async function runLabAnalysis(params: RunLabAnalysisParams): Promise<Deli
   };
 
   const built = params.draftLifecycle.buildMimeMessage(fakeDraft, {
-    from: params.input.from,
-    sendingDomain: params.input.sendingDomain
+    from: params.input.from
     // No personalizationValues here: already resolved above (with placeholders) so the
     // missing-variable findings below are the ones the caller sees, not a second silent pass.
   });

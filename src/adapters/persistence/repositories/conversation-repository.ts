@@ -231,6 +231,11 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
       .all();
   }
 
+  async findProviderThreadId(threadId: string): Promise<string | undefined> {
+    const row = this.db.select({ providerThreadId: threads.providerThreadId }).from(threads).where(eq(threads.id, threadId)).get();
+    return row?.providerThreadId ?? undefined;
+  }
+
   async insertReferenceEdges(messageId: string, ancestorChain: string[]): Promise<void> {
     const now = new Date();
     ancestorChain.forEach((referencedMessageIdHeader, position) => {

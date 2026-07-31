@@ -35,7 +35,6 @@ export interface SendMessageResult {
 export interface SendMessageParams {
   draft: Draft;
   from: NamedEmailAddress;
-  sendingDomain: string;
   draftLifecycle: DraftLifecycleService;
   provider: MailProvider;
   accountRef: AccountRef;
@@ -45,8 +44,7 @@ export interface SendMessageParams {
 
 export async function sendDraftMessage(params: SendMessageParams): Promise<SendMessageResult> {
   const built = params.draftLifecycle.buildMimeMessage(params.draft, {
-    from: params.from,
-    sendingDomain: params.sendingDomain
+    from: params.from
   });
 
   const compatibilityReport = evaluateGmailCompatibility(built);

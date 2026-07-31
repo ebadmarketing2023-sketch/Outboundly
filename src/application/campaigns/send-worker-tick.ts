@@ -167,14 +167,14 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress), displayName: accountRef.displayName };
   const built = deps.draftLifecycle.buildMimeMessage(draft, {
     from,
-    sendingDomain: accountRef.emailAddress.split("@")[1]!,
     personalizationValues: contact ? contactToPersonalizationValues(contact) : undefined
   });
 
   const provider = await deps.getProviderForAccount(selection.accountId);
+  const providerThreadId = message.threadId ? await deps.conversationRepository.findProviderThreadId(message.threadId) : undefined;
   let sendResult;
   try {
-    const draftRef = await provider.createDraft(accountRef, built);
+    const draftRef = await provider.createDraft(accountRef, built, providerThreadId);
     await deps.draftLifecycle.recordProviderDraftRef(draft.id, draftRef.providerDraftId);
     sendResult = await provider.sendDraft(accountRef, draftRef);
     await provider.appendToSentFolder(accountRef, Buffer.from(built.raw, "utf8"));

@@ -38,9 +38,10 @@ import type { BuiltMimeMessage } from "../../src/core/mime/types.js";
 import { GMAIL_CAPABILITIES, type ProviderCapabilities } from "../../src/ports/provider-capabilities.port.js";
 
 class FakeMailProvider implements MailProvider {
-  createdDrafts: { account: AccountRef; message: BuiltMimeMessage }[] = [];
+  createdDrafts: { account: AccountRef; message: BuiltMimeMessage; providerThreadId?: string }[] = [];
   sentDrafts: ProviderDraftRef[] = [];
   appended: Buffer[] = [];
+  private sendCount = 0;
   constructor(
     private readonly failCreateDraft = false,
     /** Simulates a real nodemailer SMTP rejection (responseCode attached to the thrown error). */
@@ -51,19 +52,23 @@ class FakeMailProvider implements MailProvider {
   async sendMessage(): Promise<ProviderSendResult> {
     return { providerMessageId: "unused" };
   }
-  async createDraft(account: AccountRef, message: BuiltMimeMessage): Promise<ProviderDraftRef> {
+  async createDraft(account: AccountRef, message: BuiltMimeMessage, providerThreadId?: string): Promise<ProviderDraftRef> {
     if (this.smtpResponseCode !== undefined) {
       const err = new Error(`${this.smtpResponseCode} SMTP rejection (simulated)`);
       (err as Error & { responseCode: number }).responseCode = this.smtpResponseCode;
       throw err;
     }
     if (this.failCreateDraft) throw new Error("provider unavailable");
-    this.createdDrafts.push({ account, message });
-    return { providerDraftId: "fake-draft-1" };
+    this.createdDrafts.push({ account, message, providerThreadId });
+    return { providerDraftId: `fake-draft-${this.createdDrafts.length}` };
   }
   async sendDraft(_account: AccountRef, draftRef: ProviderDraftRef): Promise<ProviderSendResult> {
     this.sentDrafts.push(draftRef);
-    return { providerMessageId: "fake-message-1", providerThreadId: "fake-thread-1" };
+    this.sendCount += 1;
+    // A stable per-send provider thread id, always the same one for every send in this fake test
+    // account (real Gmail would keep one thread id for the whole conversation too) -- distinct from
+    // "fake-message-N" so the two id spaces are never confusable in an assertion.
+    return { providerMessageId: `fake-message-${this.sendCount}`, providerThreadId: "fake-thread-1" };
   }
   async listChangesSince(): Promise<ChangeSet> {
     return { cursor: "", newOrChangedMessageRefs: [] };
@@ -255,6 +260,111 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(recordedEvents).toHaveLength(1);
     expect(recordedEvents[0]?.eventType).toBe("sent");
     expect(recordedEvents[0]?.metadata).toMatchObject({ templateId: expect.any(String), subjectVariantId: expect.any(String) });
+  });
+
+  it("threads a follow-up correctly at the real wire level even when the Provider Selector substitutes a different sending account between the two dispatches", async () => {
+    // Reproduces a real reported bug: the Message-ID recorded for a message (used to build a
+    // follow-up's In-Reply-To/References) used to be derived from whichever account was proposed
+    // at *enqueue* time -- but the Provider Selector (Section 16.3) can substitute a *different*
+    // account at actual *dispatch* time (e.g. the originally proposed account hits its daily limit
+    // in between), which used to mint a completely different Message-ID for the real, sent copy.
+    // A follow-up's headers would then reference an ID that never actually appeared on the wire,
+    // and Gmail/any client would fail to thread it -- starting a new conversation instead of
+    // replying, exactly what was reported. This test forces that exact substitution on *both*
+    // dispatches and asserts the real, wire-level headers (not just what's recorded in our own DB)
+    // still chain correctly.
+    const secondAccountId = generateId();
+    const now = new Date();
+    db.insert(accounts)
+      .values({
+        id: secondAccountId,
+        provider: "google",
+        emailAddress: "backup@another-domain.app",
+        displayName: "Backup Sender",
+        status: "connected",
+        connectedAt: now,
+        createdAt: now,
+        updatedAt: now
+      })
+      .run();
+
+    const template = await fireStepDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi there"))] } });
+    const sequence = await fireStepDeps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
+    });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Original subject", weight: 1 });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "Follow-up subject (should not be used verbatim)", weight: 1 });
+    const campaign = await fireStepDeps.campaignRepository.create({
+      name: "Rotating camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId), asAccountId(secondAccountId)],
+      businessHoursProfileId
+    });
+    await fireStepDeps.campaignRepository.setStatus(campaign.id, "running");
+    const contact = await fireStepDeps.contactRepository.upsertByEmail({ email: "rotating-lead@example.com", source: "manual" });
+    const enrollment = await fireStepDeps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    // --- Step 1: enqueue, then force the Provider Selector to substitute the *other* account ---
+    // Disconnection (not a rate/daily limit) is what forces this: dispatchOne's own rate-limiter
+    // check on claimed.accountId runs *before* the Provider Selector is ever consulted, so a
+    // dailySendLimit-based denial would just retry the row without ever reaching substitution.
+    // Provider Selector's own isEligible() checks account.status, which the earlier gate doesn't.
+    const firstFire = await fireEnrollmentStep(fireStepDeps, enrollment, new Date());
+    if (firstFire.outcome !== "enqueued") throw new Error(`setup failed: ${firstFire.outcome}`);
+    const firstQueueRow = db.select().from(sendQueue).where(eq(sendQueue.id, firstFire.sendQueueEntryId)).get();
+    const accountProposedForStep1 = firstQueueRow!.accountId;
+    await db.update(accounts).set({ status: "disconnected" }).where(eq(accounts.id, accountProposedForStep1)).run();
+
+    const firstDispatch = await runSendWorkerTick(sendWorkerDeps, new Date());
+    expect(firstDispatch.sent).toBe(1);
+    expect(provider.createdDrafts).toHaveLength(1);
+    const step1Message = provider.createdDrafts[0]!.message;
+    const step1MessageId = step1Message.headers.find((h) => h.name === "Message-ID")?.value;
+    const step1Subject = step1Message.headers.find((h) => h.name === "Subject")?.value;
+    expect(step1MessageId).toBeTruthy();
+    expect(step1Subject).toBe("Original subject");
+    // Proves the substitution actually happened -- otherwise this test wouldn't be exercising the
+    // real reported bug at all.
+    expect(provider.createdDrafts[0]!.account.accountId).not.toBe(accountProposedForStep1);
+
+    // Restore both accounts to eligible, then re-disable whichever gets proposed for step 2, so
+    // the *second* dispatch also substitutes -- proving the fix holds across repeated rotation,
+    // not just once.
+    await db.update(accounts).set({ status: "connected" }).where(eq(accounts.id, accountId)).run();
+    await db.update(accounts).set({ status: "connected" }).where(eq(accounts.id, secondAccountId)).run();
+
+    const advanced = await fireStepDeps.enrollmentRepository.findById(enrollment.id);
+    const secondFire = await fireEnrollmentStep(fireStepDeps, advanced!, new Date());
+    if (secondFire.outcome !== "enqueued") throw new Error(`setup failed: ${secondFire.outcome}`);
+    const secondQueueRow = db.select().from(sendQueue).where(eq(sendQueue.id, secondFire.sendQueueEntryId)).get();
+    const accountProposedForStep2 = secondQueueRow!.accountId;
+    await db.update(accounts).set({ status: "disconnected" }).where(eq(accounts.id, accountProposedForStep2)).run();
+
+    const secondDispatch = await runSendWorkerTick(sendWorkerDeps, new Date());
+    expect(secondDispatch.sent).toBe(1);
+    expect(provider.createdDrafts).toHaveLength(2);
+    const step2Message = provider.createdDrafts[1]!.message;
+    expect(provider.createdDrafts[1]!.account.accountId).not.toBe(accountProposedForStep2);
+
+    // The actual bytes sent over the wire for step 2 -- not just what's recorded in our own DB --
+    // must reference step 1's *actual* dispatched Message-ID, and continue its actual subject.
+    expect(step2Message.headers.find((h) => h.name === "In-Reply-To")?.value).toBe(step1MessageId);
+    expect(step2Message.headers.find((h) => h.name === "References")?.value).toBe(step1MessageId);
+    expect(step2Message.headers.find((h) => h.name === "Subject")?.value).toBe("Re: Original subject");
+
+    // The Gmail providerThreadId passthrough (kept the sender's own mailbox view grouped too):
+    // step 1's send returned "fake-thread-1" (FakeMailProvider.sendDraft), and that's what step 2's
+    // createDraft call must have received.
+    expect(provider.createdDrafts[1]!.providerThreadId).toBe("fake-thread-1");
   });
 
   it("releases the row back to pending (not a failure) when the account is over its rate limit", async () => {

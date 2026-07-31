@@ -60,6 +60,9 @@ class InMemoryConversationRepository implements ConversationRepository {
   async findOutboundMessageHistoryForEnrollment() {
     return [];
   }
+  async findProviderThreadId(): Promise<string | undefined> {
+    return undefined;
+  }
   async setMessageReplyClassification(): Promise<void> {}
 }
 
@@ -130,7 +133,6 @@ describe("send-message use case (Phase 1 direct send path)", () => {
     const result = await sendDraftMessage({
       draft,
       from: { address: EmailAddress.parse("me@outboundly.app") },
-      sendingDomain: "outboundly.app",
       draftLifecycle,
       provider,
       accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" },
@@ -177,7 +179,6 @@ describe("send-message use case (Phase 1 direct send path)", () => {
       // From doesn't match the authenticated account below — a real spoofing/misconfiguration
       // signal the Deliverability Engine's sender-consistency rule (Section 17.2) is meant to catch.
       from: { address: EmailAddress.parse("someone-else@outboundly.app") },
-      sendingDomain: "outboundly.app",
       draftLifecycle,
       provider,
       accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" },
@@ -206,7 +207,6 @@ describe("send-message use case (Phase 1 direct send path)", () => {
       sendDraftMessage({
         draft,
         from: { address: EmailAddress.parse("me@outboundly.app") },
-        sendingDomain: "outboundly.app",
         draftLifecycle,
         provider,
         accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" },

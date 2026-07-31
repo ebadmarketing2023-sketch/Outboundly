@@ -135,8 +135,6 @@ export async function fireEnrollmentStep(
     address: EmailAddress.parse(contact.email),
     displayName: [contact.firstName, contact.lastName].filter(Boolean).join(" ") || undefined
   };
-  const sendingDomain = accountRef.emailAddress.split("@")[1]!;
-
   const draft = await deps.draftLifecycle.createDraft({
     accountId: candidate.candidateAccountId,
     subject: subjectText,
@@ -150,7 +148,6 @@ export async function fireEnrollmentStep(
   try {
     built = deps.draftLifecycle.buildMimeMessage(draft, {
       from,
-      sendingDomain,
       personalizationValues: contactToPersonalizationValues(contact)
     });
   } catch (err) {

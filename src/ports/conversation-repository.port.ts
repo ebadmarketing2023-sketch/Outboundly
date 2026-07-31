@@ -93,6 +93,12 @@ export interface ConversationRepository {
    * to reply onto for the step about to fire. Empty for a first-step fire, since nothing has been
    * sent yet. */
   findOutboundMessageHistoryForEnrollment(campaignEnrollmentId: string): Promise<Array<{ messageIdHeader: string; subject: string }>>;
+  /** The provider's own thread id (e.g. Gmail's threadId) for one of our internal threads, if
+   * known yet -- only populated once that thread's first message actually finishes sending
+   * (markMessageSent's providerThreadId). Passed straight through to MailProvider.createDraft so
+   * a follow-up's real send stays grouped correctly in the sender's own mailbox view, not just in
+   * our own local Conversation Engine bookkeeping. */
+  findProviderThreadId(threadId: string): Promise<string | undefined>;
   /** User-applied label on an inbound reply message (Section 20.2) -- there is no automatic
    * classifier; "interested" is what feeds the Positive Reply Rate primary metric. */
   setMessageReplyClassification(messageId: string, classification: ReplyClassification): Promise<void>;

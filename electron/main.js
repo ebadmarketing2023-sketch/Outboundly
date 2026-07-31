@@ -745,13 +745,11 @@ function registerIpcHandlers() {
     const account = db.select().from(accountsTable).where(eq(accountsTable.id, draft.accountId)).get();
     if (!account) throw new Error("Account not found");
 
-    const sendingDomain = account.emailAddress.split("@")[1];
     const accountRef = { accountId: account.id, emailAddress: account.emailAddress };
 
     return sendDraftMessage({
       draft,
       from: { address: EmailAddress.parse(account.emailAddress), displayName: account.displayName ?? undefined },
-      sendingDomain,
       draftLifecycle,
       provider: providerFor(account),
       accountRef,

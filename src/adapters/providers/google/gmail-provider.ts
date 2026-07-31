@@ -105,23 +105,23 @@ export class GmailProvider implements MailProvider {
     await this.clientFor(account);
   }
 
-  async sendMessage(account: AccountRef, message: BuiltMimeMessage): Promise<ProviderSendResult> {
+  async sendMessage(account: AccountRef, message: BuiltMimeMessage, providerThreadId?: string): Promise<ProviderSendResult> {
     const auth = await this.clientFor(account);
     const gmail = google.gmail({ version: "v1", auth });
     const { data } = await gmail.users.messages.send({
       userId: "me",
-      requestBody: { raw: toBase64Url(message.raw) }
+      requestBody: { raw: toBase64Url(message.raw), threadId: providerThreadId }
     });
     if (!data.id) throw new Error("Gmail API did not return a message id");
     return { providerMessageId: data.id, providerThreadId: data.threadId ?? undefined };
   }
 
-  async createDraft(account: AccountRef, message: BuiltMimeMessage): Promise<ProviderDraftRef> {
+  async createDraft(account: AccountRef, message: BuiltMimeMessage, providerThreadId?: string): Promise<ProviderDraftRef> {
     const auth = await this.clientFor(account);
     const gmail = google.gmail({ version: "v1", auth });
     const { data } = await gmail.users.drafts.create({
       userId: "me",
-      requestBody: { message: { raw: toBase64Url(message.raw) } }
+      requestBody: { message: { raw: toBase64Url(message.raw), threadId: providerThreadId } }
     });
     if (!data.id) throw new Error("Gmail API did not return a draft id");
     return { providerDraftId: data.id };

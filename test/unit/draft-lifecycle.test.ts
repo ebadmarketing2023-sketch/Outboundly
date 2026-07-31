@@ -71,12 +71,10 @@ describe("Draft Lifecycle service (Section 7)", () => {
     });
 
     const built1 = service.buildMimeMessage(draft, {
-      from: { address: EmailAddress.parse("me@outboundly.app") },
-      sendingDomain: "outboundly.app"
+      from: { address: EmailAddress.parse("me@outboundly.app") }
     });
     const built2 = service.buildMimeMessage(draft, {
-      from: { address: EmailAddress.parse("me@outboundly.app") },
-      sendingDomain: "outboundly.app"
+      from: { address: EmailAddress.parse("me@outboundly.app") }
     });
 
     const messageId1 = built1.headers.find((h) => h.name === "Message-ID")?.value;
@@ -96,14 +94,12 @@ describe("Draft Lifecycle service (Section 7)", () => {
 
     expect(() =>
       service.buildMimeMessage(draft, {
-        from: { address: EmailAddress.parse("me@outboundly.app") },
-        sendingDomain: "outboundly.app"
+        from: { address: EmailAddress.parse("me@outboundly.app") }
       })
     ).toThrow(/first_name/);
 
     const built = service.buildMimeMessage(draft, {
       from: { address: EmailAddress.parse("me@outboundly.app") },
-      sendingDomain: "outboundly.app",
       personalizationValues: { first_name: "Jordan" }
     });
     expect(built.raw).toContain("Hi Jordan");

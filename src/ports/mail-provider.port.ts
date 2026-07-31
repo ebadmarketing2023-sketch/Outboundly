@@ -66,8 +66,15 @@ export interface NormalizedMessage {
  */
 export interface MailProvider {
   authenticate(account: AccountRef): Promise<void>;
-  sendMessage(account: AccountRef, message: BuiltMimeMessage): Promise<ProviderSendResult>;
-  createDraft(account: AccountRef, message: BuiltMimeMessage): Promise<ProviderDraftRef>;
+  /** providerThreadId, when given, is the provider's own opaque thread reference (e.g. Gmail's
+   * threadId) for the thread this message continues -- distinct from the In-Reply-To/References
+   * headers already baked into `message`, which are what actually thread the message for the
+   * *recipient*. This is what keeps the *sender's own* mailbox view (e.g. Gmail's Sent folder)
+   * grouped correctly too; per Gmail's API docs it only affects the sending account's own view,
+   * so a provider that has no equivalent (Microsoft Graph computes conversationId itself and
+   * exposes no way to set it on send; SMTP has no thread concept at all) can safely ignore it. */
+  sendMessage(account: AccountRef, message: BuiltMimeMessage, providerThreadId?: string): Promise<ProviderSendResult>;
+  createDraft(account: AccountRef, message: BuiltMimeMessage, providerThreadId?: string): Promise<ProviderDraftRef>;
   sendDraft(account: AccountRef, draftRef: ProviderDraftRef): Promise<ProviderSendResult>;
   listChangesSince(account: AccountRef, cursor: SyncCursor): Promise<ChangeSet>;
   fetchMessage(account: AccountRef, providerMessageId: string): Promise<NormalizedMessage>;
