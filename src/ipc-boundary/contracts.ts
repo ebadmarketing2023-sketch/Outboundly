@@ -244,6 +244,10 @@ export interface TemplateSummary {
   name: string;
 }
 
+export interface DeleteTemplateRequest {
+  templateId: string;
+}
+
 export interface CreateSequenceStepRequest {
   delayDays: number;
   delayHours: number;
@@ -260,6 +264,10 @@ export interface SequenceSummary {
   id: string;
   name: string;
   stepCount: number;
+}
+
+export interface DeleteSequenceRequest {
+  sequenceId: string;
 }
 
 /** Business Hours Profiles (Section 5.7): when a campaign is allowed to send, in the profile's
@@ -585,8 +593,10 @@ export interface OutboundlyRendererApi {
   deleteLeadImportBatch(request: DeleteLeadImportBatchRequest): Promise<void>;
   createTemplate(request: CreateTemplateRequest): Promise<TemplateSummary>;
   listTemplates(): Promise<TemplateSummary[]>;
+  deleteTemplate(request: DeleteTemplateRequest): Promise<void>;
   createSequence(request: CreateSequenceRequest): Promise<SequenceSummary>;
   listSequences(): Promise<SequenceSummary[]>;
+  deleteSequence(request: DeleteSequenceRequest): Promise<void>;
   createCampaign(request: CreateCampaignRequest): Promise<CampaignSummary>;
   listCampaigns(): Promise<CampaignSummary[]>;
   listCampaignDashboard(): Promise<CampaignDashboardEntrySummary[]>;

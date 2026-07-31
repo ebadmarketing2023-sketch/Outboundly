@@ -93,6 +93,7 @@ export async function fireEnrollmentStep(
   if (stepIndex === -1) throw new Error(`Enrollment ${enrollment.id}'s current step is not part of its sequence`);
   const step = sequence.steps[stepIndex]!;
   const nextStep = sequence.steps[stepIndex + 1];
+  const isFollowUpStep = stepIndex > 0;
 
   const template = await deps.templateRepository.findById(step.templateId);
   if (!template) throw new Error(`Sequence step ${step.id} references a template that no longer exists`);
@@ -100,7 +101,18 @@ export async function fireEnrollmentStep(
   const subjectVariants = await deps.subjectVariantRepository.findByStepId(step.id);
   if (subjectVariants.length === 0) throw new Error(`Sequence step ${step.id} has no subject line configured`);
   const selectedSubjectVariant = selectWeightedVariant(subjectVariants);
-  const subjectText = selectedSubjectVariant.subjectText;
+
+  // Follow-up threading (Section 14.3): only the first step is a brand-new email. Every step
+  // after that continues the original message's subject/thread as a reply instead of going out as
+  // a fresh, unrelated email -- the step's own configured subject variant is still recorded
+  // against subjectVariantId below for analytics (Section 5.9/20.5), it's just not what's put on
+  // the wire once a prior send in this enrollment exists to reply onto.
+  const priorMessages = isFollowUpStep ? await deps.conversationRepository.findOutboundMessageHistoryForEnrollment(enrollment.id) : [];
+  const originalMessage = priorMessages[0];
+  const mostRecentMessage = priorMessages[priorMessages.length - 1];
+  const subjectText = originalMessage ? `Re: ${originalMessage.subject.replace(/^re:\s*/i, "")}` : selectedSubjectVariant.subjectText;
+  const inReplyTo = mostRecentMessage?.messageIdHeader;
+  const references = priorMessages.length > 0 ? priorMessages.map((m) => m.messageIdHeader) : undefined;
 
   const templateVariants = await deps.templateVariantRepository.findByTemplateId(template.id);
   const document: Document =
@@ -129,7 +141,9 @@ export async function fireEnrollmentStep(
     accountId: candidate.candidateAccountId,
     subject: subjectText,
     document,
-    to: [to]
+    to: [to],
+    inReplyTo,
+    references
   });
 
   let built;
@@ -176,6 +190,8 @@ export async function fireEnrollmentStep(
     accountId: candidate.candidateAccountId,
     direction: "outbound",
     messageIdHeader: findHeaderValue(built.headers, "Message-ID") ?? "",
+    inReplyToHeader: findHeaderValue(built.headers, "In-Reply-To"),
+    referencesHeader: findHeaderValue(built.headers, "References"),
     from: formatNamedAddress(from),
     to: [formatNamedAddress(to)],
     subject: subjectText,

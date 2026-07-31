@@ -81,6 +81,12 @@ export const drafts = sqliteTable("drafts", {
   toAddresses: text("to_addresses", { mode: "json" }).notNull().$type<string[]>(),
   ccAddresses: text("cc_addresses", { mode: "json" }).$type<string[]>(),
   bccAddresses: text("bcc_addresses", { mode: "json" }).$type<string[]>(),
+  // Follow-up threading (Section 14.3): set for a campaign sequence step after the first, so the
+  // eventual send carries real In-Reply-To/References headers instead of reading as a brand-new,
+  // unrelated email. Column named references_header (not "references") since REFERENCES is a SQL
+  // reserved word, matching the same convention already used on the messages table.
+  inReplyTo: text("in_reply_to"),
+  references: text("references_header", { mode: "json" }).$type<string[]>(),
   providerDraftRef: text("provider_draft_ref"),
   autosaveVersion: integer("autosave_version").notNull().default(0),
   lastSavedAt: integer("last_saved_at", { mode: "timestamp_ms" }).notNull()

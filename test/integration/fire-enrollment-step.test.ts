@@ -301,6 +301,51 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     expect(result).toEqual({ outcome: "missing_personalization", variableName: "first_name" });
   });
 
+  it("threads a follow-up step as a reply to the first email instead of sending it as a new, unrelated message", async () => {
+    const { campaign, sequence } = await setUpTwoStepCampaign();
+    const contact = await deps.contactRepository.upsertByEmail({ email: "followup@example.com", firstName: "Dee", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const firstResult = await fireEnrollmentStep(deps, enrollment, new Date());
+    expect(firstResult.outcome).toBe("enqueued");
+    if (firstResult.outcome !== "enqueued") return;
+
+    const firstMessage = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).get();
+    expect(firstMessage?.subject).toBe("Step 1 subject");
+    expect(firstMessage?.inReplyToHeader).toBeNull();
+    expect(firstMessage?.referencesHeader).toBeNull();
+
+    // Re-fetch: fireEnrollmentStep already advanced this enrollment onto step 2 as a side effect
+    // of the first call above (Section 14.3's "on successful queuing, next_send_at advances").
+    const advanced = await deps.enrollmentRepository.findById(enrollment.id);
+    const secondResult = await fireEnrollmentStep(deps, advanced!, new Date());
+    expect(secondResult.outcome).toBe("enqueued");
+    if (secondResult.outcome !== "enqueued") return;
+
+    const allMessages = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).all();
+    expect(allMessages).toHaveLength(2);
+    const secondMessage = allMessages.find((m) => m.id !== firstMessage!.id)!;
+
+    // The step's own configured subject ("Step 2 subject") must NOT be what actually goes out --
+    // it continues the first email's subject as a reply instead, exactly like a human follow-up.
+    expect(secondMessage.subject).toBe("Re: Step 1 subject");
+    expect(secondMessage.inReplyToHeader).toBe(firstMessage!.messageIdHeader);
+    expect(secondMessage.referencesHeader).toContain(firstMessage!.messageIdHeader);
+    // Same thread -- this is what makes it show up as one continuous conversation, not two
+    // separate, unrelated emails.
+    expect(secondMessage.threadId).toBe(firstMessage!.threadId);
+
+    // The wire-level MIME actually sent must carry the same headers, not just the DB bookkeeping.
+    const secondDraft = await new SqliteDraftRepository(db).findById(secondMessage.draftId as never);
+    expect(secondDraft?.inReplyTo).toBe(firstMessage!.messageIdHeader);
+    expect(secondDraft?.references).toEqual([firstMessage!.messageIdHeader]);
+  });
+
   it("returns blocked and leaves the enrollment active when the Deliverability Engine finds a blocking issue", async () => {
     const { campaign, sequence } = await setUpTwoStepCampaign([{ blocks: [] }]); // empty body -> empty plain text -> blocking
     const contact = await deps.contactRepository.upsertByEmail({ email: "lead6@example.com", source: "manual" });

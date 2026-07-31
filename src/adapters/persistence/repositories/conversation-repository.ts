@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { generateId } from "../../../core/shared-kernel/ids.js";
 import type { DerivedParticipant } from "../../../core/conversation/participants.js";
 import type { ConversationState } from "../../../core/conversation/conversation-engine.js";
@@ -220,6 +220,15 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
       .orderBy(desc(messages.createdAt))
       .get();
     return row?.campaignEnrollmentId ?? undefined;
+  }
+
+  async findOutboundMessageHistoryForEnrollment(campaignEnrollmentId: string): Promise<Array<{ messageIdHeader: string; subject: string }>> {
+    return this.db
+      .select({ messageIdHeader: messages.messageIdHeader, subject: messages.subject })
+      .from(messages)
+      .where(and(eq(messages.campaignEnrollmentId, campaignEnrollmentId), eq(messages.direction, "outbound")))
+      .orderBy(asc(messages.createdAt))
+      .all();
   }
 
   async insertReferenceEdges(messageId: string, ancestorChain: string[]): Promise<void> {

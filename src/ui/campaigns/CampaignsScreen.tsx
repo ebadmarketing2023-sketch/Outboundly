@@ -38,6 +38,7 @@ import {
   TrashIcon,
   useToast
 } from "../components/index.js";
+import { defaultTimezone, timezoneAbbreviation, US_CANADA_PAKISTAN_TIMEZONES } from "./timezones.js";
 import { formatDate, formatDateTime } from "../lib/format.js";
 
 const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
@@ -88,7 +89,7 @@ export function CampaignsScreen(): JSX.Element {
   >({});
 
   const [bhpName, setBhpName] = useState("");
-  const [bhpTimezone, setBhpTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+  const [bhpTimezone, setBhpTimezone] = useState(defaultTimezone);
   const [bhpDays, setBhpDays] = useState<Set<string>>(new Set(["monday", "tuesday", "wednesday", "thursday", "friday"]));
   const [bhpStart, setBhpStart] = useState("09:00");
   const [bhpEnd, setBhpEnd] = useState("17:00");
@@ -125,6 +126,10 @@ export function CampaignsScreen(): JSX.Element {
   const [deleteCampaignTarget, setDeleteCampaignTarget] = useState<CampaignDashboardEntrySummary | null>(null);
   const [deleteCampaignBusy, setDeleteCampaignBusy] = useState(false);
   const [dashboardRefreshBusy, setDashboardRefreshBusy] = useState(false);
+  const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<TemplateSummary | null>(null);
+  const [deleteTemplateBusy, setDeleteTemplateBusy] = useState(false);
+  const [deleteSequenceTarget, setDeleteSequenceTarget] = useState<SequenceSummary | null>(null);
+  const [deleteSequenceBusy, setDeleteSequenceBusy] = useState(false);
 
   function refreshAll(): Promise<void> {
     const accountsPromise = window.outboundly
@@ -367,6 +372,40 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
+  async function handleConfirmDeleteTemplate(): Promise<void> {
+    if (!deleteTemplateTarget) return;
+    setDeleteTemplateBusy(true);
+    try {
+      await window.outboundly.deleteTemplate({ templateId: deleteTemplateTarget.id });
+      refreshAll();
+      toast.showToast("Template deleted.", "success");
+    } catch (err) {
+      // A template still used by a sequence step is rejected, not silently broken -- the
+      // repository's own error message ("used by N sequence step(s)...") surfaces here as-is.
+      toast.showToast(String(err), "error");
+    } finally {
+      setDeleteTemplateBusy(false);
+      setDeleteTemplateTarget(null);
+    }
+  }
+
+  async function handleConfirmDeleteSequence(): Promise<void> {
+    if (!deleteSequenceTarget) return;
+    setDeleteSequenceBusy(true);
+    try {
+      await window.outboundly.deleteSequence({ sequenceId: deleteSequenceTarget.id });
+      refreshAll();
+      toast.showToast("Sequence deleted.", "success");
+    } catch (err) {
+      // A sequence still bound to a campaign is rejected, not silently broken -- the repository's
+      // own error message ("used by N campaign(s)...") surfaces here as-is.
+      toast.showToast(String(err), "error");
+    } finally {
+      setDeleteSequenceBusy(false);
+      setDeleteSequenceTarget(null);
+    }
+  }
+
   function handleOpenEnrollCsv(entry: CampaignDashboardEntrySummary): void {
     setEnrollCsvTarget(entry);
     setEnrollBatchId("");
@@ -565,8 +604,18 @@ export function CampaignsScreen(): JSX.Element {
             <Field label="Profile name">
               <Input value={bhpName} onChange={(e) => setBhpName(e.target.value)} />
             </Field>
-            <Field label="Timezone" hint="IANA timezone, e.g. America/New_York">
-              <Input value={bhpTimezone} onChange={(e) => setBhpTimezone(e.target.value)} />
+            <Field label="Timezone">
+              <Select value={bhpTimezone} onChange={(e) => setBhpTimezone(e.target.value)}>
+                {(["United States", "Canada", "Pakistan"] as const).map((country) => (
+                  <optgroup key={country} label={country}>
+                    {US_CANADA_PAKISTAN_TIMEZONES.filter((z) => z.country === country).map((z) => (
+                      <option key={z.value} value={z.value}>
+                        {z.regionLabel} ({timezoneAbbreviation(z)})
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </Select>
             </Field>
             <Field label="Active days">
               <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
@@ -629,8 +678,11 @@ export function CampaignsScreen(): JSX.Element {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
               {templates.map((t) => (
-                <div key={t.id} style={{ padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px", fontWeight: 550 }}>
+                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px", fontWeight: 550 }}>
                   {t.name}
+                  <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteTemplateTarget(t)}>
+                    Delete
+                  </Button>
                 </div>
               ))}
             </div>
@@ -702,11 +754,16 @@ export function CampaignsScreen(): JSX.Element {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
               {sequences.map((s) => (
-                <div key={s.id} style={{ display: "flex", justifyContent: "space-between", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px" }}>
+                <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px" }}>
                   <strong>{s.name}</strong>
-                  <span style={{ color: "var(--color-text-secondary)" }}>
-                    {s.stepCount} step{s.stepCount === 1 ? "" : "s"}
-                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                    <span style={{ color: "var(--color-text-secondary)" }}>
+                      {s.stepCount} step{s.stepCount === 1 ? "" : "s"}
+                    </span>
+                    <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteSequenceTarget(s)}>
+                      Delete
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1028,6 +1085,28 @@ export function CampaignsScreen(): JSX.Element {
         busy={deleteCampaignBusy}
         onConfirm={handleConfirmDeleteCampaign}
         onCancel={() => setDeleteCampaignTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteTemplateTarget !== null}
+        title="Delete this template?"
+        description={`"${deleteTemplateTarget?.name ?? "This template"}" will be deleted. This can't be undone. If it's still used by a sequence step, deletion is blocked until it's removed from that sequence.`}
+        confirmLabel="Delete"
+        danger
+        busy={deleteTemplateBusy}
+        onConfirm={handleConfirmDeleteTemplate}
+        onCancel={() => setDeleteTemplateTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteSequenceTarget !== null}
+        title="Delete this sequence?"
+        description={`"${deleteSequenceTarget?.name ?? "This sequence"}" and its steps will be deleted. This can't be undone. If it's still used by a campaign, deletion is blocked until that campaign is deleted.`}
+        confirmLabel="Delete"
+        danger
+        busy={deleteSequenceBusy}
+        onConfirm={handleConfirmDeleteSequence}
+        onCancel={() => setDeleteSequenceTarget(null)}
       />
     </div>
   );

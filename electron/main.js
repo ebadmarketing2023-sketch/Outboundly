@@ -905,6 +905,12 @@ function registerIpcHandlers() {
     return templates.map((t) => ({ id: t.id, name: t.name }));
   });
 
+  ipcMain.handle("templates:delete", async (_event, request) => {
+    // templateRepository.delete rejects (rather than silently breaking) a template still required
+    // by a sequence step -- the error message surfaces to the renderer as-is.
+    await templateRepository.delete(request.templateId);
+  });
+
   ipcMain.handle("sequences:create", async (_event, request) => {
     const sequence = await sequenceRepository.create({
       name: request.name,
@@ -923,6 +929,12 @@ function registerIpcHandlers() {
   ipcMain.handle("sequences:list", async () => {
     const sequences = await sequenceRepository.list();
     return sequences.map((s) => ({ id: s.id, name: s.name, stepCount: s.steps.length }));
+  });
+
+  ipcMain.handle("sequences:delete", async (_event, request) => {
+    // sequenceRepository.delete rejects (rather than silently breaking) a sequence still bound to
+    // a campaign -- the error message surfaces to the renderer as-is.
+    await sequenceRepository.delete(request.sequenceId);
   });
 
   ipcMain.handle("campaigns:create", async (_event, request) => {

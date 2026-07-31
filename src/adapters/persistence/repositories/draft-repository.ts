@@ -50,6 +50,8 @@ export class SqliteDraftRepository implements Repository<Draft, DraftId> {
       toAddresses: serializeAddresses(draft.to),
       ccAddresses: draft.cc.length ? serializeAddresses(draft.cc) : undefined,
       bccAddresses: draft.bcc.length ? serializeAddresses(draft.bcc) : undefined,
+      inReplyTo: draft.inReplyTo,
+      references: draft.references?.length ? draft.references : undefined,
       providerDraftRef: draft.providerDraftRef,
       autosaveVersion: draft.autosaveVersion,
       lastSavedAt: draft.lastSavedAt
@@ -67,6 +69,8 @@ export class SqliteDraftRepository implements Repository<Draft, DraftId> {
       to: deserializeAddresses(row.toAddresses),
       cc: deserializeAddresses(row.ccAddresses),
       bcc: deserializeAddresses(row.bccAddresses),
+      inReplyTo: row.inReplyTo ?? undefined,
+      references: row.references ?? undefined,
       providerDraftRef: row.providerDraftRef ?? undefined,
       autosaveVersion: row.autosaveVersion,
       lastSavedAt: row.lastSavedAt

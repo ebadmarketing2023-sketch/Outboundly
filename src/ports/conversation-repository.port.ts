@@ -87,6 +87,12 @@ export interface ConversationRepository {
    * correlate a bounce notification that threaded back to one of our own sends (Section 14.2's
    * ReplyDetected/BounceDetected fan-out reuses the same thread-placement machinery). */
   findCampaignEnrollmentIdForThread(threadId: string): Promise<string | undefined>;
+  /** Every outbound message this campaign enrollment has sent so far (Section 14.3's follow-up
+   * threading), oldest first. The first entry's subject is the sequence's original subject line
+   * (what every later step's "Re: " continues); the last entry's Message-ID is the direct parent
+   * to reply onto for the step about to fire. Empty for a first-step fire, since nothing has been
+   * sent yet. */
+  findOutboundMessageHistoryForEnrollment(campaignEnrollmentId: string): Promise<Array<{ messageIdHeader: string; subject: string }>>;
   /** User-applied label on an inbound reply message (Section 20.2) -- there is no automatic
    * classifier; "interested" is what feeds the Positive Reply Rate primary metric. */
   setMessageReplyClassification(messageId: string, classification: ReplyClassification): Promise<void>;

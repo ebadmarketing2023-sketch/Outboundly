@@ -11,10 +11,16 @@ import {
   campaignMetricsRollup,
   errorLogs,
   events,
-  notifications
+  notifications,
+  subjectMetricsRollup,
+  subjectVariants,
+  templateMetricsRollup,
+  templateVariants
 } from "../../src/adapters/persistence/schema.js";
 import { SqliteTemplateRepository } from "../../src/adapters/persistence/repositories/template-repository.js";
+import { SqliteTemplateVariantRepository } from "../../src/adapters/persistence/repositories/template-variant-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
+import { SqliteSubjectVariantRepository } from "../../src/adapters/persistence/repositories/subject-variant-repository.js";
 import { SqliteCampaignRepository } from "../../src/adapters/persistence/repositories/campaign-repository.js";
 import { SqliteEnrollmentRepository } from "../../src/adapters/persistence/repositories/enrollment-repository.js";
 import { SqliteContactRepository } from "../../src/adapters/persistence/repositories/contact-repository.js";
@@ -292,6 +298,144 @@ describe("Templates/Sequences/Campaigns/Enrollments repositories (Section 5.6, S
     const errorLogRow = db.select().from(errorLogs).all()[0];
     expect(errorLogRow?.errorMessage).toBe("test");
     expect(errorLogRow?.campaignId).toBeNull();
+  });
+
+  it("template delete removes an unused template", async () => {
+    const template = await templateRepo.create({ name: "Unused", document: { blocks: [] } });
+    await templateRepo.delete(template.id);
+    expect(await templateRepo.findById(template.id)).toBeUndefined();
+  });
+
+  it("template delete rejects a template still used by a sequence step, with a clear count in the message", async () => {
+    const template = await templateRepo.create({ name: "In use", document: { blocks: [] } });
+    await sequenceRepo.create({ name: "Seq", steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }] });
+
+    await expect(templateRepo.delete(template.id)).rejects.toThrow(/used by 1 sequence step/);
+    expect(await templateRepo.findById(template.id)).toBeDefined();
+  });
+
+  it("template delete cascades template_variants and the regenerable template_metrics_rollup, and detaches (not loses) historical messages", async () => {
+    const templateVariantRepo = new SqliteTemplateVariantRepository(db);
+    const template = await templateRepo.create({ name: "With variant", document: { blocks: [] } });
+    await templateVariantRepo.create({ templateId: template.id, variantLabel: "B", weight: 1, documentOverride: { blocks: [] } });
+
+    const now = new Date();
+    db.insert(templateMetricsRollup)
+      .values({
+        id: generateId(),
+        templateId: template.id,
+        periodStart: now,
+        sentCount: 1,
+        bouncedCount: 0,
+        repliedCount: 0,
+        positiveReplyCount: 0,
+        unsubscribedCount: 0,
+        conversionCount: 0,
+        openedCount: 0,
+        clickedCount: 0,
+        computedAt: now
+      })
+      .run();
+
+    const conversationRepo = new SqliteConversationRepository(db);
+    const thread = await conversationRepo.createThread({ accountId, subjectNormalized: "hi", conversationState: "active" });
+    const sentMessageId = await conversationRepo.insertMessage({
+      accountId,
+      threadId: thread,
+      messageIdHeader: "<sent-template@outboundly>",
+      direction: "outbound",
+      fromAddress: "me@outboundly.app",
+      toAddresses: ["lead@example.com"],
+      subject: "hi",
+      status: "sent",
+      sentAt: now,
+      templateId: template.id
+    });
+
+    await templateRepo.delete(template.id);
+
+    expect(await templateRepo.findById(template.id)).toBeUndefined();
+    expect(db.select().from(templateVariants).where(eq(templateVariants.templateId, template.id)).all()).toHaveLength(0);
+    expect(db.select().from(templateMetricsRollup).where(eq(templateMetricsRollup.templateId, template.id)).all()).toHaveLength(0);
+
+    const messageRow = await conversationRepo.findMessageById(sentMessageId);
+    expect(messageRow).toBeDefined();
+    expect(messageRow?.templateId).toBeUndefined();
+  });
+
+  it("sequence delete removes an unused sequence and its steps/subject variants", async () => {
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({ name: "Unused seq", steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }] });
+    const subjectVariantRepo = new SqliteSubjectVariantRepository(db);
+    await subjectVariantRepo.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Hi", weight: 1 });
+
+    await sequenceRepo.delete(sequence.id);
+
+    expect(await sequenceRepo.findById(sequence.id)).toBeUndefined();
+    expect(db.select().from(subjectVariants).where(eq(subjectVariants.sequenceStepId, sequence.steps[0]!.id)).all()).toHaveLength(0);
+  });
+
+  it("sequence delete rejects a sequence still bound to a campaign, with a clear count in the message", async () => {
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({ name: "In use", steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }] });
+    await campaignRepo.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+
+    await expect(sequenceRepo.delete(sequence.id)).rejects.toThrow(/used by 1 campaign/);
+    expect(await sequenceRepo.findById(sequence.id)).toBeDefined();
+  });
+
+  it("sequence delete cascades the regenerable subject_metrics_rollup and detaches (not loses) historical messages", async () => {
+    const template = await templateRepo.create({ name: "T1", document: { blocks: [] } });
+    const sequence = await sequenceRepo.create({ name: "Seq", steps: [{ delayDays: 0, delayHours: 0, templateId: template.id }] });
+    const subjectVariantRepo = new SqliteSubjectVariantRepository(db);
+    const variant = await subjectVariantRepo.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Hi", weight: 1 });
+
+    const now = new Date();
+    db.insert(subjectMetricsRollup)
+      .values({
+        id: generateId(),
+        subjectVariantId: variant.id,
+        periodStart: now,
+        sentCount: 1,
+        bouncedCount: 0,
+        repliedCount: 0,
+        positiveReplyCount: 0,
+        unsubscribedCount: 0,
+        conversionCount: 0,
+        openedCount: 0,
+        clickedCount: 0,
+        computedAt: now
+      })
+      .run();
+
+    const conversationRepo = new SqliteConversationRepository(db);
+    const thread = await conversationRepo.createThread({ accountId, subjectNormalized: "hi", conversationState: "active" });
+    const sentMessageId = await conversationRepo.insertMessage({
+      accountId,
+      threadId: thread,
+      messageIdHeader: "<sent-subject@outboundly>",
+      direction: "outbound",
+      fromAddress: "me@outboundly.app",
+      toAddresses: ["lead@example.com"],
+      subject: "hi",
+      status: "sent",
+      sentAt: now,
+      subjectVariantId: variant.id
+    });
+
+    await sequenceRepo.delete(sequence.id);
+
+    expect(await sequenceRepo.findById(sequence.id)).toBeUndefined();
+    expect(db.select().from(subjectMetricsRollup).where(eq(subjectMetricsRollup.subjectVariantId, variant.id)).all()).toHaveLength(0);
+
+    const messageRow = await conversationRepo.findMessageById(sentMessageId);
+    expect(messageRow).toBeDefined();
+    expect(messageRow?.subjectVariantId).toBeUndefined();
   });
 
   it("enrolls a contact, finds it as due once next_send_at has passed, and advances it", async () => {

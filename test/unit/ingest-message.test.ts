@@ -82,6 +82,9 @@ class InMemoryConversationRepository implements ConversationRepository {
   async findCampaignEnrollmentIdForThread() {
     return undefined;
   }
+  async findOutboundMessageHistoryForEnrollment() {
+    return [];
+  }
   async setMessageReplyClassification() {}
 }
 
