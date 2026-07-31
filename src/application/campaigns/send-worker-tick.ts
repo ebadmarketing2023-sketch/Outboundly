@@ -165,13 +165,30 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   const contact = recipientEmail ? await deps.contactRepository.findByEmail(parseNamedAddress(recipientEmail).address.toString()) : undefined;
 
   const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress), displayName: accountRef.displayName };
+  // Deliberately draft.accountId here, not selection.accountId/accountRef above: buildMimeMessage's
+  // Message-ID must be derived from the account the draft was originally created against (stable,
+  // immutable) so it agrees with the compatibility-check build done at enqueue time
+  // (fire-enrollment-step.ts) even when the Provider Selector substitutes a different account for
+  // this actual dispatch -- see buildMimeMessage's own comment for what breaks otherwise. Falling
+  // back to accountRef only guards the practically-impossible case of the draft's original account
+  // having been removed entirely by the time this dispatches.
+  const draftAccountRef = getAccountRef(deps.db, draft.accountId) ?? accountRef;
   const built = deps.draftLifecycle.buildMimeMessage(draft, {
     from,
+    sendingDomain: draftAccountRef.emailAddress.split("@")[1]!,
     personalizationValues: contact ? contactToPersonalizationValues(contact) : undefined
   });
 
   const provider = await deps.getProviderForAccount(selection.accountId);
-  const providerThreadId = message.threadId ? await deps.conversationRepository.findProviderThreadId(message.threadId) : undefined;
+  // Only reuse a provider thread id if it actually belongs to the account dispatching right now --
+  // Gmail (and providers generally) scope thread ids per-account, so a thread id from a *different*
+  // account (possible after a Provider Selector substitution) isn't just unhelpful, it's rejected
+  // outright by the real API. The In-Reply-To/References headers already in `built` are what
+  // thread this correctly for the recipient regardless; this is purely a bonus for keeping the
+  // dispatching account's own mailbox view grouped too, when it's actually able to be.
+  const providerThreadId = message.threadId
+    ? await deps.conversationRepository.findProviderThreadId(message.threadId, selection.accountId)
+    : undefined;
   let sendResult;
   try {
     const draftRef = await provider.createDraft(accountRef, built, providerThreadId);

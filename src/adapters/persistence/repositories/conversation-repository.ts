@@ -231,8 +231,12 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
       .all();
   }
 
-  async findProviderThreadId(threadId: string): Promise<string | undefined> {
-    const row = this.db.select({ providerThreadId: threads.providerThreadId }).from(threads).where(eq(threads.id, threadId)).get();
+  async findProviderThreadId(threadId: string, accountId: string): Promise<string | undefined> {
+    const row = this.db
+      .select({ providerThreadId: threads.providerThreadId })
+      .from(threads)
+      .where(and(eq(threads.id, threadId), eq(threads.accountId, accountId)))
+      .get();
     return row?.providerThreadId ?? undefined;
   }
 

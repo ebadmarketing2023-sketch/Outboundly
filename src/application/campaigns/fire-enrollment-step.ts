@@ -146,8 +146,11 @@ export async function fireEnrollmentStep(
 
   let built;
   try {
+    // draft.accountId === candidate.candidateAccountId (set just above), so accountRef's domain
+    // is exactly what buildMimeMessage's Message-ID comment requires here.
     built = deps.draftLifecycle.buildMimeMessage(draft, {
       from,
+      sendingDomain: accountRef.emailAddress.split("@")[1]!,
       personalizationValues: contactToPersonalizationValues(contact)
     });
   } catch (err) {

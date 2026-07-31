@@ -61,7 +61,7 @@ describe("Draft Lifecycle service (Section 7)", () => {
     expect(resaved.lastSavedAt.getTime()).toBeGreaterThan(draft.lastSavedAt.getTime());
   });
 
-  it("builds a fully canonicalized, Message-ID-stable MIME message from a draft", async () => {
+  it("builds a fully canonicalized MIME message from a draft, with a Message-ID that actually uses the given sending domain", async () => {
     const { service } = makeTestService();
     const draft = await service.createDraft({
       accountId,
@@ -71,16 +71,36 @@ describe("Draft Lifecycle service (Section 7)", () => {
     });
 
     const built1 = service.buildMimeMessage(draft, {
-      from: { address: EmailAddress.parse("me@outboundly.app") }
+      from: { address: EmailAddress.parse("me@outboundly.app") },
+      sendingDomain: "outboundly.app"
     });
     const built2 = service.buildMimeMessage(draft, {
-      from: { address: EmailAddress.parse("me@outboundly.app") }
+      from: { address: EmailAddress.parse("me@outboundly.app") },
+      sendingDomain: "outboundly.app"
     });
 
     const messageId1 = built1.headers.find((h) => h.name === "Message-ID")?.value;
     const messageId2 = built2.headers.find((h) => h.name === "Message-ID")?.value;
-    expect(messageId1).toBe(messageId2); // stable across rebuilds of the same draft (Section 9.2, stage 7)
+    // Stable across rebuilds of the same draft *given the same sendingDomain* (Section 9.2, stage
+    // 7) -- callers are responsible for supplying that consistently across the enqueue-time and
+    // dispatch-time builds of the same campaign message (see fire-enrollment-step.ts /
+    // send-worker-tick.ts, and the multi-account-rotation integration test in
+    // send-worker-tick.test.ts, which is what actually exercises that cross-call consistency).
+    expect(messageId1).toBe(messageId2);
+    expect(messageId1).toContain("@outboundly.app>");
     expect(built1.raw).toContain("Hi there");
+
+    // A real, non-hardcoded domain: a different sendingDomain for the same draft mints a
+    // different Message-ID, proving the domain isn't silently ignored (a real reported bug --
+    // this app previously hardcoded a single fixed domain across every account, which is itself a
+    // cross-user fingerprint reputation systems use to spot mass-mailing-tool traffic).
+    const builtOtherDomain = service.buildMimeMessage(draft, {
+      from: { address: EmailAddress.parse("me@outboundly.app") },
+      sendingDomain: "customer-domain.com"
+    });
+    const messageIdOtherDomain = builtOtherDomain.headers.find((h) => h.name === "Message-ID")?.value;
+    expect(messageIdOtherDomain).toContain("@customer-domain.com>");
+    expect(messageIdOtherDomain).not.toBe(messageId1);
   });
 
   it("resolves personalization variables when building the MIME message, and fails clearly when unresolved", async () => {
@@ -94,12 +114,14 @@ describe("Draft Lifecycle service (Section 7)", () => {
 
     expect(() =>
       service.buildMimeMessage(draft, {
-        from: { address: EmailAddress.parse("me@outboundly.app") }
+        from: { address: EmailAddress.parse("me@outboundly.app") },
+        sendingDomain: "outboundly.app"
       })
     ).toThrow(/first_name/);
 
     const built = service.buildMimeMessage(draft, {
       from: { address: EmailAddress.parse("me@outboundly.app") },
+      sendingDomain: "outboundly.app",
       personalizationValues: { first_name: "Jordan" }
     });
     expect(built.raw).toContain("Hi Jordan");

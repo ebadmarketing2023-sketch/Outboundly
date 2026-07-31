@@ -361,9 +361,54 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(step2Message.headers.find((h) => h.name === "References")?.value).toBe(step1MessageId);
     expect(step2Message.headers.find((h) => h.name === "Subject")?.value).toBe("Re: Original subject");
 
-    // The Gmail providerThreadId passthrough (kept the sender's own mailbox view grouped too):
-    // step 1's send returned "fake-thread-1" (FakeMailProvider.sendDraft), and that's what step 2's
-    // createDraft call must have received.
+    // Also a real reported risk with the providerThreadId passthrough: step 1's thread belongs to
+    // whichever account actually sent it (a *different* account than step 2 dispatches through,
+    // since this test forces rotation on both) -- provider thread ids are scoped per-account, so
+    // reusing one across accounts isn't just unhelpful, real providers reject it outright. It must
+    // be omitted here, not carried over, leaving the In-Reply-To/References headers (already
+    // asserted above) as what threads this correctly for the recipient regardless of account.
+    expect(provider.createdDrafts[1]!.providerThreadId).toBeUndefined();
+  });
+
+  it("does pass the provider thread id through when the same account sends every step (the common case: one sender per campaign)", async () => {
+    const template = await fireStepDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi there"))] } });
+    const sequence = await fireStepDeps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
+    });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Subject", weight: 1 });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "Follow-up subject", weight: 1 });
+    const campaign = await fireStepDeps.campaignRepository.create({
+      name: "Single-sender camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    await fireStepDeps.campaignRepository.setStatus(campaign.id, "running");
+    const contact = await fireStepDeps.contactRepository.upsertByEmail({ email: "single-sender-lead@example.com", source: "manual" });
+    const enrollment = await fireStepDeps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const firstFire = await fireEnrollmentStep(fireStepDeps, enrollment, new Date());
+    if (firstFire.outcome !== "enqueued") throw new Error(`setup failed: ${firstFire.outcome}`);
+    await runSendWorkerTick(sendWorkerDeps, new Date());
+
+    const advanced = await fireStepDeps.enrollmentRepository.findById(enrollment.id);
+    const secondFire = await fireEnrollmentStep(fireStepDeps, advanced!, new Date());
+    if (secondFire.outcome !== "enqueued") throw new Error(`setup failed: ${secondFire.outcome}`);
+    await runSendWorkerTick(sendWorkerDeps, new Date());
+
+    expect(provider.createdDrafts).toHaveLength(2);
+    // Same account both times -- step 1's real thread id (from FakeMailProvider.sendDraft) is
+    // exactly what step 2's createDraft call should receive, keeping this account's own Sent/All
+    // Mail view grouped too, on top of the recipient-facing In-Reply-To/References headers.
     expect(provider.createdDrafts[1]!.providerThreadId).toBe("fake-thread-1");
   });
 

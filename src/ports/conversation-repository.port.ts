@@ -95,10 +95,13 @@ export interface ConversationRepository {
   findOutboundMessageHistoryForEnrollment(campaignEnrollmentId: string): Promise<Array<{ messageIdHeader: string; subject: string }>>;
   /** The provider's own thread id (e.g. Gmail's threadId) for one of our internal threads, if
    * known yet -- only populated once that thread's first message actually finishes sending
-   * (markMessageSent's providerThreadId). Passed straight through to MailProvider.createDraft so
-   * a follow-up's real send stays grouped correctly in the sender's own mailbox view, not just in
-   * our own local Conversation Engine bookkeeping. */
-  findProviderThreadId(threadId: string): Promise<string | undefined>;
+   * (markMessageSent's providerThreadId) -- AND only returned if that thread actually belongs to
+   * `accountId`. Provider thread ids are scoped per-account (verified for real against Gmail: a
+   * thread id from a different account is rejected outright, not just unhelpful), so passing one
+   * across accounts -- possible whenever the Provider Selector, Section 16.3, substitutes a
+   * different account than whichever originally sent this thread's first message -- would break
+   * the send, not just the threading. Returns undefined on a mismatch rather than the wrong id. */
+  findProviderThreadId(threadId: string, accountId: string): Promise<string | undefined>;
   /** User-applied label on an inbound reply message (Section 20.2) -- there is no automatic
    * classifier; "interested" is what feeds the Positive Reply Rate primary metric. */
   setMessageReplyClassification(messageId: string, classification: ReplyClassification): Promise<void>;

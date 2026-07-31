@@ -44,7 +44,8 @@ export interface SendMessageParams {
 
 export async function sendDraftMessage(params: SendMessageParams): Promise<SendMessageResult> {
   const built = params.draftLifecycle.buildMimeMessage(params.draft, {
-    from: params.from
+    from: params.from,
+    sendingDomain: params.accountRef.emailAddress.split("@")[1]!
   });
 
   const compatibilityReport = evaluateGmailCompatibility(built);
