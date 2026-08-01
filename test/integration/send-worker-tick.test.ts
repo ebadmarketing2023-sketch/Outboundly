@@ -68,7 +68,16 @@ class FakeMailProvider implements MailProvider {
     // A stable per-send provider thread id, always the same one for every send in this fake test
     // account (real Gmail would keep one thread id for the whole conversation too) -- distinct from
     // "fake-message-N" so the two id spaces are never confusable in an assertion.
-    return { providerMessageId: `fake-message-${this.sendCount}`, providerThreadId: "fake-thread-1" };
+    return {
+      providerMessageId: `fake-message-${this.sendCount}`,
+      providerThreadId: "fake-thread-1",
+      // Simulates a real provider (Gmail/Microsoft Graph both verified for real) silently
+      // rewriting the Message-ID header on actual delivery, discarding whatever this app's own
+      // MIME builder put in the raw payload -- deliberately a *different* value than whatever
+      // Message-ID this same send's `built` MIME message carried, so a test can prove the app
+      // corrects for this rather than assuming its own generated value survived delivery.
+      messageIdHeader: `<confirmed-delivered-${this.sendCount}@mail.fake-provider.example>`
+    };
   }
   async listChangesSince(): Promise<ChangeSet> {
     return { cursor: "", newOrChangedMessageRefs: [] };
@@ -356,9 +365,14 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(provider.createdDrafts[1]!.account.accountId).not.toBe(accountProposedForStep2);
 
     // The actual bytes sent over the wire for step 2 -- not just what's recorded in our own DB --
-    // must reference step 1's *actual* dispatched Message-ID, and continue its actual subject.
-    expect(step2Message.headers.find((h) => h.name === "In-Reply-To")?.value).toBe(step1MessageId);
-    expect(step2Message.headers.find((h) => h.name === "References")?.value).toBe(step1MessageId);
+    // must reference step 1's *actual delivered* Message-ID (what FakeMailProvider.sendDraft
+    // confirmed post-send), not step1MessageId (what this app's own MIME builder merely proposed
+    // and which a real provider like Gmail silently rewrites away on delivery -- the deeper root
+    // cause discovered after the account-rotation fix alone still didn't resolve the real-world
+    // report), and continue its actual subject.
+    expect(step2Message.headers.find((h) => h.name === "In-Reply-To")?.value).toBe("<confirmed-delivered-1@mail.fake-provider.example>");
+    expect(step2Message.headers.find((h) => h.name === "References")?.value).toBe("<confirmed-delivered-1@mail.fake-provider.example>");
+    expect(step2Message.headers.find((h) => h.name === "In-Reply-To")?.value).not.toBe(step1MessageId);
     expect(step2Message.headers.find((h) => h.name === "Subject")?.value).toBe("Re: Original subject");
 
     // Also a real reported risk with the providerThreadId passthrough: step 1's thread belongs to
@@ -410,6 +424,64 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     // exactly what step 2's createDraft call should receive, keeping this account's own Sent/All
     // Mail view grouped too, on top of the recipient-facing In-Reply-To/References headers.
     expect(provider.createdDrafts[1]!.providerThreadId).toBe("fake-thread-1");
+  });
+
+  it("corrects the stored Message-ID to what the provider actually delivered, so the DB record (not just the wire bytes) reflects reality", async () => {
+    // Reproduces the real, still-outstanding bug reported after the account-rotation fix alone:
+    // Gmail (and Microsoft Graph) silently rewrite the Message-ID header on actual delivery,
+    // discarding whatever this app's own MIME builder generated -- verified for real against a
+    // delivered message's "Show Original" headers, which showed Gmail's own `<CA...@mail.gmail.com>`
+    // id, never the app's `<hash@domain>` one. Without correcting the stored row, every later
+    // follow-up step (via findOutboundMessageHistoryForEnrollment, which reads this exact column)
+    // would keep threading against an id the recipient's system never actually saw.
+    const template = await fireStepDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi there"))] } });
+    const sequence = await fireStepDeps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
+    });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Subject", weight: 1 });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "Follow-up subject", weight: 1 });
+    const campaign = await fireStepDeps.campaignRepository.create({
+      name: "Confirmed-id camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    await fireStepDeps.campaignRepository.setStatus(campaign.id, "running");
+    const contact = await fireStepDeps.contactRepository.upsertByEmail({ email: "confirmed-id-lead@example.com", source: "manual" });
+    const enrollment = await fireStepDeps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const firstFire = await fireEnrollmentStep(fireStepDeps, enrollment, new Date());
+    if (firstFire.outcome !== "enqueued") throw new Error(`setup failed: ${firstFire.outcome}`);
+    const firstQueueRow = db.select().from(sendQueue).where(eq(sendQueue.id, firstFire.sendQueueEntryId)).get();
+    await runSendWorkerTick(sendWorkerDeps, new Date());
+
+    const step1Message = provider.createdDrafts[0]!.message;
+    const step1OwnGeneratedMessageId = step1Message.headers.find((h) => h.name === "Message-ID")?.value;
+    expect(step1OwnGeneratedMessageId).toBeTruthy();
+
+    const step1Row = db.select().from(messages).where(eq(messages.id, firstQueueRow!.messageId)).get();
+    // The stored row must reflect what the provider actually confirmed, not our own proposal.
+    expect(step1Row?.messageIdHeader).toBe("<confirmed-delivered-1@mail.fake-provider.example>");
+    expect(step1Row?.messageIdHeader).not.toBe(step1OwnGeneratedMessageId);
+
+    const advanced = await fireStepDeps.enrollmentRepository.findById(enrollment.id);
+    const secondFire = await fireEnrollmentStep(fireStepDeps, advanced!, new Date());
+    if (secondFire.outcome !== "enqueued") throw new Error(`setup failed: ${secondFire.outcome}`);
+    await runSendWorkerTick(sendWorkerDeps, new Date());
+
+    const step2Message = provider.createdDrafts[1]!.message;
+    // Step 2's actual dispatched headers must chain onto what step 1 was really delivered with.
+    expect(step2Message.headers.find((h) => h.name === "In-Reply-To")?.value).toBe("<confirmed-delivered-1@mail.fake-provider.example>");
+    expect(step2Message.headers.find((h) => h.name === "References")?.value).toBe("<confirmed-delivered-1@mail.fake-provider.example>");
   });
 
   it("releases the row back to pending (not a failure) when the account is over its rate limit", async () => {

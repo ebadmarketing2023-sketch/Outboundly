@@ -89,7 +89,11 @@ export async function sendDraftMessage(params: SendMessageParams): Promise<SendM
     direction: "outbound",
     providerMessageId: sendResult.providerMessageId,
     providerThreadId: sendResult.providerThreadId,
-    messageIdHeader: findHeaderValue(built.headers, "Message-ID") ?? "",
+    // Prefer the provider-confirmed, actually-delivered Message-ID (Gmail/Graph both rewrite it
+    // on send) over the provisional value our own MIME builder generated -- this message row is
+    // only ever inserted here, after the send already completed, so there's no "provisional now,
+    // corrected later" step the way the campaign send-worker path has via markMessageSent.
+    messageIdHeader: sendResult.messageIdHeader ?? findHeaderValue(built.headers, "Message-ID") ?? "",
     inReplyToHeader: findHeaderValue(built.headers, "In-Reply-To"),
     referencesHeader: findHeaderValue(built.headers, "References"),
     from: formatNamedAddress(params.from),

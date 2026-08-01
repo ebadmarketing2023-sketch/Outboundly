@@ -77,8 +77,16 @@ export interface ConversationRepository {
    * findThreadIdForProviderThreadId even if the reply's In-Reply-To/References chain doesn't match
    * (e.g. the provider rewrote the outbound Message-ID). Without this, a campaign-originated
    * thread's provider_thread_id stays null forever, unlike a manually composed send (Section 9.5's
-   * sendDraftMessage records it immediately since that message isn't inserted until after sending). */
-  markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string }): Promise<void>;
+   * sendDraftMessage records it immediately since that message isn't inserted until after sending).
+   * messageIdHeader, when given, overwrites the provisional Message-ID this row was inserted with
+   * at enqueue time -- Gmail and Microsoft Graph both silently rewrite the Message-ID on actual
+   * delivery, so the row's stored value needs correcting to what was really delivered, or every
+   * later follow-up step's In-Reply-To/References (built from findOutboundMessageHistoryForEnrollment,
+   * which reads this same column) would reference a Message-ID the recipient's system never saw. */
+  markMessageSent(
+    messageId: string,
+    input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string; messageIdHeader?: string }
+  ): Promise<void>;
   /** The minimal fields the Send worker (Section 21.1) needs to dispatch a queued message it
    * didn't create itself -- which account it was queued against, its recipient (to resolve the
    * contact for live personalization), and the Draft/enrollment it was built from. */

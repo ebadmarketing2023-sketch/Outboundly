@@ -162,6 +162,43 @@ describe("send-message use case (Phase 1 direct send path)", () => {
     });
   });
 
+  it("records the provider-confirmed Message-ID instead of our own generated one, when the provider gives one back (Gmail/Graph rewrite it on delivery)", async () => {
+    const repo = new InMemoryDraftRepository();
+    const draftLifecycle = new DraftLifecycleService(repo, new SystemClock());
+    const draft = await draftLifecycle.createDraft({
+      accountId: asAccountId("account-1"),
+      subject: "Hello",
+      document: { blocks: [paragraph(textRun("Hi there"))] },
+      to: [{ address: EmailAddress.parse("them@example.com") }]
+    });
+
+    class ConfirmingMailProvider extends FakeMailProvider {
+      async sendDraft(): Promise<ProviderSendResult> {
+        return {
+          providerMessageId: "fake-message-1",
+          providerThreadId: "fake-thread-1",
+          messageIdHeader: "<confirmed-by-provider@mail.example.com>"
+        };
+      }
+    }
+
+    const provider = new ConfirmingMailProvider();
+    const conversationRepo = new InMemoryConversationRepository();
+    const result = await sendDraftMessage({
+      draft,
+      from: { address: EmailAddress.parse("me@outboundly.app") },
+      draftLifecycle,
+      provider,
+      accountRef: { accountId: asAccountId("account-1"), emailAddress: "me@outboundly.app" },
+      conversationRepo,
+      deliverabilityReportRepo: new InMemoryDeliverabilityReportRepository()
+    });
+
+    expect(result.sent).toBe(true);
+    expect(conversationRepo.insertedMessages).toHaveLength(1);
+    expect(conversationRepo.insertedMessages[0]?.messageIdHeader).toBe("<confirmed-by-provider@mail.example.com>");
+  });
+
   it("blocks before any provider call when the Deliverability Engine finds a blocking issue (Section 17.4)", async () => {
     const repo = new InMemoryDraftRepository();
     const draftLifecycle = new DraftLifecycleService(repo, new SystemClock());

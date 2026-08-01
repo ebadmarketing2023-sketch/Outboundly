@@ -107,6 +107,44 @@ describe("SqliteConversationRepository (Section 11 persistence)", () => {
     expect(threadRow?.providerThreadId).toBe("already-known");
   });
 
+  it("markMessageSent overwrites the provisional Message-ID with the provider-confirmed one when given, since Gmail/Graph rewrite it on delivery", async () => {
+    const result = await ingestMessage(repo, {
+      accountId,
+      direction: "outbound",
+      messageIdHeader: "<our-own-generated-id@outboundly.app>",
+      from: "me@outboundly.app",
+      to: ["them@example.com"],
+      subject: "Hello there",
+      status: "queued"
+    });
+
+    await repo.markMessageSent(result.messageId!, {
+      sentAt: new Date(),
+      providerMessageId: "pm-1",
+      messageIdHeader: "<confirmed-by-gmail@mail.gmail.com>"
+    });
+
+    const messageRow = db.select().from(messages).where(eq(messages.id, result.messageId!)).get();
+    expect(messageRow?.messageIdHeader).toBe("<confirmed-by-gmail@mail.gmail.com>");
+  });
+
+  it("markMessageSent leaves the stored Message-ID untouched when the provider doesn't confirm one (e.g. SMTP, which never rewrites it)", async () => {
+    const result = await ingestMessage(repo, {
+      accountId,
+      direction: "outbound",
+      messageIdHeader: "<our-own-generated-id@outboundly.app>",
+      from: "me@outboundly.app",
+      to: ["them@example.com"],
+      subject: "Hello there",
+      status: "queued"
+    });
+
+    await repo.markMessageSent(result.messageId!, { sentAt: new Date(), providerMessageId: "pm-1" });
+
+    const messageRow = db.select().from(messages).where(eq(messages.id, result.messageId!)).get();
+    expect(messageRow?.messageIdHeader).toBe("<our-own-generated-id@outboundly.app>");
+  });
+
   it("attaches a reply to its parent thread via the real database, and records a merge with real rows on conflict", async () => {
     const sent = await ingestMessage(repo, {
       accountId,

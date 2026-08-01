@@ -110,9 +110,11 @@ export class SmtpImapProvider implements MailProvider {
     const transporter = this.transporterFor(credentials);
     try {
       const info = await transporter.sendMail({ raw });
-      // SMTP has no server-assigned message id the way Gmail/Graph do — nodemailer reports back
-      // the Message-ID header value it actually sent (the one this app's MIME builder generated).
-      return { providerMessageId: info.messageId };
+      // SMTP has no server-assigned message id the way Gmail/Graph do, and no server in the
+      // middle to rewrite it either -- nodemailer reports back the same Message-ID header value
+      // it actually sent (the one this app's MIME builder generated), so unlike Gmail/Graph this
+      // is already the confirmed, delivered value.
+      return { providerMessageId: info.messageId, messageIdHeader: info.messageId };
     } finally {
       transporter.close();
     }

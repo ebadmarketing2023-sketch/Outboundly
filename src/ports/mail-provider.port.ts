@@ -14,6 +14,16 @@ export interface AccountRef {
 export interface ProviderSendResult {
   providerMessageId: string;
   providerThreadId?: string;
+  /** The Message-ID header the provider actually delivered with, when the provider makes this
+   * knowable after the fact (Gmail and Microsoft Graph both silently rewrite/replace whatever
+   * Message-ID our own MIME builder generated at send time -- verified for real against Gmail's
+   * "Show Original" headers on a delivered message). Undefined means the provider is trusted to
+   * have preserved the value our own builder generated verbatim (true for SMTP/IMAP, which has no
+   * server in the middle to rewrite anything). Callers must persist this over the provisional
+   * value once present, since later follow-up steps' In-Reply-To/References -- and inbound reply
+   * matching -- need to reference what the recipient's system will actually see, not what we
+   * merely intended to send. */
+  messageIdHeader?: string;
 }
 
 export interface ProviderDraftRef {

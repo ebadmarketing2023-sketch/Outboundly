@@ -105,6 +105,26 @@ export class GmailProvider implements MailProvider {
     await this.clientFor(account);
   }
 
+  /** Gmail rewrites/replaces the Message-ID header on actual delivery, discarding whatever our
+   * own MIME builder put in the raw payload (verified for real against a delivered message's
+   * "Show Original" headers, which showed Gmail's own `<CA...@mail.gmail.com>` id, not ours) --
+   * this reads back the real, confirmed value via a follow-up metadata fetch so later follow-up
+   * steps thread against what the recipient's system will actually see. Best-effort: the send
+   * already succeeded by the time this runs, so a failure here shouldn't fail the whole dispatch. */
+  private async fetchDeliveredMessageIdHeader(gmail: gmail_v1.Gmail, providerMessageId: string): Promise<string | undefined> {
+    try {
+      const { data } = await gmail.users.messages.get({
+        userId: "me",
+        id: providerMessageId,
+        format: "metadata",
+        metadataHeaders: ["Message-ID"]
+      });
+      return headerValue(data.payload?.headers, "Message-ID");
+    } catch {
+      return undefined;
+    }
+  }
+
   async sendMessage(account: AccountRef, message: BuiltMimeMessage, providerThreadId?: string): Promise<ProviderSendResult> {
     const auth = await this.clientFor(account);
     const gmail = google.gmail({ version: "v1", auth });
@@ -113,7 +133,8 @@ export class GmailProvider implements MailProvider {
       requestBody: { raw: toBase64Url(message.raw), threadId: providerThreadId }
     });
     if (!data.id) throw new Error("Gmail API did not return a message id");
-    return { providerMessageId: data.id, providerThreadId: data.threadId ?? undefined };
+    const messageIdHeader = await this.fetchDeliveredMessageIdHeader(gmail, data.id);
+    return { providerMessageId: data.id, providerThreadId: data.threadId ?? undefined, messageIdHeader };
   }
 
   async createDraft(account: AccountRef, message: BuiltMimeMessage, providerThreadId?: string): Promise<ProviderDraftRef> {
@@ -135,7 +156,8 @@ export class GmailProvider implements MailProvider {
       requestBody: { id: draftRef.providerDraftId }
     });
     if (!data.id) throw new Error("Gmail API did not return a message id");
-    return { providerMessageId: data.id, providerThreadId: data.threadId ?? undefined };
+    const messageIdHeader = await this.fetchDeliveredMessageIdHeader(gmail, data.id);
+    return { providerMessageId: data.id, providerThreadId: data.threadId ?? undefined, messageIdHeader };
   }
 
   async listChangesSince(account: AccountRef, cursor: SyncCursor): Promise<ChangeSet> {

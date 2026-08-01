@@ -172,12 +172,25 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
     return id;
   }
 
-  async markMessageSent(messageId: string, input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string }): Promise<void> {
+  async markMessageSent(
+    messageId: string,
+    input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string; messageIdHeader?: string }
+  ): Promise<void> {
     const existing = this.db.select({ threadId: messages.threadId }).from(messages).where(eq(messages.id, messageId)).get();
 
     this.db
       .update(messages)
-      .set({ status: "sent", sentAt: input.sentAt, providerMessageId: input.providerMessageId, updatedAt: new Date() })
+      .set({
+        status: "sent",
+        sentAt: input.sentAt,
+        providerMessageId: input.providerMessageId,
+        // Overwrite the provisional Message-ID this row was inserted with at enqueue time only
+        // when the provider handed back a confirmed, actually-delivered value (see
+        // ProviderSendResult.messageIdHeader's doc comment) -- undefined means trust the
+        // provisional value already stored (e.g. SMTP, which never rewrites it).
+        ...(input.messageIdHeader ? { messageIdHeader: input.messageIdHeader } : {}),
+        updatedAt: new Date()
+      })
       .where(eq(messages.id, messageId))
       .run();
 

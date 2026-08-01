@@ -143,7 +143,22 @@ export class MicrosoftProvider implements MailProvider {
       .api(`/me/messages/${draftRef.providerDraftId}/send`)
       .header("Prefer", IMMUTABLE_ID_PREFER_HEADER)
       .post("");
-    return { providerMessageId: draftRef.providerDraftId };
+    // Mirrors GmailProvider: read back the confirmed internetMessageId post-send rather than
+    // trusting whatever our own MIME builder generated, in case Graph rewrites it the same way
+    // Gmail does. Best-effort -- the send already succeeded, so a failure here shouldn't fail the
+    // whole dispatch.
+    let messageIdHeader: string | undefined;
+    try {
+      const sent = await client
+        .api(`/me/messages/${draftRef.providerDraftId}`)
+        .header("Prefer", IMMUTABLE_ID_PREFER_HEADER)
+        .select(["internetMessageId"])
+        .get();
+      messageIdHeader = sent.internetMessageId ?? undefined;
+    } catch {
+      messageIdHeader = undefined;
+    }
+    return { providerMessageId: draftRef.providerDraftId, messageIdHeader };
   }
 
   async listChangesSince(account: AccountRef, cursor: SyncCursor): Promise<ChangeSet> {
