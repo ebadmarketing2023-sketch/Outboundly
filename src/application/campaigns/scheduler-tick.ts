@@ -9,6 +9,10 @@ export interface SchedulerTickResult {
   noEligibleAccount: number;
   suppressed: number;
   missingPersonalization: number;
+  /** A follow-up step became due before the Send worker actually dispatched the message it's
+   * replying onto -- deferred rather than fired with a stale Message-ID; retried automatically on
+   * the next tick once that prior send completes. */
+  waitingOnPriorSend: number;
   /** One enrollment's data/config problem (Section 21.3 failure isolation) -- never lets a single
    * bad enrollment stall the rest of the tick or crash the worker. */
   failures: { enrollmentId: EnrollmentId; error: string }[];
@@ -29,6 +33,7 @@ export async function runSchedulerTick(deps: FireEnrollmentStepDeps, now: Date):
     noEligibleAccount: 0,
     suppressed: 0,
     missingPersonalization: 0,
+    waitingOnPriorSend: 0,
     failures: []
   };
 
@@ -47,6 +52,8 @@ export async function runSchedulerTick(deps: FireEnrollmentStepDeps, now: Date):
         result.suppressed++;
       } else if (outcome.outcome === "missing_personalization") {
         result.missingPersonalization++;
+      } else if (outcome.outcome === "waiting_on_prior_send") {
+        result.waitingOnPriorSend++;
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);

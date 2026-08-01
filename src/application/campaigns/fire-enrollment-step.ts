@@ -38,7 +38,8 @@ export type FireEnrollmentStepResult =
   | { outcome: "blocked"; compatibilityReport: CompatibilityReport; deliverabilityReport?: DeliverabilityReport }
   | { outcome: "no_eligible_account" }
   | { outcome: "suppressed" }
-  | { outcome: "missing_personalization"; variableName: string };
+  | { outcome: "missing_personalization"; variableName: string }
+  | { outcome: "waiting_on_prior_send" };
 
 export interface FireEnrollmentStepDeps extends BuildSchedulingContextDeps {
   db: OutboundlyDb;
@@ -110,6 +111,20 @@ export async function fireEnrollmentStep(
   const priorMessages = isFollowUpStep ? await deps.conversationRepository.findOutboundMessageHistoryForEnrollment(enrollment.id) : [];
   const originalMessage = priorMessages[0];
   const mostRecentMessage = priorMessages[priorMessages.length - 1];
+
+  // A real reported bug: nextSendAt is computed from when the *previous* step was enqueued, not
+  // from when it actually sent (see the advance below) -- with a short/zero-delay step, this
+  // enrollment can become due again before the Send worker has actually dispatched the message
+  // this step is supposed to reply onto. Firing anyway would bake in that message's provisional,
+  // not-yet-provider-confirmed Message-ID (Gmail rewrites it on delivery -- see buildMimeMessage's
+  // own comment) into this step's In-Reply-To/References, which is exactly what produced a
+  // follow-up that never actually threads for the recipient. Deferring here (not enqueuing, not
+  // advancing the enrollment) leaves nextSendAt unchanged, so the very next scheduler tick just
+  // tries again -- self-correcting the moment the prior send actually completes.
+  if (isFollowUpStep && mostRecentMessage && mostRecentMessage.status !== "sent") {
+    return { outcome: "waiting_on_prior_send" };
+  }
+
   const subjectText = originalMessage ? `Re: ${originalMessage.subject.replace(/^re:\s*/i, "")}` : selectedSubjectVariant.subjectText;
   const inReplyTo = mostRecentMessage?.messageIdHeader;
   const references = priorMessages.length > 0 ? priorMessages.map((m) => m.messageIdHeader) : undefined;

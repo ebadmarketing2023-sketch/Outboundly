@@ -204,6 +204,7 @@ describe("runSchedulerTick (Section 21.1)", () => {
       noEligibleAccount: 0,
       suppressed: 0,
       missingPersonalization: 0,
+      waitingOnPriorSend: 0,
       failures: []
     });
   });

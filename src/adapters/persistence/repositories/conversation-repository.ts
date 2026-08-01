@@ -235,9 +235,11 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
     return row?.campaignEnrollmentId ?? undefined;
   }
 
-  async findOutboundMessageHistoryForEnrollment(campaignEnrollmentId: string): Promise<Array<{ messageIdHeader: string; subject: string }>> {
+  async findOutboundMessageHistoryForEnrollment(
+    campaignEnrollmentId: string
+  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string }>> {
     return this.db
-      .select({ messageIdHeader: messages.messageIdHeader, subject: messages.subject })
+      .select({ messageIdHeader: messages.messageIdHeader, subject: messages.subject, status: messages.status })
       .from(messages)
       .where(and(eq(messages.campaignEnrollmentId, campaignEnrollmentId), eq(messages.direction, "outbound")))
       .orderBy(asc(messages.createdAt))

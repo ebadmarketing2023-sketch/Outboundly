@@ -320,6 +320,10 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     expect(firstMessage?.inReplyToHeader).toBeNull();
     expect(firstMessage?.referencesHeader).toBeNull();
 
+    // The Send worker (not exercised by this test) is what actually dispatches step 1 and marks
+    // it sent -- doing that here mirrors real dispatch completing before step 2 becomes due.
+    await deps.conversationRepository.markMessageSent(firstMessage!.id, { sentAt: new Date() });
+
     // Re-fetch: fireEnrollmentStep already advanced this enrollment onto step 2 as a side effect
     // of the first call above (Section 14.3's "on successful queuing, next_send_at advances").
     const advanced = await deps.enrollmentRepository.findById(enrollment.id);
@@ -344,6 +348,55 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     const secondDraft = await new SqliteDraftRepository(db).findById(secondMessage.draftId as never);
     expect(secondDraft?.inReplyTo).toBe(firstMessage!.messageIdHeader);
     expect(secondDraft?.references).toEqual([firstMessage!.messageIdHeader]);
+  });
+
+  it("defers a follow-up step (does not send, does not advance) when the prior step hasn't actually dispatched yet, then proceeds once it has", async () => {
+    // Reproduces a real reported bug: a follow-up step's next_send_at is computed from when the
+    // *previous* step was enqueued, not from when it actually sent -- with a short/zero delay
+    // (exactly what's used for quick manual testing), the scheduler can call fireEnrollmentStep for
+    // the follow-up before the Send worker has actually dispatched the message it's replying onto.
+    // Firing anyway would bake in that message's still-provisional Message-ID (Gmail rewrites it on
+    // real delivery) into the follow-up's In-Reply-To/References -- a follow-up that never actually
+    // threads for the recipient, even though every Message-ID-correctness fix upstream is sound.
+    const { campaign, sequence } = await setUpTwoStepCampaign();
+    const contact = await deps.contactRepository.upsertByEmail({ email: "race@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const firstResult = await fireEnrollmentStep(deps, enrollment, new Date());
+    expect(firstResult.outcome).toBe("enqueued");
+    if (firstResult.outcome !== "enqueued") return;
+
+    const firstMessage = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).get();
+    expect(firstMessage?.status).toBe("queued"); // deliberately not yet marked sent
+
+    // The scheduler calling this immediately (as a 0-delay step would let it) must defer, not send.
+    const advanced = await deps.enrollmentRepository.findById(enrollment.id);
+    const tooEarlyResult = await fireEnrollmentStep(deps, advanced!, new Date());
+    expect(tooEarlyResult).toEqual({ outcome: "waiting_on_prior_send" });
+
+    // Nothing was sent and the enrollment did not advance any further -- it's already at step 2
+    // (advanced there when step 1 was enqueued, before this deferred attempt) and still due, so
+    // the very next scheduler tick will just try this same step 2 fire again, not skip ahead or
+    // get stuck.
+    const allMessagesStillOne = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).all();
+    expect(allMessagesStillOne).toHaveLength(1);
+    const stillAtStep2 = await deps.enrollmentRepository.findById(enrollment.id);
+    expect(stillAtStep2?.currentStepId).toBe(sequence.steps[1]!.id);
+    expect(stillAtStep2?.status).toBe("active");
+
+    // Once the Send worker actually dispatches step 1 (marking it sent), the exact same retry now
+    // proceeds normally.
+    await deps.conversationRepository.markMessageSent(firstMessage!.id, { sentAt: new Date() });
+    const nowReadyResult = await fireEnrollmentStep(deps, stillAtStep2!, new Date());
+    expect(nowReadyResult.outcome).toBe("enqueued");
+
+    const allMessagesAfter = db.select().from(messages).where(eq(messages.campaignEnrollmentId, enrollment.id)).all();
+    expect(allMessagesAfter).toHaveLength(2);
   });
 
   it("returns blocked and leaves the enrollment active when the Deliverability Engine finds a blocking issue", async () => {

@@ -99,8 +99,14 @@ export interface ConversationRepository {
    * threading), oldest first. The first entry's subject is the sequence's original subject line
    * (what every later step's "Re: " continues); the last entry's Message-ID is the direct parent
    * to reply onto for the step about to fire. Empty for a first-step fire, since nothing has been
-   * sent yet. */
-  findOutboundMessageHistoryForEnrollment(campaignEnrollmentId: string): Promise<Array<{ messageIdHeader: string; subject: string }>>;
+   * sent yet. status is included so a caller can tell a merely-queued (not yet actually dispatched)
+   * prior send apart from one that's truly gone out -- firing a follow-up onto a prior message
+   * that hasn't sent yet would bake in whatever provisional, not-yet-provider-confirmed Message-ID
+   * that row happens to hold at that instant (a real reported bug: a short/zero-delay step can
+   * become due before the Send worker has actually dispatched the step before it). */
+  findOutboundMessageHistoryForEnrollment(
+    campaignEnrollmentId: string
+  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string }>>;
   /** The provider's own thread id (e.g. Gmail's threadId) for one of our internal threads, if
    * known yet -- only populated once that thread's first message actually finishes sending
    * (markMessageSent's providerThreadId) -- AND only returned if that thread actually belongs to
