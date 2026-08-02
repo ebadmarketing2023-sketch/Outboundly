@@ -76,6 +76,7 @@ import { importContactsCsv } from "../dist/application/leads/import-contacts-csv
 import { deleteContact } from "../dist/application/leads/delete-contact.js";
 import { deleteLeadImportBatch } from "../dist/application/leads/delete-lead-import-batch.js";
 import { SqliteLeadImportBatchRepository } from "../dist/adapters/persistence/repositories/lead-import-batch-repository.js";
+import { ensureLicensedOrQuit } from "./license-gate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -106,6 +107,12 @@ const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
 // (verified against @azure/msal-common's ScopeSet construction, which always adds
 // OIDC_DEFAULT_SCOPES) — only the Graph-specific mail scopes need to be listed here.
 const MICROSOFT_SCOPES = ["Mail.Send", "Mail.ReadWrite"];
+
+// Licensing (disclosed license-key model, Keygen.sh): the Account ID is not a secret -- it's just
+// which Keygen account the API calls are scoped to, not a credential that grants any authority by
+// itself (every request still needs the caller's own license key). The one real secret in this
+// whole system is the license key each customer enters themselves, which is never embedded here.
+const KEYGEN_ACCOUNT_ID = "88da959e-95b2-4a47-afe0-8c6000d302a3";
 
 let db;
 let dbPath;
@@ -1261,6 +1268,16 @@ function sendToRenderer(channel, payload) {
 
 app.whenReady().then(async () => {
   initServices();
+
+  // Licensing (disclosed license-key model): only ever enforced in an actual packaged/installed
+  // build, exactly like the auto-update check below -- running from source (npm run electron:dev,
+  // or the automated test suite, which never touches electron/main.js at all) is always
+  // unrestricted, since this gates *distributed* copies of the app, not local development. A
+  // decline here means ensureLicensedOrQuit has already called app.quit() itself.
+  if (app.isPackaged) {
+    const licensed = await ensureLicensedOrQuit(db, KEYGEN_ACCOUNT_ID);
+    if (!licensed) return;
+  }
 
   // Startup crash recovery (Section 16.2): a row can only ever be left in status='claimed' by a
   // process that died mid-dispatch, and this fresh process has no in-flight dispatch of its own

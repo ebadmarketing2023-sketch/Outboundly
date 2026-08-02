@@ -15,7 +15,11 @@ export const APP_SETTING_KEYS = {
   defaultBusinessHoursProfileId: "default_business_hours_profile_id",
   defaultSendingAccountId: "default_sending_account_id",
   defaultMinSendDelaySeconds: "default_min_send_delay_seconds",
-  defaultMaxSendDelaySeconds: "default_max_send_delay_seconds"
+  defaultMaxSendDelaySeconds: "default_max_send_delay_seconds",
+  licenseKey: "license_key",
+  licenseFingerprint: "license_fingerprint",
+  licenseMachineId: "license_machine_id",
+  licenseLastValidAt: "license_last_valid_at"
 } as const;
 
 export function getAppSetting(db: OutboundlyDb, key: string): string | undefined {
@@ -77,4 +81,46 @@ export function setAppPreferences(db: OutboundlyDb, prefs: AppPreferences, now: 
   if (prefs.defaultMaxSendDelaySeconds !== undefined) {
     setAppSetting(db, APP_SETTING_KEYS.defaultMaxSendDelaySeconds, String(prefs.defaultMaxSendDelaySeconds), now);
   }
+}
+
+/**
+ * Licensing (disclosed license-key model): what this specific installation activated with, if
+ * anything yet. Stored in the same key-value settings table as everything else here -- the whole
+ * database is already encrypted at rest (Section 19), so this needs no separate secret-storage
+ * mechanism the way OAuth tokens do (those use the OS keychain because they're per-account and
+ * more sensitive; there's exactly one license per installation, and it only ever authorizes
+ * actions against itself, never another customer's).
+ */
+export interface StoredLicenseState {
+  licenseKey?: string;
+  fingerprint?: string;
+  machineId?: string;
+  lastValidAt?: Date;
+}
+
+export function getStoredLicenseState(db: OutboundlyDb): StoredLicenseState {
+  const licenseKey = getAppSetting(db, APP_SETTING_KEYS.licenseKey);
+  const fingerprint = getAppSetting(db, APP_SETTING_KEYS.licenseFingerprint);
+  const machineId = getAppSetting(db, APP_SETTING_KEYS.licenseMachineId);
+  const lastValidAtRaw = getAppSetting(db, APP_SETTING_KEYS.licenseLastValidAt);
+  return {
+    licenseKey,
+    fingerprint,
+    machineId,
+    lastValidAt: lastValidAtRaw ? new Date(lastValidAtRaw) : undefined
+  };
+}
+
+export function saveLicenseActivation(
+  db: OutboundlyDb,
+  input: { licenseKey: string; fingerprint: string; machineId: string },
+  now: Date = new Date()
+): void {
+  setAppSetting(db, APP_SETTING_KEYS.licenseKey, input.licenseKey, now);
+  setAppSetting(db, APP_SETTING_KEYS.licenseFingerprint, input.fingerprint, now);
+  setAppSetting(db, APP_SETTING_KEYS.licenseMachineId, input.machineId, now);
+}
+
+export function recordLicenseValidationSuccess(db: OutboundlyDb, now: Date = new Date()): void {
+  setAppSetting(db, APP_SETTING_KEYS.licenseLastValidAt, now.toISOString(), now);
 }
