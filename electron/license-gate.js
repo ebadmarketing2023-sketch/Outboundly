@@ -19,8 +19,8 @@ const OFFLINE_GRACE_PERIOD_DAYS = 3;
  * user declines. Running from source (npm run electron:dev, or the test suite) never calls this
  * at all, so local development is completely unaffected by any of this.
  */
-export async function ensureLicensedOrQuit(db, accountId, productToken) {
-  const licenseService = new KeygenLicenseService(accountId, productToken);
+export async function ensureLicensedOrQuit(db, accountId) {
+  const licenseService = new KeygenLicenseService(accountId);
   const deps = {
     db,
     licenseService,

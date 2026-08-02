@@ -19,32 +19,28 @@ interface KeygenValidateResponseBody {
 
 /**
  * Keygen.sh adapter for the LicenseService port (Section 12.3-style: this is the only file that
- * knows Keygen's actual wire format). Verified for real against a live Keygen account -- two
- * things below differ from a first draft that only matched the docs on paper:
+ * knows Keygen's actual wire format). Verified for real against a live Keygen account -- one thing
+ * below differs from a first draft that only matched the docs on paper:
  *
- * 1. Creating a machine requires an explicit `relationships.license` linkage in the request body
- *    (confirmed: omitting it returns 400 "is missing" at /data/relationships) -- but Keygen only
- *    permits an admin- or product-authenticated bearer to actually *set* that relationship
- *    (confirmed: a plain license-key bearer gets 403 "access denied" even with machine.create
- *    permission granted). So activation/deactivation authenticate with a narrowly-scoped product
- *    token (license.validate/read, machine.create/read/update/delete only -- nothing that can
- *    create/delete licenses or touch other products/policies/billing), accepting the tradeoff
- *    Keygen's own docs warn about (a product token embedded client-side has account-wide reach
- *    within those permissions, not scoped to one customer the way a license key is) as a
- *    deliberate, discussed decision -- not an oversight.
- * 2. The license's own opaque resource id (needed for that relationships block) isn't something
- *    the app ever otherwise has -- customers only see/enter their raw key -- so activation first
- *    resolves the id via the same validate-key action validateLicense already uses.
+ * Creating a machine requires an explicit `relationships.license` linkage in the request body
+ * (confirmed: omitting it returns 400 "is missing" at /data/relationships). The license's own
+ * opaque resource id (needed for that linkage) isn't something the app ever otherwise has --
+ * customers only see/enter their raw key -- so activation first resolves the id via the same
+ * validate-key action validateLicense already uses (confirmed for real: validate-key's response
+ * body's `data.id` is the license's true resource id -- notably *not* the same value Keygen
+ * echoes back in the unrelated `Keygen-License` response *header* on every request, which stays
+ * constant regardless of what's actually being requested and is not this license's id at all --
+ * a real, hours-long red herring during manual debugging that the response body itself never had).
  *
- * validateLicense itself is unchanged from the original design: it's authenticated with nothing
- * but the license key in the request body, matching Keygen's own permission matrix marking
- * license.validate safe for even a fully anonymous caller.
+ * Everything here authenticates with nothing but the customer's own license key -- no separate
+ * product/admin token embedded anywhere. A license key can validate itself, and (confirmed for
+ * real, once the correct license id was used) can also create/delete its own machine via
+ * `Authorization: License <key>`, since license.create/delete of *its own* machine is within a
+ * license bearer's own permission set (see Keygen's Authorization docs' permission matrix --
+ * `machine.create`/`machine.delete` are both plain, unconditional checks for the `license` role).
  */
 export class KeygenLicenseService implements LicenseService {
-  constructor(
-    private readonly accountId: string,
-    private readonly productToken: string
-  ) {}
+  constructor(private readonly accountId: string) {}
 
   private baseUrl(): string {
     return `${KEYGEN_API_BASE}/accounts/${this.accountId}`;
@@ -71,7 +67,7 @@ export class KeygenLicenseService implements LicenseService {
     const res = await fetch(`${this.baseUrl()}/machines`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${this.productToken}`,
+        Authorization: `License ${licenseKey}`,
         "Content-Type": KEYGEN_MEDIA_TYPE,
         Accept: KEYGEN_MEDIA_TYPE
       },
@@ -121,15 +117,11 @@ export class KeygenLicenseService implements LicenseService {
     return { valid: Boolean(body.meta.valid), code: body.meta.code ?? "UNKNOWN" };
   }
 
-  async deactivateMachine(_licenseKey: string, machineId: string): Promise<void> {
-    // Uses the product token too, consistent with activateMachine -- deletion needs a bearer with
-    // machine.delete privileges the same way creation needs machine.create, and keeping both
-    // machine-lifecycle calls on the same auth avoids relitigating another surprise permission
-    // error later for a code path this feature doesn't yet exercise in practice.
+  async deactivateMachine(licenseKey: string, machineId: string): Promise<void> {
     const res = await fetch(`${this.baseUrl()}/machines/${machineId}`, {
       method: "DELETE",
       headers: {
-        Authorization: `Bearer ${this.productToken}`,
+        Authorization: `License ${licenseKey}`,
         Accept: KEYGEN_MEDIA_TYPE
       }
     });

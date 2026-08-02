@@ -11,7 +11,6 @@ import {
   GOOGLE_CLIENT_ID as GENERATED_GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET as GENERATED_GOOGLE_CLIENT_SECRET
 } from "./generated-oauth-config.js";
-import { KEYGEN_PRODUCT_TOKEN as GENERATED_KEYGEN_PRODUCT_TOKEN } from "./generated-keygen-config.js";
 
 import { openDatabase } from "../dist/adapters/persistence/db.js";
 import { getOrCreateDatabaseEncryptionKey } from "../dist/adapters/persistence/database-key.js";
@@ -111,19 +110,9 @@ const MICROSOFT_SCOPES = ["Mail.Send", "Mail.ReadWrite"];
 
 // Licensing (disclosed license-key model, Keygen.sh): the Account ID is not a secret -- it's just
 // which Keygen account the API calls are scoped to, not a credential that grants any authority by
-// itself. KEYGEN_PRODUCT_TOKEN is a real (but deliberately narrow) credential: Keygen only permits
-// an admin- or product-authenticated bearer to set the `relationships.license` linkage machine
-// creation requires (confirmed for real -- a plain license-key bearer gets 403 even with
-// machine.create permission granted), so activation/deactivation need this product token rather
-// than the customer's own key alone. Scoped to license.validate/read + machine.create/read/
-// update/delete only -- nothing that can create/delete licenses or touch other products/policies/
-// billing -- accepting the tradeoff Keygen's own docs warn about (this token has reach across the
-// whole product, not just one customer, unlike a license key) as a deliberate, discussed decision.
-// Comes from electron/generated-keygen-config.js (gitignored, written at build time by
-// generate-keygen-config.mjs), matching the OAuth secret's own pattern for the same reason
-// (GitHub's push protection rejects a commit containing what looks like a live credential).
+// itself (every request still needs the caller's own license key). The one real secret in this
+// whole system is the license key each customer enters themselves, which is never embedded here.
 const KEYGEN_ACCOUNT_ID = "88da959e-95b2-4a47-afe0-8c6000d302a3";
-const KEYGEN_PRODUCT_TOKEN = process.env.KEYGEN_PRODUCT_TOKEN ?? GENERATED_KEYGEN_PRODUCT_TOKEN;
 
 let db;
 let dbPath;
@@ -1286,7 +1275,7 @@ app.whenReady().then(async () => {
   // unrestricted, since this gates *distributed* copies of the app, not local development. A
   // decline here means ensureLicensedOrQuit has already called app.quit() itself.
   if (app.isPackaged) {
-    const licensed = await ensureLicensedOrQuit(db, KEYGEN_ACCOUNT_ID, KEYGEN_PRODUCT_TOKEN);
+    const licensed = await ensureLicensedOrQuit(db, KEYGEN_ACCOUNT_ID);
     if (!licensed) return;
   }
 
