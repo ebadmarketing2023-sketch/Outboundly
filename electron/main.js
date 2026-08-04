@@ -939,7 +939,7 @@ function registerIpcHandlers() {
       },
       {
         name: request.name,
-        sendingAccountId: request.sendingAccountId,
+        sendingAccountIds: request.sendingAccountIds,
         timezone: request.timezone,
         days: request.days,
         start: request.start,

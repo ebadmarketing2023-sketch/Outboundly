@@ -23,7 +23,12 @@ export interface WizardFollowUpStepInput {
 
 export interface CreateCampaignFromWizardInput {
   name: string;
-  sendingAccountId: AccountId;
+  /** Every account here goes into the campaign's own rotation pool (Section 16.3's Provider
+   * Selector) -- at least one is required. fireEnrollmentStep prefers keeping a given enrollment on
+   * whichever account actually sent its previous step, only rotating to another pool member when
+   * that one becomes ineligible, so adding more than one here is purely additional capacity, not a
+   * per-message coin flip that could show a recipient two different senders mid-conversation. */
+  sendingAccountIds: AccountId[];
   timezone: string;
   /** Lowercase full weekday names ("monday".."sunday") sending is allowed on. */
   days: string[];
@@ -64,6 +69,9 @@ export interface CreateCampaignFromWizardDeps {
 export async function createCampaignFromWizard(deps: CreateCampaignFromWizardDeps, input: CreateCampaignFromWizardInput): Promise<Campaign> {
   if (input.contentGroups.length === 0) {
     throw new Error("At least one template/subject group is required to create a campaign");
+  }
+  if (input.sendingAccountIds.length === 0) {
+    throw new Error("At least one sending account is required to create a campaign");
   }
 
   const windows: Record<string, { start: string; end: string }[]> = {};
@@ -128,7 +136,7 @@ export async function createCampaignFromWizard(deps: CreateCampaignFromWizardDep
   return deps.campaignRepository.create({
     name: input.name,
     sequenceId: sequence.id,
-    sendingAccountIds: [input.sendingAccountId],
+    sendingAccountIds: input.sendingAccountIds,
     businessHoursProfileId: businessHoursProfile.id
   });
 }

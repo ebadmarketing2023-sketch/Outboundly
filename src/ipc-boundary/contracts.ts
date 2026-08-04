@@ -349,7 +349,8 @@ export type CreateCampaignWizardLeadsSource =
 
 export interface CreateCampaignWizardRequest {
   name: string;
-  sendingAccountId: string;
+  /** At least one required -- every account here goes into the campaign's rotation pool. */
+  sendingAccountIds: string[];
   timezone: string;
   /** Lowercase full weekday names ("monday".."sunday") sending is allowed on. */
   days: string[];

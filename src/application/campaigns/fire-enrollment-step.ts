@@ -15,7 +15,7 @@ import { findHeaderValue } from "../../core/mime/headers.js";
 import { EmailAddress, formatNamedAddress, type NamedEmailAddress } from "../../core/shared-kernel/email-address.js";
 import { schedule } from "../../core/scheduling/scheduler.js";
 import { NoEligibleAccountError } from "../../core/scheduling/types.js";
-import { asMessageId, type AccountId, type SendQueueId } from "../../core/shared-kernel/ids.js";
+import { asAccountId, asMessageId, type AccountId, type SendQueueId } from "../../core/shared-kernel/ids.js";
 import type { CampaignRepository } from "../../ports/campaign-repository.port.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
@@ -153,7 +153,8 @@ export async function fireEnrollmentStep(
 
   let candidate;
   try {
-    const ctx = await buildSchedulingContext(deps, campaign, now, contact.timezone);
+    const preferredAccountId = mostRecentMessage ? asAccountId(mostRecentMessage.accountId) : undefined;
+    const ctx = await buildSchedulingContext(deps, campaign, now, contact.timezone, preferredAccountId);
     candidate = schedule(now, ctx);
   } catch (err) {
     if (err instanceof NoEligibleAccountError) return { outcome: "no_eligible_account" };

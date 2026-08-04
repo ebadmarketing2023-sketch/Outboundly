@@ -98,6 +98,15 @@ export const messages = sqliteTable("messages", {
   accountId: text("account_id")
     .notNull()
     .references(() => accounts.id),
+  // Deliberately separate from accountId above, which stays whatever was proposed at *enqueue*
+  // time and must never change (buildMimeMessage's Message-ID stability depends on it -- see
+  // send-worker-tick.ts's own comment). The Provider Selector (Section 16.3) can dispatch through
+  // a *different* account than that at actual send time; this column records which account really
+  // sent it, set only once (in markMessageSent) when status actually becomes 'sent'. Read by
+  // findOutboundMessageHistoryForEnrollment so a later follow-up step can prefer the account that
+  // actually sent the previous one, keeping one recipient's whole thread on a consistent sender
+  // identity even when the rotation pool has multiple accounts.
+  sentFromAccountId: text("sent_from_account_id").references(() => accounts.id),
   providerMessageId: text("provider_message_id"),
   messageIdHeader: text("message_id_header").notNull(),
   inReplyToHeader: text("in_reply_to_header"),

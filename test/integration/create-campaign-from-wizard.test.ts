@@ -93,7 +93,7 @@ describe("createCampaignFromWizard (Section 5.6 campaign-creation wizard)", () =
     await expect(
       createCampaignFromWizard(deps, {
         name: "Empty",
-        sendingAccountId: asAccountId(accountId),
+        sendingAccountIds: [asAccountId(accountId)],
         timezone: "UTC",
         days: ["monday"],
         start: "09:00",
@@ -107,7 +107,7 @@ describe("createCampaignFromWizard (Section 5.6 campaign-creation wizard)", () =
   it("creates a business-hours profile, sequence, content groups, and campaign that fires end-to-end without breaking the pre-existing schema", async () => {
     const campaign = await createCampaignFromWizard(deps, {
       name: "Q3 outbound",
-      sendingAccountId: asAccountId(accountId),
+      sendingAccountIds: [asAccountId(accountId)],
       timezone: "UTC",
       days: ["monday", "tuesday"],
       start: "09:00",
@@ -154,7 +154,7 @@ describe("createCampaignFromWizard (Section 5.6 campaign-creation wizard)", () =
   it("fires correctly with only a single template/subject group and no follow-ups", async () => {
     const campaign = await createCampaignFromWizard(deps, {
       name: "Single group",
-      sendingAccountId: asAccountId(accountId),
+      sendingAccountIds: [asAccountId(accountId)],
       timezone: "UTC",
       days: ["monday"],
       start: "09:00",
@@ -176,5 +176,50 @@ describe("createCampaignFromWizard (Section 5.6 campaign-creation wizard)", () =
 
     const result = await fireEnrollmentStep(fireDeps, enrollment, new Date());
     expect(result.outcome).toBe("enqueued");
+  });
+
+  it("rejects a request with no sending accounts", async () => {
+    await expect(
+      createCampaignFromWizard(deps, {
+        name: "No accounts",
+        sendingAccountIds: [],
+        timezone: "UTC",
+        days: ["monday"],
+        start: "09:00",
+        end: "17:00",
+        contentGroups: [{ subjectText: "Subject", document: DOC("Body"), weight: 100 }],
+        followUpSteps: []
+      })
+    ).rejects.toThrow(/at least one sending account/i);
+  });
+
+  it("creates a campaign with multiple sending accounts in its rotation pool", async () => {
+    const secondAccountId = generateId();
+    const now = new Date();
+    db.insert(accounts)
+      .values({
+        id: secondAccountId,
+        provider: "google",
+        emailAddress: "second@outboundly.app",
+        displayName: "Second Sender",
+        status: "connected",
+        connectedAt: now,
+        createdAt: now,
+        updatedAt: now
+      })
+      .run();
+
+    const campaign = await createCampaignFromWizard(deps, {
+      name: "Two-account camp",
+      sendingAccountIds: [asAccountId(accountId), asAccountId(secondAccountId)],
+      timezone: "UTC",
+      days: ["monday"],
+      start: "09:00",
+      end: "17:00",
+      contentGroups: [{ subjectText: "Subject", document: DOC("Body"), weight: 100 }],
+      followUpSteps: []
+    });
+
+    expect(campaign.sendingAccountIds.sort()).toEqual([accountId, secondAccountId].sort());
   });
 });

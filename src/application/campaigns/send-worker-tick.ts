@@ -234,7 +234,8 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     sentAt: now,
     providerMessageId: sendResult.providerMessageId,
     providerThreadId: sendResult.providerThreadId,
-    messageIdHeader: sendResult.messageIdHeader
+    messageIdHeader: sendResult.messageIdHeader,
+    sentFromAccountId: selection.accountId
   });
   await deps.sendQueueRepository.markSent(claimed.id);
   await deps.eventRepository.record({

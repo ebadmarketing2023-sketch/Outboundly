@@ -85,7 +85,17 @@ export interface ConversationRepository {
    * which reads this same column) would reference a Message-ID the recipient's system never saw. */
   markMessageSent(
     messageId: string,
-    input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string; messageIdHeader?: string }
+    input: {
+      sentAt: Date;
+      providerMessageId?: string;
+      providerThreadId?: string;
+      messageIdHeader?: string;
+      /** The account that actually dispatched this send -- may differ from the message's own
+       * accountId (set at enqueue time and never changed) when the Provider Selector substituted a
+       * different account at dispatch. Recorded so a later follow-up step can prefer staying on
+       * the same account, not the originally-proposed one. */
+      sentFromAccountId?: string;
+    }
   ): Promise<void>;
   /** The minimal fields the Send worker (Section 21.1) needs to dispatch a queued message it
    * didn't create itself -- which account it was queued against, its recipient (to resolve the
@@ -106,7 +116,7 @@ export interface ConversationRepository {
    * become due before the Send worker has actually dispatched the step before it). */
   findOutboundMessageHistoryForEnrollment(
     campaignEnrollmentId: string
-  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string }>>;
+  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string; accountId: string }>>;
   /** The provider's own thread id (e.g. Gmail's threadId) for one of our internal threads, if
    * known yet -- only populated once that thread's first message actually finishes sending
    * (markMessageSent's providerThreadId) -- AND only returned if that thread actually belongs to

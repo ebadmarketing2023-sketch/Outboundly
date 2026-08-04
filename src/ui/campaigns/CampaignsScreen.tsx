@@ -137,7 +137,7 @@ export function CampaignsScreen(): JSX.Element {
   const [wizardStep, setWizardStep] = useState(0);
   const [wizardBusy, setWizardBusy] = useState(false);
   const [wizardName, setWizardName] = useState("");
-  const [wizardAccountId, setWizardAccountId] = useState("");
+  const [wizardAccountIds, setWizardAccountIds] = useState<Set<string>>(new Set());
   const [wizardTimezone, setWizardTimezone] = useState(defaultTimezone);
   const [wizardDays, setWizardDays] = useState<Set<string>>(new Set(["monday", "tuesday", "wednesday", "thursday", "friday"]));
   const [wizardStart, setWizardStart] = useState("09:00");
@@ -253,7 +253,7 @@ export function CampaignsScreen(): JSX.Element {
   function handleOpenWizard(): void {
     setWizardStep(0);
     setWizardName("");
-    setWizardAccountId(defaultSendingAccountId);
+    setWizardAccountIds(defaultSendingAccountId ? new Set([defaultSendingAccountId]) : new Set());
     setWizardTimezone(defaultTimezone);
     setWizardDays(new Set(["monday", "tuesday", "wednesday", "thursday", "friday"]));
     setWizardStart("09:00");
@@ -276,6 +276,15 @@ export function CampaignsScreen(): JSX.Element {
       const next = new Set(prev);
       if (next.has(day)) next.delete(day);
       else next.add(day);
+      return next;
+    });
+  }
+
+  function toggleWizardAccount(accountId: string): void {
+    setWizardAccountIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(accountId)) next.delete(accountId);
+      else next.add(accountId);
       return next;
     });
   }
@@ -317,7 +326,9 @@ export function CampaignsScreen(): JSX.Element {
     setWizardFollowUps((prev) => prev.filter((_, i) => i !== index));
   }
 
-  const wizardDetailsValid = Boolean(wizardName.trim() && wizardAccountId && wizardTimezone && wizardDays.size > 0 && wizardStart && wizardEnd);
+  const wizardDetailsValid = Boolean(
+    wizardName.trim() && wizardAccountIds.size > 0 && wizardTimezone && wizardDays.size > 0 && wizardStart && wizardEnd
+  );
   const wizardLeadsValid = wizardLeadsMode === "batch" ? Boolean(wizardBatchId) : Boolean(wizardCsvText.trim());
   const wizardContentValid =
     wizardContentGroups.length > 0 &&
@@ -341,7 +352,7 @@ export function CampaignsScreen(): JSX.Element {
 
       const result = await window.outboundly.createCampaignFromWizard({
         name: wizardName,
-        sendingAccountId: wizardAccountId,
+        sendingAccountIds: [...wizardAccountIds],
         timezone: wizardTimezone,
         days: [...wizardDays],
         start: wizardStart,
@@ -915,17 +926,21 @@ export function CampaignsScreen(): JSX.Element {
             <Field label="Campaign name">
               <Input value={wizardName} onChange={(e) => setWizardName(e.target.value)} placeholder="e.g. Q3 outbound" />
             </Field>
-            <Field label="Sending account">
-              <Select value={wizardAccountId} onChange={(e) => setWizardAccountId(e.target.value)}>
-                <option value="">Select account...</option>
+            <Field label="Sending accounts">
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
                 {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.emailAddress}
-                    {a.status === "reauth_required" ? " (reconnect needed)" : ""}
-                    {a.status === "disconnected" ? " (disconnected)" : ""}
-                  </option>
+                  <Checkbox
+                    key={a.id}
+                    checked={wizardAccountIds.has(a.id)}
+                    onChange={() => toggleWizardAccount(a.id)}
+                    label={`${a.emailAddress}${a.status === "reauth_required" ? " (reconnect needed)" : ""}${a.status === "disconnected" ? " (disconnected)" : ""}`}
+                  />
                 ))}
-              </Select>
+              </div>
+              <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginTop: "var(--space-2)" }}>
+                Selecting more than one adds capacity by rotating between them -- each lead still gets every email in its
+                sequence from the same account, so a reply thread never switches senders mid-conversation.
+              </p>
             </Field>
             <Field label="Timezone">
               <Select value={wizardTimezone} onChange={(e) => setWizardTimezone(e.target.value)}>
@@ -1111,8 +1126,8 @@ export function CampaignsScreen(): JSX.Element {
             <div>
               <strong>{wizardName}</strong>
               <p style={{ color: "var(--color-text-secondary)" }}>
-                {accounts.find((a) => a.id === wizardAccountId)?.emailAddress ?? wizardAccountId} · {wizardTimezone} · {wizardStart}–{wizardEnd} ·{" "}
-                {[...wizardDays].map((d) => WEEKDAY_LABELS[d]).join(", ")}
+                {[...wizardAccountIds].map((id) => accounts.find((a) => a.id === id)?.emailAddress ?? id).join(", ")} · {wizardTimezone} ·{" "}
+                {wizardStart}–{wizardEnd} · {[...wizardDays].map((d) => WEEKDAY_LABELS[d]).join(", ")}
               </p>
             </div>
             <div>

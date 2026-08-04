@@ -30,7 +30,8 @@ export async function buildSchedulingContext(
   deps: BuildSchedulingContextDeps,
   campaign: Campaign,
   now: Date,
-  recipientTimezone?: string
+  recipientTimezone?: string,
+  preferredAccountId?: AccountId
 ): Promise<SchedulingContext> {
   const businessHoursProfile = await deps.businessHoursProfileRepository.findById(campaign.businessHoursProfileId);
   if (!businessHoursProfile) {
@@ -59,9 +60,24 @@ export async function buildSchedulingContext(
 
   const delayPolicy = await deps.delayPolicyConfigRepository.findByCampaignId(campaign.id);
 
+  // A follow-up prefers whichever account actually sent this enrollment's previous step (see
+  // fire-enrollment-step.ts): schedule() tries availableAccountIds in order and takes the first
+  // eligible one, so putting the preferred account first is enough to express "stay consistent
+  // for this recipient's thread" without changing schedule()'s own pure rotation logic at all --
+  // if that account is no longer eligible (disconnected, rate-limited, unhealthy), the existing
+  // fall-through to the next account in the pool (and the Provider Selector's own substitution at
+  // dispatch time) still applies exactly as before. A real reported concern: sending consecutive
+  // messages in the same conversation from different "From" addresses looks unusual to a
+  // recipient even though the reply threading itself still works -- this keeps that from
+  // happening whenever it's avoidable.
+  const availableAccountIds =
+    preferredAccountId && campaign.sendingAccountIds.includes(preferredAccountId)
+      ? [preferredAccountId, ...campaign.sendingAccountIds.filter((id) => id !== preferredAccountId)]
+      : campaign.sendingAccountIds;
+
   return {
     now,
-    availableAccountIds: campaign.sendingAccountIds,
+    availableAccountIds,
     businessHoursProfile,
     warmupProfiles,
     recentSendCounts,

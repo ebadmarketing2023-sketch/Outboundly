@@ -174,7 +174,13 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
 
   async markMessageSent(
     messageId: string,
-    input: { sentAt: Date; providerMessageId?: string; providerThreadId?: string; messageIdHeader?: string }
+    input: {
+      sentAt: Date;
+      providerMessageId?: string;
+      providerThreadId?: string;
+      messageIdHeader?: string;
+      sentFromAccountId?: string;
+    }
   ): Promise<void> {
     const existing = this.db.select({ threadId: messages.threadId }).from(messages).where(eq(messages.id, messageId)).get();
 
@@ -184,6 +190,7 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
         status: "sent",
         sentAt: input.sentAt,
         providerMessageId: input.providerMessageId,
+        sentFromAccountId: input.sentFromAccountId,
         // Overwrite the provisional Message-ID this row was inserted with at enqueue time only
         // when the provider handed back a confirmed, actually-delivered value (see
         // ProviderSendResult.messageIdHeader's doc comment) -- undefined means trust the
@@ -237,13 +244,31 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
 
   async findOutboundMessageHistoryForEnrollment(
     campaignEnrollmentId: string
-  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string }>> {
-    return this.db
-      .select({ messageIdHeader: messages.messageIdHeader, subject: messages.subject, status: messages.status })
+  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string; accountId: string }>> {
+    const rows = this.db
+      .select({
+        messageIdHeader: messages.messageIdHeader,
+        subject: messages.subject,
+        status: messages.status,
+        accountId: messages.accountId,
+        sentFromAccountId: messages.sentFromAccountId
+      })
       .from(messages)
       .where(and(eq(messages.campaignEnrollmentId, campaignEnrollmentId), eq(messages.direction, "outbound")))
       .orderBy(asc(messages.createdAt))
       .all();
+
+    // sentFromAccountId (the account that actually dispatched this send, which the Provider
+    // Selector -- Section 16.3 -- may have substituted away from the plain accountId proposed at
+    // enqueue time) is what a follow-up should key its own account preference on; accountId is the
+    // fallback for a row that hasn't actually sent yet (sentFromAccountId is only ever set once
+    // status becomes 'sent').
+    return rows.map((row) => ({
+      messageIdHeader: row.messageIdHeader,
+      subject: row.subject,
+      status: row.status,
+      accountId: row.sentFromAccountId ?? row.accountId
+    }));
   }
 
   async findProviderThreadId(threadId: string, accountId: string): Promise<string | undefined> {

@@ -284,19 +284,39 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     // replying, exactly what was reported. This test forces that exact substitution on *both*
     // dispatches and asserts the real, wire-level headers (not just what's recorded in our own DB)
     // still chain correctly.
+    // Three accounts, not two: fireEnrollmentStep now prefers whichever account actually sent an
+    // enrollment's previous step when proposing the next one (see the "prefers the account that
+    // actually sent the first step" test above), so forcing step 2's *proposed* account to be the
+    // one step 1 really used (deterministic, by design) and then substituting it away needs a third
+    // account to land on -- otherwise the substitution could coincidentally fall back onto whichever
+    // account the thread's own accountId column happens to still carry from step 1's enqueue-time
+    // creation, which would defeat this test's whole point of forcing a genuine mismatch.
     const secondAccountId = generateId();
+    const thirdAccountId = generateId();
     const now = new Date();
     db.insert(accounts)
-      .values({
-        id: secondAccountId,
-        provider: "google",
-        emailAddress: "backup@another-domain.app",
-        displayName: "Backup Sender",
-        status: "connected",
-        connectedAt: now,
-        createdAt: now,
-        updatedAt: now
-      })
+      .values([
+        {
+          id: secondAccountId,
+          provider: "google",
+          emailAddress: "backup@another-domain.app",
+          displayName: "Backup Sender",
+          status: "connected",
+          connectedAt: now,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: thirdAccountId,
+          provider: "google",
+          emailAddress: "third@another-domain.app",
+          displayName: "Third Sender",
+          status: "connected",
+          connectedAt: now,
+          createdAt: now,
+          updatedAt: now
+        }
+      ])
       .run();
 
     const template = await fireStepDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi there"))] } });
@@ -312,7 +332,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     const campaign = await fireStepDeps.campaignRepository.create({
       name: "Rotating camp",
       sequenceId: sequence.id,
-      sendingAccountIds: [asAccountId(accountId), asAccountId(secondAccountId)],
+      sendingAccountIds: [asAccountId(accountId), asAccountId(secondAccountId), asAccountId(thirdAccountId)],
       businessHoursProfileId
     });
     await fireStepDeps.campaignRepository.setStatus(campaign.id, "running");
@@ -324,11 +344,16 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       nextSendAt: new Date(Date.now() - 60_000)
     });
 
-    // --- Step 1: enqueue, then force the Provider Selector to substitute the *other* account ---
+    // --- Step 1: enqueue, then force the Provider Selector to substitute a *different* account ---
     // Disconnection (not a rate/daily limit) is what forces this: dispatchOne's own rate-limiter
     // check on claimed.accountId runs *before* the Provider Selector is ever consulted, so a
     // dailySendLimit-based denial would just retry the row without ever reaching substitution.
     // Provider Selector's own isEligible() checks account.status, which the earlier gate doesn't.
+    // accountId is disconnected up front so schedule() proposes secondAccountId at enqueue time
+    // (the thread's own accountId column, set at creation, ends up being secondAccountId); then
+    // secondAccountId itself is disconnected too, forcing dispatch to substitute all the way to
+    // thirdAccountId -- the account that actually sends step 1.
+    await db.update(accounts).set({ status: "disconnected" }).where(eq(accounts.id, accountId)).run();
     const firstFire = await fireEnrollmentStep(fireStepDeps, enrollment, new Date());
     if (firstFire.outcome !== "enqueued") throw new Error(`setup failed: ${firstFire.outcome}`);
     const firstQueueRow = db.select().from(sendQueue).where(eq(sendQueue.id, firstFire.sendQueueEntryId)).get();
@@ -346,19 +371,28 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     // Proves the substitution actually happened -- otherwise this test wouldn't be exercising the
     // real reported bug at all.
     expect(provider.createdDrafts[0]!.account.accountId).not.toBe(accountProposedForStep1);
+    const accountThatActuallySentStep1 = provider.createdDrafts[0]!.account.accountId;
 
-    // Restore both accounts to eligible, then re-disable whichever gets proposed for step 2, so
-    // the *second* dispatch also substitutes -- proving the fix holds across repeated rotation,
-    // not just once.
+    // Restore all three accounts to eligible. fireEnrollmentStep now proposes step 2 against
+    // whichever account actually sent step 1 (accountThatActuallySentStep1 -- thirdAccountId) --
+    // deterministic, not incidental -- so forcing a *second* substitution needs both that account
+    // and the thread's own accountId column (still secondAccountId, from step 1's enqueue-time
+    // creation) disconnected together; otherwise substituting away from thirdAccountId could land
+    // right back on secondAccountId and coincidentally "match" the thread, defeating the point.
     await db.update(accounts).set({ status: "connected" }).where(eq(accounts.id, accountId)).run();
     await db.update(accounts).set({ status: "connected" }).where(eq(accounts.id, secondAccountId)).run();
+    await db.update(accounts).set({ status: "connected" }).where(eq(accounts.id, thirdAccountId)).run();
 
     const advanced = await fireStepDeps.enrollmentRepository.findById(enrollment.id);
     const secondFire = await fireEnrollmentStep(fireStepDeps, advanced!, new Date());
     if (secondFire.outcome !== "enqueued") throw new Error(`setup failed: ${secondFire.outcome}`);
     const secondQueueRow = db.select().from(sendQueue).where(eq(sendQueue.id, secondFire.sendQueueEntryId)).get();
     const accountProposedForStep2 = secondQueueRow!.accountId;
+    // Proves the new account-consistency preference: step 2 is proposed against the same account
+    // that actually sent step 1, not the original first-choice account or an arbitrary rotation.
+    expect(accountProposedForStep2).toBe(accountThatActuallySentStep1);
     await db.update(accounts).set({ status: "disconnected" }).where(eq(accounts.id, accountProposedForStep2)).run();
+    await db.update(accounts).set({ status: "disconnected" }).where(eq(accounts.id, secondAccountId)).run();
 
     const secondDispatch = await runSendWorkerTick(sendWorkerDeps, new Date());
     expect(secondDispatch.sent).toBe(1);
@@ -384,6 +418,79 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     // be omitted here, not carried over, leaving the In-Reply-To/References headers (already
     // asserted above) as what threads this correctly for the recipient regardless of account.
     expect(provider.createdDrafts[1]!.providerThreadId).toBeUndefined();
+  });
+
+  it("prefers the account that actually sent the first step for a follow-up, over rotating back to the original first-choice account", async () => {
+    // A real user concern: with multiple sending accounts in rotation, a recipient could otherwise
+    // see the first email from one address and the follow-up from a completely different one in
+    // the same conversation -- unusual and easy to notice, even though the reply threading headers
+    // themselves would still technically work. Once step 1 has actually gone out through account
+    // B (because account A was temporarily ineligible), step 2 should keep using account B too,
+    // not fall back to account A the moment it becomes eligible again.
+    const secondAccountId = generateId();
+    const now = new Date();
+    db.insert(accounts)
+      .values({
+        id: secondAccountId,
+        provider: "google",
+        emailAddress: "backup@another-domain.app",
+        displayName: "Backup Sender",
+        status: "connected",
+        connectedAt: now,
+        createdAt: now,
+        updatedAt: now
+      })
+      .run();
+
+    const template = await fireStepDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi there"))] } });
+    const sequence = await fireStepDeps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
+    });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "Original subject", weight: 1 });
+    await fireStepDeps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "Follow-up subject", weight: 1 });
+    const campaign = await fireStepDeps.campaignRepository.create({
+      name: "Consistent-sender camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId), asAccountId(secondAccountId)],
+      businessHoursProfileId
+    });
+    await fireStepDeps.campaignRepository.setStatus(campaign.id, "running");
+    const contact = await fireStepDeps.contactRepository.upsertByEmail({ email: "consistent-lead@example.com", source: "manual" });
+    const enrollment = await fireStepDeps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    // Force step 1 to dispatch through the *second* account by disconnecting the first-listed one
+    // (accountId) beforehand -- same mechanism the rotation test above uses.
+    await db.update(accounts).set({ status: "disconnected" }).where(eq(accounts.id, accountId)).run();
+    const firstFire = await fireEnrollmentStep(fireStepDeps, enrollment, new Date());
+    if (firstFire.outcome !== "enqueued") throw new Error(`setup failed: ${firstFire.outcome}`);
+    const firstDispatch = await runSendWorkerTick(sendWorkerDeps, new Date());
+    expect(firstDispatch.sent).toBe(1);
+    expect(provider.createdDrafts[0]!.account.accountId).toBe(secondAccountId);
+
+    // Reconnect the original account -- without the fix, schedule() would try
+    // campaign.sendingAccountIds in its stored order and propose accountId again, since it's now
+    // eligible and listed first.
+    await db.update(accounts).set({ status: "connected" }).where(eq(accounts.id, accountId)).run();
+
+    const advanced = await fireStepDeps.enrollmentRepository.findById(enrollment.id);
+    const secondFire = await fireEnrollmentStep(fireStepDeps, advanced!, new Date());
+    if (secondFire.outcome !== "enqueued") throw new Error(`setup failed: ${secondFire.outcome}`);
+    const secondQueueRow = db.select().from(sendQueue).where(eq(sendQueue.id, secondFire.sendQueueEntryId)).get();
+    // Proposed for the SAME account step 1 actually sent from, not the reconnected original.
+    expect(secondQueueRow!.accountId).toBe(secondAccountId);
+
+    const secondDispatch = await runSendWorkerTick(sendWorkerDeps, new Date());
+    expect(secondDispatch.sent).toBe(1);
+    expect(provider.createdDrafts[1]!.account.accountId).toBe(secondAccountId);
   });
 
   it("does pass the provider thread id through when the same account sends every step (the common case: one sender per campaign)", async () => {
