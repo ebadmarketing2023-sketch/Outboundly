@@ -22,6 +22,7 @@ import type { ConversationRepository } from "../../ports/conversation-repository
 import type { DeliverabilityReportRepository } from "../../ports/deliverability-report-repository.port.js";
 import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js";
 import type { AdvanceEnrollmentInput, EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
+import type { ContentGroupRepository } from "../../ports/content-group-repository.port.js";
 import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
 import type { SendQueueRepository } from "../../ports/send-queue-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
@@ -48,6 +49,7 @@ export interface FireEnrollmentStepDeps extends BuildSchedulingContextDeps {
   templateRepository: TemplateRepository;
   templateVariantRepository: TemplateVariantRepository;
   subjectVariantRepository: SubjectVariantRepository;
+  contentGroupRepository: ContentGroupRepository;
   contactRepository: ContactRepository;
   suppressionListRepository: SuppressionListRepository;
   enrollmentRepository: EnrollmentRepository;
@@ -99,9 +101,22 @@ export async function fireEnrollmentStep(
   const template = await deps.templateRepository.findById(step.templateId);
   if (!template) throw new Error(`Sequence step ${step.id} references a template that no longer exists`);
 
-  const subjectVariants = await deps.subjectVariantRepository.findByStepId(step.id);
-  if (subjectVariants.length === 0) throw new Error(`Sequence step ${step.id} has no subject line configured`);
-  const selectedSubjectVariant = selectWeightedVariant(subjectVariants);
+  // Campaign-creation wizard's atomic template+subject pairing: when a step has content groups,
+  // selection happens once over the paired groups instead of the two independent weighted rolls
+  // below (over templateVariants and subjectVariants) -- that's what actually guarantees a
+  // subject line never ends up sent with another group's template. A step with no content groups
+  // (every pre-existing sequence, and every follow-up step the wizard itself creates) is
+  // completely unaffected and falls through to the pre-existing independent-selection path.
+  const contentGroups = await deps.contentGroupRepository.findByStepId(step.id);
+  const selectedContentGroup = contentGroups.length > 0 ? selectWeightedVariant(contentGroups) : undefined;
+
+  const subjectVariants = selectedContentGroup ? [] : await deps.subjectVariantRepository.findByStepId(step.id);
+  if (!selectedContentGroup && subjectVariants.length === 0) {
+    throw new Error(`Sequence step ${step.id} has no subject line configured`);
+  }
+  const selectedSubjectVariant = selectedContentGroup
+    ? { id: selectedContentGroup.subjectVariantId, subjectText: selectedContentGroup.subjectText }
+    : selectWeightedVariant(subjectVariants);
 
   // Follow-up threading (Section 14.3): only the first step is a brand-new email. Every step
   // after that continues the original message's subject/thread as a reply instead of going out as
@@ -129,9 +144,12 @@ export async function fireEnrollmentStep(
   const inReplyTo = mostRecentMessage?.messageIdHeader;
   const references = priorMessages.length > 0 ? priorMessages.map((m) => m.messageIdHeader) : undefined;
 
-  const templateVariants = await deps.templateVariantRepository.findByTemplateId(template.id);
-  const document: Document =
-    templateVariants.length === 0 ? template.document : (selectWeightedVariant(templateVariants).documentOverride ?? template.document);
+  const templateVariants = selectedContentGroup ? [] : await deps.templateVariantRepository.findByTemplateId(template.id);
+  const document: Document = selectedContentGroup
+    ? selectedContentGroup.document
+    : templateVariants.length === 0
+      ? template.document
+      : (selectWeightedVariant(templateVariants).documentOverride ?? template.document);
 
   let candidate;
   try {
@@ -215,7 +233,7 @@ export async function fireEnrollmentStep(
     status: "queued",
     campaignEnrollmentId: enrollment.id,
     draftId: draft.id,
-    templateId: template.id,
+    templateId: selectedContentGroup?.templateId ?? template.id,
     subjectVariantId: selectedSubjectVariant.id,
     occurredAt: now
   });

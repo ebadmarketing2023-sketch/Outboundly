@@ -408,6 +408,36 @@ export const subjectVariants = sqliteTable("subject_variants", {
 });
 
 /**
+ * Campaign-creation wizard content groups: one atomic template+subject pair, scoped to a single
+ * sequence step. Deliberately a new table rather than positionally zipping template_variants and
+ * subject_variants (both already exist, both independently weighted) -- those two are selected via
+ * two separate weighted-random rolls in fireEnrollmentStep, so nothing actually keeps a
+ * template_variant's index aligned with a subject_variant's index once either list is edited or
+ * reordered. Each row here still points at a real templates/subject_variants row (createCampaignFromWizard
+ * creates one of each per group) purely so existing per-template/per-subject analytics rollups keep
+ * working unchanged; document_model_json/subject_text are also denormalized directly onto this row so
+ * fireEnrollmentStep's content-groups path never needs to look anything else up once it has picked a
+ * group. Purely additive: a sequence step with no rows here is unaffected and falls back to the
+ * pre-existing independent template_variants/subject_variants selection.
+ */
+export const sequenceStepContentGroups = sqliteTable("sequence_step_content_groups", {
+  id: text("id").primaryKey(),
+  sequenceStepId: text("sequence_step_id")
+    .notNull()
+    .references(() => sequenceSteps.id),
+  templateId: text("template_id")
+    .notNull()
+    .references(() => templates.id),
+  subjectVariantId: text("subject_variant_id")
+    .notNull()
+    .references(() => subjectVariants.id),
+  documentModelJson: text("document_model_json").notNull(),
+  subjectText: text("subject_text").notNull(),
+  weight: integer("weight").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull()
+});
+
+/**
  * Scheduling Policies (Section 5.7, backs Section 15) — configuration the Scheduling Policy
  * Engine's policy objects read from, not the policy logic itself (that's pure core logic, kept
  * out of the persistence layer entirely).

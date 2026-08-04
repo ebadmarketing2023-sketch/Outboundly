@@ -30,6 +30,7 @@ import { SqliteNotificationRepository } from "../../src/adapters/persistence/rep
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteSubjectVariantRepository } from "../../src/adapters/persistence/repositories/subject-variant-repository.js";
+import { SqliteContentGroupRepository } from "../../src/adapters/persistence/repositories/content-group-repository.js";
 import { SqliteSuppressionListRepository } from "../../src/adapters/persistence/repositories/suppression-list-repository.js";
 import { SqliteTemplateRepository } from "../../src/adapters/persistence/repositories/template-repository.js";
 import { SqliteTemplateVariantRepository } from "../../src/adapters/persistence/repositories/template-variant-repository.js";
@@ -89,6 +90,7 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
       templateRepository: new SqliteTemplateRepository(db),
       templateVariantRepository: new SqliteTemplateVariantRepository(db),
       subjectVariantRepository: new SqliteSubjectVariantRepository(db),
+      contentGroupRepository: new SqliteContentGroupRepository(db),
       contactRepository: new SqliteContactRepository(db),
       suppressionListRepository: new SqliteSuppressionListRepository(db),
       enrollmentRepository: new SqliteEnrollmentRepository(db),
@@ -159,6 +161,73 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     // id, which reads as unprofessional/spammy.
     const message = db.select().from(messages).where(eq(messages.id, queueRow!.messageId)).get();
     expect(message?.fromAddress).toBe('"Ada Lovelace" <me@outboundly.app>');
+  });
+
+  it("selects an atomic template+subject content group when one is configured, never mixing a group's subject with another group's template", async () => {
+    // The step's own templateId/subjectVariants only exist to satisfy the pre-existing NOT NULL
+    // schema -- a step with content groups configured must ignore them entirely and always use
+    // the selected group's own template+subject together, exactly as createCampaignFromWizard sets
+    // one up.
+    const placeholderTemplate = await deps.templateRepository.create({
+      name: "Placeholder",
+      document: { blocks: [paragraph(textRun("placeholder, never sent"))] } as never
+    });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Content-group sequence",
+      steps: [{ delayDays: 0, delayHours: 0, templateId: placeholderTemplate.id }]
+    });
+    const step = sequence.steps[0]!;
+
+    const templateA = await deps.templateRepository.create({ name: "Group A", document: { blocks: [paragraph(textRun("Version A body"))] } as never });
+    const templateB = await deps.templateRepository.create({ name: "Group B", document: { blocks: [paragraph(textRun("Version B body"))] } as never });
+    const subjectA = await deps.subjectVariantRepository.create({ sequenceStepId: step.id, subjectText: "Subject A", weight: 1 });
+    const subjectB = await deps.subjectVariantRepository.create({ sequenceStepId: step.id, subjectText: "Subject B", weight: 1 });
+
+    // Weight 0 on group B makes selection deterministic (selectWeightedVariant's own contract:
+    // zero/negative weight is never chosen while any positive-weight option exists).
+    await deps.contentGroupRepository.create({
+      sequenceStepId: step.id,
+      templateId: templateA.id,
+      subjectVariantId: subjectA.id,
+      document: templateA.document,
+      subjectText: "Subject A",
+      weight: 1
+    });
+    await deps.contentGroupRepository.create({
+      sequenceStepId: step.id,
+      templateId: templateB.id,
+      subjectVariantId: subjectB.id,
+      document: templateB.document,
+      subjectText: "Subject B",
+      weight: 0
+    });
+
+    const campaign = await deps.campaignRepository.create({
+      name: "Content-group campaign",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await deps.contactRepository.upsertByEmail({ email: "group-lead@example.com", firstName: "Grace", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: step.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const result = await fireEnrollmentStep(deps, enrollment, new Date());
+    expect(result.outcome).toBe("enqueued");
+    if (result.outcome !== "enqueued") return;
+
+    const queueRow = db.select().from(sendQueue).where(eq(sendQueue.id, result.sendQueueEntryId)).get();
+    const message = db.select().from(messages).where(eq(messages.id, queueRow!.messageId)).get();
+    expect(message?.subject).toBe("Subject A");
+    expect(message?.bodyText).toContain("Version A body");
+    // The message's recorded templateId is group A's own real template -- not the step's
+    // placeholder -- so per-template analytics attribute to the content that actually went out.
+    expect(message?.templateId).toBe(templateA.id);
+    expect(message?.subjectVariantId).toBe(subjectA.id);
   });
 
   it("completes the enrollment once the final step is fired, and auto-completes the campaign once every enrollment is terminal", async () => {
@@ -463,6 +532,7 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
       templateRepository: new SqliteTemplateRepository(db),
       templateVariantRepository: new SqliteTemplateVariantRepository(db),
       subjectVariantRepository: new SqliteSubjectVariantRepository(db),
+      contentGroupRepository: new SqliteContentGroupRepository(db),
       contactRepository: new SqliteContactRepository(db),
       suppressionListRepository: new SqliteSuppressionListRepository(db),
       enrollmentRepository: new SqliteEnrollmentRepository(db),

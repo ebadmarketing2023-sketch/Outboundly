@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import type {
   AccountSummary,
   BusinessHoursProfileSummary,
   CampaignDashboardEntrySummary,
   CampaignSummary,
   ContactSummary,
+  CreateCampaignWizardLeadsSource,
   EnrollmentSummary,
-  LeadImportBatchSummary,
-  SequenceSummary,
-  TemplateSummary
+  LeadImportBatchSummary
 } from "../../ipc-boundary/contracts.js";
 import {
   AccountStatusBadge,
@@ -52,7 +51,23 @@ const WEEKDAY_LABELS: Record<string, string> = {
   sunday: "Sun"
 };
 
-type SectionKey = "accounts" | "business-hours" | "templates" | "sequences" | "campaigns";
+const DEFAULT_BODY = "Hi {{first_name}},\n\nJust checking in.\n\nBest,\nMe";
+
+const WIZARD_STEP_LABELS = ["Details", "Leads", "Content", "Review"];
+
+type SectionKey = "accounts" | "campaigns";
+
+interface WizardContentGroupDraft {
+  subjectText: string;
+  bodyText: string;
+  weight: string;
+}
+
+interface WizardFollowUpDraft {
+  bodyText: string;
+  delayDays: string;
+  delayHours: string;
+}
 
 /** Renders a campaign's rotation pool (Critical Improvement: which account(s) a campaign actually
  * sends from, visible right on the dashboard row) as a comma-joined list of email addresses --
@@ -64,21 +79,26 @@ function describeSendingAccounts(sendingAccountIds: string[], accounts: AccountS
   return sendingAccountIds.map((id) => accounts.find((a) => a.id === id)?.emailAddress ?? id).join(", ");
 }
 
+function newContentGroupDraft(): WizardContentGroupDraft {
+  return { subjectText: "", bodyText: DEFAULT_BODY, weight: "100" };
+}
+
+function newFollowUpDraft(): WizardFollowUpDraft {
+  return { bodyText: "", delayDays: "3", delayHours: "0" };
+}
+
 /**
- * The Phase 4 "minimal" Campaign UI (Section 14): sending-account limits, business hours
- * profiles, template/sequence/campaign creation, and enrollment monitoring — proves the Campaign
- * Engine end-to-end (Scheduler tick + Send worker pick this up automatically once contacts are
- * enrolled). Sequences support any number of steps, each with its own delay/template/subject;
- * weighted A/B variants (multiple subject/content options per step) are authorable only via the
- * underlying repositories today, not this screen. Business hours profiles apply one shared
- * start/end window to every selected day, not the full per-weekday/multi-window data model.
+ * The Campaign UI (Section 14): sending-account limits, a single guided campaign-creation wizard,
+ * and enrollment monitoring. Everything a campaign needs to launch (schedule, leads, first-touch
+ * template/subject groups, optional follow-ups) is gathered in one flow instead of requiring
+ * separate Business Hours/Template/Sequence entities to be created up front -- this screen creates
+ * those underlying rows itself, behind the scenes (see createCampaignFromWizard), so the rest of
+ * the app keeps working against the exact same schema unchanged.
  */
 export function CampaignsScreen(): JSX.Element {
   const [section, setSection] = useState<SectionKey>("campaigns");
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [contacts, setContacts] = useState<ContactSummary[]>([]);
-  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
-  const [sequences, setSequences] = useState<SequenceSummary[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
   const [businessHoursProfiles, setBusinessHoursProfiles] = useState<BusinessHoursProfileSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -88,24 +108,7 @@ export function CampaignsScreen(): JSX.Element {
     Record<string, { daily: string; hourly: string; minDelay: string; maxDelay: string }>
   >({});
 
-  const [bhpName, setBhpName] = useState("");
-  const [bhpTimezone, setBhpTimezone] = useState(defaultTimezone);
-  const [bhpDays, setBhpDays] = useState<Set<string>>(new Set(["monday", "tuesday", "wednesday", "thursday", "friday"]));
-  const [bhpStart, setBhpStart] = useState("09:00");
-  const [bhpEnd, setBhpEnd] = useState("17:00");
-
-  const [templateName, setTemplateName] = useState("");
-  const [templateBody, setTemplateBody] = useState("Hi {{first_name}},\n\nJust checking in.\n\nBest,\nMe");
-
-  const [sequenceName, setSequenceName] = useState("");
-  const [sequenceSteps, setSequenceSteps] = useState<
-    Array<{ delayDays: string; delayHours: string; templateId: string; subjectText: string }>
-  >([{ delayDays: "0", delayHours: "0", templateId: "", subjectText: "Quick question" }]);
-
-  const [campaignName, setCampaignName] = useState("");
-  const [campaignSequenceId, setCampaignSequenceId] = useState("");
-  const [campaignAccountId, setCampaignAccountId] = useState("");
-  const [campaignBusinessHoursProfileId, setCampaignBusinessHoursProfileId] = useState("");
+  const [defaultSendingAccountId, setDefaultSendingAccountId] = useState("");
 
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [enrollments, setEnrollments] = useState<EnrollmentSummary[]>([]);
@@ -126,10 +129,26 @@ export function CampaignsScreen(): JSX.Element {
   const [deleteCampaignTarget, setDeleteCampaignTarget] = useState<CampaignDashboardEntrySummary | null>(null);
   const [deleteCampaignBusy, setDeleteCampaignBusy] = useState(false);
   const [dashboardRefreshBusy, setDashboardRefreshBusy] = useState(false);
-  const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<TemplateSummary | null>(null);
-  const [deleteTemplateBusy, setDeleteTemplateBusy] = useState(false);
-  const [deleteSequenceTarget, setDeleteSequenceTarget] = useState<SequenceSummary | null>(null);
-  const [deleteSequenceBusy, setDeleteSequenceBusy] = useState(false);
+
+  // Campaign-creation wizard state (Section 5.6) -- nothing here is persisted until "Launch
+  // campaign" on the final step; the underlying business-hours profile/templates/sequence are
+  // created together at that point by createCampaignFromWizard.
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardStep, setWizardStep] = useState(0);
+  const [wizardBusy, setWizardBusy] = useState(false);
+  const [wizardName, setWizardName] = useState("");
+  const [wizardAccountId, setWizardAccountId] = useState("");
+  const [wizardTimezone, setWizardTimezone] = useState(defaultTimezone);
+  const [wizardDays, setWizardDays] = useState<Set<string>>(new Set(["monday", "tuesday", "wednesday", "thursday", "friday"]));
+  const [wizardStart, setWizardStart] = useState("09:00");
+  const [wizardEnd, setWizardEnd] = useState("17:00");
+  const [wizardLeadsMode, setWizardLeadsMode] = useState<"csv" | "batch">("csv");
+  const [wizardBatchId, setWizardBatchId] = useState("");
+  const [wizardCsvText, setWizardCsvText] = useState("");
+  const [wizardCsvFilename, setWizardCsvFilename] = useState("");
+  const wizardCsvFileInputRef = useRef<HTMLInputElement>(null);
+  const [wizardContentGroups, setWizardContentGroups] = useState<WizardContentGroupDraft[]>([newContentGroupDraft()]);
+  const [wizardFollowUps, setWizardFollowUps] = useState<WizardFollowUpDraft[]>([]);
 
   function refreshAll(): Promise<void> {
     const accountsPromise = window.outboundly
@@ -156,8 +175,6 @@ export function CampaignsScreen(): JSX.Element {
       accountsPromise,
       window.outboundly.listContacts().then(setContacts).catch((err) => setError(String(err))),
       window.outboundly.listLeadImportBatches().then(setLeadImportBatches).catch((err) => setError(String(err))),
-      window.outboundly.listTemplates().then(setTemplates).catch((err) => setError(String(err))),
-      window.outboundly.listSequences().then(setSequences).catch((err) => setError(String(err))),
       window.outboundly.listCampaigns().then(setCampaigns).catch((err) => setError(String(err))),
       window.outboundly.listBusinessHoursProfiles().then(setBusinessHoursProfiles).catch((err) => setError(String(err))),
       refreshCampaignDashboard()
@@ -184,15 +201,12 @@ export function CampaignsScreen(): JSX.Element {
 
   useEffect(() => {
     refreshAll();
-    // Settings module (Section 3: "sending defaults") -- pre-fills the create-campaign form only;
-    // doesn't override a selection the user has already made in this session.
+    // Settings module (Section 3: "sending defaults") -- pre-fills the wizard's sending account
+    // only, once the wizard is actually opened (see handleOpenWizard).
     window.outboundly
       .getAppPreferences()
       .then((prefs) => {
-        if (prefs.defaultSendingAccountId) setCampaignAccountId((prev) => prev || prefs.defaultSendingAccountId!);
-        if (prefs.defaultBusinessHoursProfileId) {
-          setCampaignBusinessHoursProfileId((prev) => prev || prefs.defaultBusinessHoursProfileId!);
-        }
+        if (prefs.defaultSendingAccountId) setDefaultSendingAccountId(prefs.defaultSendingAccountId);
       })
       .catch((err) => setError(String(err)));
   }, []);
@@ -207,15 +221,6 @@ export function CampaignsScreen(): JSX.Element {
       .then(setEnrollments)
       .catch((err) => setError(String(err)));
   }, [selectedCampaignId]);
-
-  function toggleBhpDay(day: string): void {
-    setBhpDays((prev) => {
-      const next = new Set(prev);
-      if (next.has(day)) next.delete(day);
-      else next.add(day);
-      return next;
-    });
-  }
 
   async function handleSaveAccountLimits(accountId: string): Promise<void> {
     setError(null);
@@ -245,77 +250,125 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
-  async function handleCreateBusinessHoursProfile(): Promise<void> {
-    setError(null);
+  function handleOpenWizard(): void {
+    setWizardStep(0);
+    setWizardName("");
+    setWizardAccountId(defaultSendingAccountId);
+    setWizardTimezone(defaultTimezone);
+    setWizardDays(new Set(["monday", "tuesday", "wednesday", "thursday", "friday"]));
+    setWizardStart("09:00");
+    setWizardEnd("17:00");
+    setWizardLeadsMode("csv");
+    setWizardBatchId("");
+    setWizardCsvText("");
+    setWizardCsvFilename("");
+    setWizardContentGroups([newContentGroupDraft()]);
+    setWizardFollowUps([]);
+    setWizardOpen(true);
+  }
+
+  function closeWizard(): void {
+    setWizardOpen(false);
+  }
+
+  function toggleWizardDay(day: string): void {
+    setWizardDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(day)) next.delete(day);
+      else next.add(day);
+      return next;
+    });
+  }
+
+  function handleWizardCsvFileChosen(e: React.ChangeEvent<HTMLInputElement>): void {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    file
+      .text()
+      .then((text) => {
+        setWizardCsvText(text);
+        setWizardCsvFilename(file.name);
+      })
+      .catch((err) => toast.showToast(String(err), "error"));
+    e.target.value = "";
+  }
+
+  function updateContentGroup(index: number, patch: Partial<WizardContentGroupDraft>): void {
+    setWizardContentGroups((prev) => prev.map((g, i) => (i === index ? { ...g, ...patch } : g)));
+  }
+
+  function addContentGroup(): void {
+    setWizardContentGroups((prev) => [...prev, newContentGroupDraft()]);
+  }
+
+  function removeContentGroup(index: number): void {
+    setWizardContentGroups((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function updateFollowUp(index: number, patch: Partial<WizardFollowUpDraft>): void {
+    setWizardFollowUps((prev) => prev.map((f, i) => (i === index ? { ...f, ...patch } : f)));
+  }
+
+  function addFollowUp(): void {
+    setWizardFollowUps((prev) => [...prev, newFollowUpDraft()]);
+  }
+
+  function removeFollowUp(index: number): void {
+    setWizardFollowUps((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  const wizardDetailsValid = Boolean(wizardName.trim() && wizardAccountId && wizardTimezone && wizardDays.size > 0 && wizardStart && wizardEnd);
+  const wizardLeadsValid = wizardLeadsMode === "batch" ? Boolean(wizardBatchId) : Boolean(wizardCsvText.trim());
+  const wizardContentValid =
+    wizardContentGroups.length > 0 &&
+    wizardContentGroups.every((g) => g.subjectText.trim() && g.bodyText.trim() && Number(g.weight) > 0) &&
+    wizardFollowUps.every((f) => f.bodyText.trim());
+
+  function canAdvanceFromStep(step: number): boolean {
+    if (step === 0) return wizardDetailsValid;
+    if (step === 1) return wizardLeadsValid;
+    if (step === 2) return wizardContentValid;
+    return true;
+  }
+
+  async function handleLaunchWizard(): Promise<void> {
+    setWizardBusy(true);
     try {
-      await window.outboundly.createBusinessHoursProfile({ name: bhpName, timezone: bhpTimezone, days: [...bhpDays], start: bhpStart, end: bhpEnd });
-      setBhpName("");
-      refreshAll();
-      toast.showToast("Business hours profile created.", "success");
-    } catch (err) {
-      setError(String(err));
-    }
-  }
+      const leadsSource: CreateCampaignWizardLeadsSource =
+        wizardLeadsMode === "batch"
+          ? { type: "batch", batchId: wizardBatchId }
+          : { type: "csv", csvText: wizardCsvText, filename: wizardCsvFilename || undefined };
 
-  async function handleCreateTemplate(): Promise<void> {
-    setError(null);
-    try {
-      await window.outboundly.createTemplate({ name: templateName, bodyText: templateBody });
-      setTemplateName("");
-      refreshAll();
-      toast.showToast("Template created.", "success");
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
-  function addSequenceStep(): void {
-    setSequenceSteps((prev) => [...prev, { delayDays: "1", delayHours: "0", templateId: "", subjectText: "" }]);
-  }
-
-  function removeSequenceStep(index: number): void {
-    setSequenceSteps((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  function updateSequenceStep(index: number, patch: Partial<(typeof sequenceSteps)[number]>): void {
-    setSequenceSteps((prev) => prev.map((step, i) => (i === index ? { ...step, ...patch } : step)));
-  }
-
-  async function handleCreateSequence(): Promise<void> {
-    setError(null);
-    try {
-      await window.outboundly.createSequence({
-        name: sequenceName,
-        steps: sequenceSteps.map((step) => ({
-          delayDays: Number(step.delayDays) || 0,
-          delayHours: Number(step.delayHours) || 0,
-          templateId: step.templateId,
-          subjectText: step.subjectText
-        }))
+      const result = await window.outboundly.createCampaignFromWizard({
+        name: wizardName,
+        sendingAccountId: wizardAccountId,
+        timezone: wizardTimezone,
+        days: [...wizardDays],
+        start: wizardStart,
+        end: wizardEnd,
+        contentGroups: wizardContentGroups.map((g) => ({
+          subjectText: g.subjectText,
+          bodyText: g.bodyText,
+          weight: Number(g.weight) || 1
+        })),
+        followUpSteps: wizardFollowUps.map((f) => ({
+          bodyText: f.bodyText,
+          delayDays: Number(f.delayDays) || 0,
+          delayHours: Number(f.delayHours) || 0
+        })),
+        leadsSource
       });
-      setSequenceName("");
-      setSequenceSteps([{ delayDays: "0", delayHours: "0", templateId: "", subjectText: "Quick question" }]);
-      refreshAll();
-      toast.showToast("Sequence created.", "success");
-    } catch (err) {
-      setError(String(err));
-    }
-  }
 
-  async function handleCreateCampaign(): Promise<void> {
-    setError(null);
-    try {
-      await window.outboundly.createCampaign({
-        name: campaignName,
-        sequenceId: campaignSequenceId,
-        sendingAccountId: campaignAccountId,
-        businessHoursProfileId: campaignBusinessHoursProfileId
-      });
-      setCampaignName("");
+      await window.outboundly.setCampaignStatus({ campaignId: result.campaign.id, status: "running" });
+
+      const skippedCount = result.enrollSkipped.length + (result.importSkipped?.length ?? 0);
+      toast.showToast(`Campaign launched. Enrolled ${result.enrolled} lead(s)${skippedCount > 0 ? `, skipped ${skippedCount}` : ""}.`, "success");
+      closeWizard();
       refreshAll();
-      toast.showToast("Campaign created.", "success");
     } catch (err) {
-      setError(String(err));
+      toast.showToast(String(err), "error");
+    } finally {
+      setWizardBusy(false);
     }
   }
 
@@ -369,40 +422,6 @@ export function CampaignsScreen(): JSX.Element {
     } finally {
       setDeleteCampaignBusy(false);
       setDeleteCampaignTarget(null);
-    }
-  }
-
-  async function handleConfirmDeleteTemplate(): Promise<void> {
-    if (!deleteTemplateTarget) return;
-    setDeleteTemplateBusy(true);
-    try {
-      await window.outboundly.deleteTemplate({ templateId: deleteTemplateTarget.id });
-      refreshAll();
-      toast.showToast("Template deleted.", "success");
-    } catch (err) {
-      // A template still used by a sequence step is rejected, not silently broken -- the
-      // repository's own error message ("used by N sequence step(s)...") surfaces here as-is.
-      toast.showToast(String(err), "error");
-    } finally {
-      setDeleteTemplateBusy(false);
-      setDeleteTemplateTarget(null);
-    }
-  }
-
-  async function handleConfirmDeleteSequence(): Promise<void> {
-    if (!deleteSequenceTarget) return;
-    setDeleteSequenceBusy(true);
-    try {
-      await window.outboundly.deleteSequence({ sequenceId: deleteSequenceTarget.id });
-      refreshAll();
-      toast.showToast("Sequence deleted.", "success");
-    } catch (err) {
-      // A sequence still bound to a campaign is rejected, not silently broken -- the repository's
-      // own error message ("used by N campaign(s)...") surfaces here as-is.
-      toast.showToast(String(err), "error");
-    } finally {
-      setDeleteSequenceBusy(false);
-      setDeleteSequenceTarget(null);
     }
   }
 
@@ -487,11 +506,13 @@ export function CampaignsScreen(): JSX.Element {
     }
   }
 
+  const totalWeight = wizardContentGroups.reduce((sum, g) => sum + (Number(g.weight) || 0), 0);
+
   return (
     <div>
       <PageHeader
         title="Campaigns"
-        description="Sending accounts, business hours, templates, sequences, and enrollment monitoring."
+        description="Sending accounts and campaign creation, sequencing, and enrollment monitoring."
         actions={
           <Button variant="secondary" icon={<RefreshIcon size={15} />} loading={dashboardRefreshBusy} onClick={handleRefreshDashboard}>
             Refresh
@@ -506,9 +527,6 @@ export function CampaignsScreen(): JSX.Element {
         onChange={(k) => setSection(k as SectionKey)}
         items={[
           { key: "accounts", label: "Sending accounts", count: accounts.length },
-          { key: "business-hours", label: "Business hours", count: businessHoursProfiles.length },
-          { key: "templates", label: "Templates", count: templates.length },
-          { key: "sequences", label: "Sequences", count: sequences.length },
           { key: "campaigns", label: "Campaigns", count: campaigns.length }
         ]}
       />
@@ -597,235 +615,13 @@ export function CampaignsScreen(): JSX.Element {
         </Card>
       )}
 
-      {section === "business-hours" && (
-        <Card>
-          <CardHeader title="Create a business hours profile" description="When a campaign bound to this profile is allowed to send, in the profile's own timezone." />
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", maxWidth: 480, marginBottom: "var(--space-6)" }}>
-            <Field label="Profile name">
-              <Input value={bhpName} onChange={(e) => setBhpName(e.target.value)} />
-            </Field>
-            <Field label="Timezone">
-              <Select value={bhpTimezone} onChange={(e) => setBhpTimezone(e.target.value)}>
-                {(["United States", "Canada", "Pakistan"] as const).map((country) => (
-                  <optgroup key={country} label={country}>
-                    {US_CANADA_PAKISTAN_TIMEZONES.filter((z) => z.country === country).map((z) => (
-                      <option key={z.value} value={z.value}>
-                        {z.regionLabel} ({timezoneAbbreviation(z)})
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Active days">
-              <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
-                {WEEKDAYS.map((day) => (
-                  <Checkbox key={day} checked={bhpDays.has(day)} onChange={() => toggleBhpDay(day)} label={WEEKDAY_LABELS[day]} />
-                ))}
-              </div>
-            </Field>
-            <div style={{ display: "flex", gap: "1rem" }}>
-              <Field label="From">
-                <Input type="time" value={bhpStart} onChange={(e) => setBhpStart(e.target.value)} />
-              </Field>
-              <Field label="To">
-                <Input type="time" value={bhpEnd} onChange={(e) => setBhpEnd(e.target.value)} />
-              </Field>
-            </div>
-            <div>
-              <Button variant="primary" icon={<PlusIcon size={15} />} disabled={!bhpName || !bhpTimezone || bhpDays.size === 0} onClick={handleCreateBusinessHoursProfile}>
-                Create profile
-              </Button>
-            </div>
-          </div>
-
-          {businessHoursProfiles.length === 0 ? (
-            <EmptyState title="No profiles yet" description="Create one above to use it on a campaign." />
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-              {businessHoursProfiles.map((p) => (
-                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px" }}>
-                  <strong>{p.name}</strong>
-                  <span style={{ color: "var(--color-text-secondary)" }}>
-                    {p.timezone} · {Object.keys(p.windows).length} day(s) active
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-
-      {section === "templates" && (
-        <Card>
-          <CardHeader title="Create a template" />
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", marginBottom: "var(--space-6)" }}>
-            <Field label="Template name">
-              <Input value={templateName} onChange={(e) => setTemplateName(e.target.value)} />
-            </Field>
-            <Field label="Body">
-              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} rows={5} />
-            </Field>
-            <div>
-              <Button variant="primary" icon={<PlusIcon size={15} />} disabled={!templateName} onClick={handleCreateTemplate}>
-                Create template
-              </Button>
-            </div>
-          </div>
-
-          {templates.length === 0 ? (
-            <EmptyState title="No templates yet" description="Create one above to use it in a sequence." />
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-              {templates.map((t) => (
-                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px", fontWeight: 550 }}>
-                  {t.name}
-                  <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteTemplateTarget(t)}>
-                    Delete
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-
-      {section === "sequences" && (
-        <Card>
-          <CardHeader title="Create a sequence" />
-          <div style={{ marginBottom: "var(--space-6)" }}>
-            <div style={{ maxWidth: 420, marginBottom: "var(--space-4)" }}>
-              <Field label="Sequence name">
-                <Input value={sequenceName} onChange={(e) => setSequenceName(e.target.value)} />
-              </Field>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-              {sequenceSteps.map((step, index) => (
-                <div key={index} style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-3)", padding: "var(--space-3)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)" }}>
-                  <strong style={{ width: "3.5rem", fontSize: "12.5px", paddingBottom: "8px" }}>Step {index + 1}</strong>
-                  <div style={{ flex: 1 }}>
-                    <Field label="Template">
-                      <Select value={step.templateId} onChange={(e) => updateSequenceStep(index, { templateId: e.target.value })}>
-                        <option value="">Select template...</option>
-                        {templates.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <Field label="Subject">
-                      <Input value={step.subjectText} onChange={(e) => updateSequenceStep(index, { subjectText: e.target.value })} />
-                    </Field>
-                  </div>
-                  <div style={{ width: 70 }}>
-                    <Field label="Days">
-                      <Input type="number" min={0} value={step.delayDays} onChange={(e) => updateSequenceStep(index, { delayDays: e.target.value })} />
-                    </Field>
-                  </div>
-                  <div style={{ width: 70 }}>
-                    <Field label="Hours">
-                      <Input type="number" min={0} max={23} value={step.delayHours} onChange={(e) => updateSequenceStep(index, { delayHours: e.target.value })} />
-                    </Field>
-                  </div>
-                  <Button variant="ghost" size="sm" icon={<TrashIcon size={14} />} disabled={sequenceSteps.length === 1} onClick={() => removeSequenceStep(index)} />
-                </div>
-              ))}
-            </div>
-            <div style={{ marginTop: "var(--space-3)", display: "flex", gap: "0.5rem" }}>
-              <Button variant="secondary" size="sm" icon={<PlusIcon size={14} />} onClick={addSequenceStep}>
-                Add another step
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={!sequenceName || sequenceSteps.some((s) => !s.templateId || !s.subjectText)}
-                onClick={handleCreateSequence}
-              >
-                Create sequence ({sequenceSteps.length} step{sequenceSteps.length === 1 ? "" : "s"})
-              </Button>
-            </div>
-          </div>
-
-          {sequences.length === 0 ? (
-            <EmptyState title="No sequences yet" description="Create one above to use it in a campaign." />
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-              {sequences.map((s) => (
-                <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "var(--space-3) var(--space-4)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)", fontSize: "13.5px" }}>
-                  <strong>{s.name}</strong>
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-                    <span style={{ color: "var(--color-text-secondary)" }}>
-                      {s.stepCount} step{s.stepCount === 1 ? "" : "s"}
-                    </span>
-                    <Button variant="danger-ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => setDeleteSequenceTarget(s)}>
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-
       {section === "campaigns" && (
         <>
           <Card style={{ marginBottom: "var(--space-6)" }}>
-            <CardHeader title="Create a campaign" />
-            <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "var(--space-4)" }}>
-              <div style={{ flex: "1 1 220px" }}>
-                <Field label="Campaign name">
-                  <Input value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
-                </Field>
-              </div>
-              <div style={{ flex: "1 1 180px" }}>
-                <Field label="Sequence">
-                  <Select value={campaignSequenceId} onChange={(e) => setCampaignSequenceId(e.target.value)}>
-                    <option value="">Select sequence...</option>
-                    {sequences.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
-              <div style={{ flex: "1 1 180px" }}>
-                <Field label="Sending account">
-                  <Select value={campaignAccountId} onChange={(e) => setCampaignAccountId(e.target.value)}>
-                    <option value="">Select account...</option>
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.emailAddress}
-                        {a.status === "reauth_required" ? " (reconnect needed)" : ""}
-                        {a.status === "disconnected" ? " (disconnected)" : ""}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
-              <div style={{ flex: "1 1 180px" }}>
-                <Field label="Business hours">
-                  <Select value={campaignBusinessHoursProfileId} onChange={(e) => setCampaignBusinessHoursProfileId(e.target.value)}>
-                    <option value="">Select profile...</option>
-                    {businessHoursProfiles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
-              <Button
-                variant="primary"
-                icon={<PlusIcon size={15} />}
-                disabled={!campaignName || !campaignSequenceId || !campaignAccountId || !campaignBusinessHoursProfileId}
-                onClick={handleCreateCampaign}
-              >
-                Create
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "var(--space-4)" }}>
+              <CardHeader title="Campaigns" description="Create a campaign with the guided wizard — everything it needs to launch is gathered in one flow." />
+              <Button variant="primary" icon={<PlusIcon size={15} />} onClick={handleOpenWizard}>
+                Create campaign
               </Button>
             </div>
 
@@ -1087,27 +883,272 @@ export function CampaignsScreen(): JSX.Element {
         onCancel={() => setDeleteCampaignTarget(null)}
       />
 
-      <ConfirmDialog
-        open={deleteTemplateTarget !== null}
-        title="Delete this template?"
-        description={`"${deleteTemplateTarget?.name ?? "This template"}" will be deleted. This can't be undone. If it's still used by a sequence step, deletion is blocked until it's removed from that sequence.`}
-        confirmLabel="Delete"
-        danger
-        busy={deleteTemplateBusy}
-        onConfirm={handleConfirmDeleteTemplate}
-        onCancel={() => setDeleteTemplateTarget(null)}
-      />
+      <Modal
+        open={wizardOpen}
+        onClose={closeWizard}
+        title={`Create campaign — ${WIZARD_STEP_LABELS[wizardStep]} (${wizardStep + 1}/${WIZARD_STEP_LABELS.length})`}
+        width={720}
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeWizard} disabled={wizardBusy}>
+              Cancel
+            </Button>
+            {wizardStep > 0 && (
+              <Button variant="secondary" onClick={() => setWizardStep((s) => s - 1)} disabled={wizardBusy}>
+                Back
+              </Button>
+            )}
+            {wizardStep < WIZARD_STEP_LABELS.length - 1 ? (
+              <Button variant="primary" disabled={!canAdvanceFromStep(wizardStep)} onClick={() => setWizardStep((s) => s + 1)}>
+                Next
+              </Button>
+            ) : (
+              <Button variant="primary" loading={wizardBusy} disabled={!wizardDetailsValid || !wizardLeadsValid || !wizardContentValid} onClick={handleLaunchWizard}>
+                Launch campaign
+              </Button>
+            )}
+          </>
+        }
+      >
+        {wizardStep === 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+            <Field label="Campaign name">
+              <Input value={wizardName} onChange={(e) => setWizardName(e.target.value)} placeholder="e.g. Q3 outbound" />
+            </Field>
+            <Field label="Sending account">
+              <Select value={wizardAccountId} onChange={(e) => setWizardAccountId(e.target.value)}>
+                <option value="">Select account...</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.emailAddress}
+                    {a.status === "reauth_required" ? " (reconnect needed)" : ""}
+                    {a.status === "disconnected" ? " (disconnected)" : ""}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Timezone">
+              <Select value={wizardTimezone} onChange={(e) => setWizardTimezone(e.target.value)}>
+                {(["United States", "Canada", "Pakistan"] as const).map((country) => (
+                  <optgroup key={country} label={country}>
+                    {US_CANADA_PAKISTAN_TIMEZONES.filter((z) => z.country === country).map((z) => (
+                      <option key={z.value} value={z.value}>
+                        {z.regionLabel} ({timezoneAbbreviation(z)})
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Sending days">
+              <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+                {WEEKDAYS.map((day) => (
+                  <Checkbox key={day} checked={wizardDays.has(day)} onChange={() => toggleWizardDay(day)} label={WEEKDAY_LABELS[day]} />
+                ))}
+              </div>
+            </Field>
+            <div style={{ display: "flex", gap: "1rem" }}>
+              <Field label="Sending hours from">
+                <Input type="time" value={wizardStart} onChange={(e) => setWizardStart(e.target.value)} />
+              </Field>
+              <Field label="To">
+                <Input type="time" value={wizardEnd} onChange={(e) => setWizardEnd(e.target.value)} />
+              </Field>
+            </div>
+          </div>
+        )}
 
-      <ConfirmDialog
-        open={deleteSequenceTarget !== null}
-        title="Delete this sequence?"
-        description={`"${deleteSequenceTarget?.name ?? "This sequence"}" and its steps will be deleted. This can't be undone. If it's still used by a campaign, deletion is blocked until that campaign is deleted.`}
-        confirmLabel="Delete"
-        danger
-        busy={deleteSequenceBusy}
-        onConfirm={handleConfirmDeleteSequence}
-        onCancel={() => setDeleteSequenceTarget(null)}
-      />
+        {wizardStep === 1 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+            <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
+              This campaign only ever sends to the leads chosen here -- not your whole global contacts list. Each import is its
+              own isolated batch of leads for this campaign.
+            </p>
+
+            {leadImportBatches.length > 0 && (
+              <Field label="Use a previous import">
+                <Select
+                  value={wizardLeadsMode === "batch" ? wizardBatchId : ""}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setWizardLeadsMode("batch");
+                      setWizardBatchId(e.target.value);
+                    } else {
+                      setWizardLeadsMode("csv");
+                      setWizardBatchId("");
+                    }
+                  }}
+                >
+                  <option value="">Upload a new CSV instead...</option>
+                  {leadImportBatches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.filename} ({b.contactCount}) — {formatDateTime(b.importedAt)}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
+
+            {wizardLeadsMode === "csv" && (
+              <>
+                <input ref={wizardCsvFileInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={handleWizardCsvFileChosen} />
+                <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", flexWrap: "wrap" }}>
+                  <Button variant="secondary" size="sm" onClick={() => wizardCsvFileInputRef.current?.click()}>
+                    Choose file...
+                  </Button>
+                  <div style={{ flex: "1 1 200px" }}>
+                    <Field label="Import label">
+                      <Input value={wizardCsvFilename} onChange={(e) => setWizardCsvFilename(e.target.value)} placeholder="e.g. leads-march.csv" />
+                    </Field>
+                  </div>
+                </div>
+                <Field label="CSV contents">
+                  <Textarea
+                    value={wizardCsvText}
+                    onChange={(e) => setWizardCsvText(e.target.value)}
+                    rows={8}
+                    placeholder="email,first_name,last_name,company"
+                    style={{ fontFamily: "var(--font-mono)", fontSize: "12.5px" }}
+                  />
+                </Field>
+              </>
+            )}
+          </div>
+        )}
+
+        {wizardStep === 2 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+            <div>
+              <CardHeader
+                title="First email"
+                description="Add more than one template/subject group to split-test — each group's subject only ever goes out with that same group's template, never mixed with another group's."
+              />
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                {wizardContentGroups.map((group, index) => (
+                  <div key={index} style={{ padding: "var(--space-3)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)" }}>
+                    <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-3)", marginBottom: "var(--space-3)" }}>
+                      <strong style={{ fontSize: "12.5px", paddingBottom: "8px", whiteSpace: "nowrap" }}>Group {index + 1}</strong>
+                      <div style={{ flex: 1 }}>
+                        <Field label="Subject line">
+                          <Input value={group.subjectText} onChange={(e) => updateContentGroup(index, { subjectText: e.target.value })} />
+                        </Field>
+                      </div>
+                      <div style={{ width: 90 }}>
+                        <Field label="Weight %">
+                          <Input
+                            type="number"
+                            min={1}
+                            value={group.weight}
+                            onChange={(e) => updateContentGroup(index, { weight: e.target.value })}
+                          />
+                        </Field>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<TrashIcon size={14} />}
+                        disabled={wizardContentGroups.length === 1}
+                        onClick={() => removeContentGroup(index)}
+                      />
+                    </div>
+                    <Field label="Template body">
+                      <Textarea value={group.bodyText} onChange={(e) => updateContentGroup(index, { bodyText: e.target.value })} rows={4} />
+                    </Field>
+                    {totalWeight > 0 && (
+                      <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginTop: "var(--space-2)" }}>
+                        ~{Math.round(((Number(group.weight) || 0) / totalWeight) * 100)}% of first-touch emails
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: "var(--space-3)" }}>
+                <Button variant="secondary" size="sm" icon={<PlusIcon size={14} />} onClick={addContentGroup}>
+                  Add another template/subject group
+                </Button>
+              </div>
+            </div>
+
+            <div>
+              <CardHeader
+                title="Follow-ups (optional)"
+                description={`Sent as a reply ("Re: ...") to the first email -- no separate subject or split-testing needed.`}
+              />
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                {wizardFollowUps.map((step, index) => (
+                  <div key={index} style={{ padding: "var(--space-3)", background: "var(--color-surface-hover)", borderRadius: "var(--radius-md)" }}>
+                    <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-3)", marginBottom: "var(--space-3)" }}>
+                      <strong style={{ fontSize: "12.5px", paddingBottom: "8px", whiteSpace: "nowrap" }}>Follow-up {index + 1}</strong>
+                      <div style={{ width: 90 }}>
+                        <Field label="Days after">
+                          <Input type="number" min={0} value={step.delayDays} onChange={(e) => updateFollowUp(index, { delayDays: e.target.value })} />
+                        </Field>
+                      </div>
+                      <div style={{ width: 90 }}>
+                        <Field label="Hours">
+                          <Input type="number" min={0} max={23} value={step.delayHours} onChange={(e) => updateFollowUp(index, { delayHours: e.target.value })} />
+                        </Field>
+                      </div>
+                      <Button variant="ghost" size="sm" icon={<TrashIcon size={14} />} onClick={() => removeFollowUp(index)} />
+                    </div>
+                    <Field label="Template body">
+                      <Textarea value={step.bodyText} onChange={(e) => updateFollowUp(index, { bodyText: e.target.value })} rows={3} />
+                    </Field>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: "var(--space-3)" }}>
+                <Button variant="secondary" size="sm" icon={<PlusIcon size={14} />} onClick={addFollowUp}>
+                  Add follow-up step
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {wizardStep === 3 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", fontSize: "13.5px" }}>
+            <div>
+              <strong>{wizardName}</strong>
+              <p style={{ color: "var(--color-text-secondary)" }}>
+                {accounts.find((a) => a.id === wizardAccountId)?.emailAddress ?? wizardAccountId} · {wizardTimezone} · {wizardStart}–{wizardEnd} ·{" "}
+                {[...wizardDays].map((d) => WEEKDAY_LABELS[d]).join(", ")}
+              </p>
+            </div>
+            <div>
+              <strong>Leads</strong>
+              <p style={{ color: "var(--color-text-secondary)" }}>
+                {wizardLeadsMode === "batch"
+                  ? leadImportBatches.find((b) => b.id === wizardBatchId)?.filename ?? "Selected import batch"
+                  : wizardCsvFilename || "Pasted CSV"}
+              </p>
+            </div>
+            <div>
+              <strong>
+                First email — {wizardContentGroups.length} template/subject group{wizardContentGroups.length === 1 ? "" : "s"}
+              </strong>
+              <ul style={{ color: "var(--color-text-secondary)", marginLeft: "1.2rem" }}>
+                {wizardContentGroups.map((g, i) => (
+                  <li key={i}>
+                    "{g.subjectText}" — {totalWeight > 0 ? Math.round(((Number(g.weight) || 0) / totalWeight) * 100) : 0}%
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <strong>Follow-ups</strong>
+              <p style={{ color: "var(--color-text-secondary)" }}>
+                {wizardFollowUps.length === 0
+                  ? "None"
+                  : wizardFollowUps.map((f, i) => `#${i + 1}: ${f.delayDays}d ${f.delayHours}h after the previous step`).join(" · ")}
+              </p>
+            </div>
+            <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
+              Launching enrolls the leads above and starts sending immediately, within the schedule set on the first step.
+            </p>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

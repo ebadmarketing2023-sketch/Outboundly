@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("outboundly", {
   listSequences: () => ipcRenderer.invoke("sequences:list"),
   deleteSequence: (request) => ipcRenderer.invoke("sequences:delete", request),
   createCampaign: (request) => ipcRenderer.invoke("campaigns:create", request),
+  createCampaignFromWizard: (request) => ipcRenderer.invoke("campaigns:createFromWizard", request),
   listCampaigns: () => ipcRenderer.invoke("campaigns:list"),
   listCampaignDashboard: () => ipcRenderer.invoke("campaigns:listDashboard"),
   updateCampaign: (request) => ipcRenderer.invoke("campaigns:update", request),

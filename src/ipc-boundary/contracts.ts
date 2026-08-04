@@ -342,6 +342,50 @@ export interface SetCampaignStatusRequest {
   status: string;
 }
 
+/** Campaign-creation wizard (Section 5.6): one atomic template+subject pair for the first step.
+ * Weight is a share, not required to sum to 100 -- selectWeightedVariant normalizes against
+ * whatever total the groups actually add up to. */
+export interface CreateCampaignWizardContentGroupRequest {
+  subjectText: string;
+  bodyText: string;
+  weight: number;
+}
+
+/** A single optional follow-up step: one template, one delay since the previous step -- no
+ * variation/weighting, and no independently configurable subject (it's always sent as
+ * "Re: <original subject>", matching the pre-existing follow-up threading behavior exactly). */
+export interface CreateCampaignWizardFollowUpStepRequest {
+  bodyText: string;
+  delayDays: number;
+  delayHours: number;
+}
+
+export type CreateCampaignWizardLeadsSource =
+  | { type: "csv"; csvText: string; filename?: string }
+  | { type: "batch"; batchId: string };
+
+export interface CreateCampaignWizardRequest {
+  name: string;
+  sendingAccountId: string;
+  timezone: string;
+  /** Lowercase full weekday names ("monday".."sunday") sending is allowed on. */
+  days: string[];
+  start: string; // "HH:MM", 24-hour
+  end: string;
+  /** At least one required. */
+  contentGroups: CreateCampaignWizardContentGroupRequest[];
+  followUpSteps: CreateCampaignWizardFollowUpStepRequest[];
+  leadsSource: CreateCampaignWizardLeadsSource;
+}
+
+export interface CreateCampaignWizardResponse {
+  campaign: CampaignSummary;
+  imported?: number;
+  importSkipped?: Array<{ row: number; reason: string }>;
+  enrolled: number;
+  enrollSkipped: Array<{ contactId: string; reason: string }>;
+}
+
 export interface EnrollContactsRequest {
   campaignId: string;
   contactIds: string[];
@@ -598,6 +642,7 @@ export interface OutboundlyRendererApi {
   listSequences(): Promise<SequenceSummary[]>;
   deleteSequence(request: DeleteSequenceRequest): Promise<void>;
   createCampaign(request: CreateCampaignRequest): Promise<CampaignSummary>;
+  createCampaignFromWizard(request: CreateCampaignWizardRequest): Promise<CreateCampaignWizardResponse>;
   listCampaigns(): Promise<CampaignSummary[]>;
   listCampaignDashboard(): Promise<CampaignDashboardEntrySummary[]>;
   updateCampaign(request: UpdateCampaignRequest): Promise<CampaignSummary>;

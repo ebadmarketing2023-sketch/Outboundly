@@ -57,6 +57,7 @@ import { SqliteTemplateRepository } from "../dist/adapters/persistence/repositor
 import { SqliteTemplateVariantRepository } from "../dist/adapters/persistence/repositories/template-variant-repository.js";
 import { SqliteSubjectVariantRepository } from "../dist/adapters/persistence/repositories/subject-variant-repository.js";
 import { SqliteBusinessHoursProfileRepository } from "../dist/adapters/persistence/repositories/business-hours-profile-repository.js";
+import { SqliteContentGroupRepository } from "../dist/adapters/persistence/repositories/content-group-repository.js";
 import { SqliteWarmupProfileRepository } from "../dist/adapters/persistence/repositories/warmup-profile-repository.js";
 import { SqliteDelayPolicyConfigRepository } from "../dist/adapters/persistence/repositories/delay-policy-config-repository.js";
 import { SqliteSendQueueRepository } from "../dist/adapters/persistence/repositories/send-queue-repository.js";
@@ -71,6 +72,7 @@ import { SqliteInsightRepository } from "../dist/adapters/persistence/repositori
 import { computeInsights } from "../dist/adapters/persistence/compute-insights.js";
 import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
+import { createCampaignFromWizard } from "../dist/application/campaigns/create-campaign-from-wizard.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
 import { importContactsCsv } from "../dist/application/leads/import-contacts-csv.js";
 import { deleteContact } from "../dist/application/leads/delete-contact.js";
@@ -146,6 +148,7 @@ let templateRepository;
 let templateVariantRepository;
 let subjectVariantRepository;
 let businessHoursProfileRepository;
+let contentGroupRepository;
 let warmupProfileRepository;
 let delayPolicyConfigRepository;
 let sendQueueRepository;
@@ -202,6 +205,7 @@ function initServices() {
   templateVariantRepository = new SqliteTemplateVariantRepository(db);
   subjectVariantRepository = new SqliteSubjectVariantRepository(db);
   businessHoursProfileRepository = new SqliteBusinessHoursProfileRepository(db);
+  contentGroupRepository = new SqliteContentGroupRepository(db);
   warmupProfileRepository = new SqliteWarmupProfileRepository(db);
   delayPolicyConfigRepository = new SqliteDelayPolicyConfigRepository(db);
   sendQueueRepository = new SqliteSendQueueRepository(db);
@@ -228,6 +232,7 @@ function campaignEngineDeps() {
     templateRepository,
     templateVariantRepository,
     subjectVariantRepository,
+    contentGroupRepository,
     contactRepository,
     suppressionListRepository,
     enrollmentRepository,
@@ -950,6 +955,71 @@ function registerIpcHandlers() {
       businessHoursProfileId: request.businessHoursProfileId
     });
     return serializeCampaign(campaign);
+  });
+
+  // Campaign-creation wizard (Section 5.6): everything needed to launch a campaign in one call --
+  // business hours, first-step template/subject groups, optional follow-ups, and leads -- rather
+  // than the pre-existing "create 4 separate entities first" flow. Leads reuse the exact same
+  // importContactsCsv/enrollContactIdsIntoCampaign path campaigns:enrollFromCsv and
+  // campaigns:enrollFromBatch already use, so there's no new leads-handling logic here at all.
+  ipcMain.handle("campaigns:createFromWizard", async (_event, request) => {
+    const campaign = await createCampaignFromWizard(
+      {
+        templateRepository,
+        subjectVariantRepository,
+        contentGroupRepository,
+        sequenceRepository,
+        businessHoursProfileRepository,
+        campaignRepository
+      },
+      {
+        name: request.name,
+        sendingAccountId: request.sendingAccountId,
+        timezone: request.timezone,
+        days: request.days,
+        start: request.start,
+        end: request.end,
+        contentGroups: request.contentGroups.map((g) => ({
+          subjectText: g.subjectText,
+          document: parsePlainTextToDocument(g.bodyText),
+          weight: g.weight
+        })),
+        followUpSteps: request.followUpSteps.map((s) => ({
+          document: parsePlainTextToDocument(s.bodyText),
+          delayDays: s.delayDays,
+          delayHours: s.delayHours
+        }))
+      }
+    );
+
+    if (request.leadsSource.type === "csv") {
+      const importResult = await importContactsCsv(
+        request.leadsSource.csvText,
+        contactRepository,
+        leadImportBatchRepository,
+        request.leadsSource.filename || "Pasted import"
+      );
+      const enrollResult = await enrollContactIdsIntoCampaign(campaign.id, importResult.contactIds);
+      return {
+        campaign: serializeCampaign(campaign),
+        imported: importResult.imported,
+        importSkipped: importResult.skipped,
+        enrolled: enrollResult.enrolled,
+        enrollSkipped: enrollResult.skipped
+      };
+    }
+
+    const batchContacts = db
+      .select({ id: contactsTable.id })
+      .from(contactsTable)
+      .where(and(eq(contactsTable.importBatchId, request.leadsSource.batchId), isNull(contactsTable.deletedAt)))
+      .all();
+    const enrollResult = await enrollContactIdsIntoCampaign(campaign.id, batchContacts.map((c) => c.id));
+    return {
+      campaign: serializeCampaign(campaign),
+      enrolled: enrollResult.enrolled,
+      enrollSkipped: enrollResult.skipped
+    };
   });
 
   ipcMain.handle("campaigns:list", async () => {

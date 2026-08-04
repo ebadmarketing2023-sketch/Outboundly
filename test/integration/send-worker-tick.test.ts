@@ -23,6 +23,7 @@ import { SqliteNotificationRepository } from "../../src/adapters/persistence/rep
 import { SqliteSendQueueRepository } from "../../src/adapters/persistence/repositories/send-queue-repository.js";
 import { SqliteSequenceRepository } from "../../src/adapters/persistence/repositories/sequence-repository.js";
 import { SqliteSubjectVariantRepository } from "../../src/adapters/persistence/repositories/subject-variant-repository.js";
+import { SqliteContentGroupRepository } from "../../src/adapters/persistence/repositories/content-group-repository.js";
 import { SqliteSuppressionListRepository } from "../../src/adapters/persistence/repositories/suppression-list-repository.js";
 import { SqliteTemplateRepository } from "../../src/adapters/persistence/repositories/template-repository.js";
 import { SqliteTemplateVariantRepository } from "../../src/adapters/persistence/repositories/template-variant-repository.js";
@@ -162,6 +163,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       templateRepository: new SqliteTemplateRepository(db),
       templateVariantRepository: new SqliteTemplateVariantRepository(db),
       subjectVariantRepository: new SqliteSubjectVariantRepository(db),
+      contentGroupRepository: new SqliteContentGroupRepository(db),
       contactRepository,
       suppressionListRepository: new SqliteSuppressionListRepository(db),
       enrollmentRepository,
