@@ -1305,7 +1305,37 @@ function sendToRenderer(channel, payload) {
   }
 }
 
+/**
+ * Single-instance guard. Must be acquired synchronously at module load, before app.whenReady().
+ *
+ * A real risk this closes: nothing previously stopped a second copy of the app from launching
+ * (double-clicking the icon while it's already running does exactly that) against the *same*
+ * SQLite database, each with its own Scheduler tick and Send worker. That breaks the assumption
+ * requeueOrphanedClaims relies on below -- the second process would see the first one's live,
+ * mid-dispatch `claimed` rows, conclude they were orphaned by a crash, and requeue them, so the
+ * same email goes out to the same recipient twice. Electron's own lock is the authoritative
+ * answer to "am I the only instance", and holding it is what makes that startup-recovery
+ * assumption actually true rather than merely usually true.
+ */
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    // Surface the window they already have rather than silently doing nothing, which would read
+    // as "the app failed to start".
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  // A losing second instance still reaches whenReady before app.quit() finishes tearing it down.
+  // Returning here is what guarantees it never opens the database or starts a worker.
+  if (!isPrimaryInstance) return;
+
   initServices();
 
   // Licensing (disclosed license-key model): only ever enforced in an actual packaged/installed
@@ -1322,6 +1352,11 @@ app.whenReady().then(async () => {
   // process that died mid-dispatch, and this fresh process has no in-flight dispatch of its own
   // yet, so every 'claimed' row found right now is unconditionally orphaned. Runs before any
   // background worker starts claiming new rows.
+  //
+  // That "can only ever be" now genuinely holds: the single-instance lock above guarantees no
+  // *other* live process is holding claims against this same database. Without it this recovery
+  // was itself a duplicate-send bug -- a second instance would requeue the first one's in-flight
+  // rows and re-send them.
   const recoveredCount = await sendQueueRepository.requeueOrphanedClaims(new Date());
   if (recoveredCount > 0) {
     console.warn(`[startup] recovered ${recoveredCount} send_queue row(s) orphaned by an unclean shutdown`);
