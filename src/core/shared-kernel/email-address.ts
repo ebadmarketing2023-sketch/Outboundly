@@ -55,11 +55,20 @@ export interface NamedEmailAddress {
   displayName?: string;
 }
 
+/**
+ * The plain, human-readable form, used for database storage and UI display. Deliberately does NOT
+ * apply RFC 2047 encoding -- that belongs at the wire boundary only (mime/encoded-word.ts's
+ * formatAddressForHeader), since encoding here would mean a draft reloaded from disk showed a raw
+ * `=?UTF-8?B?...?=` string as its recipient's name.
+ */
 export function formatNamedAddress(named: NamedEmailAddress): string {
   if (!named.displayName) {
     return named.address.toString();
   }
-  const escaped = named.displayName.replace(/"/g, '\\"');
+  // Backslash before quote: escaping quotes first would leave this pass to double the backslashes
+  // that pass just introduced. Without the backslash escape at all, a display name ending in one
+  // ("Acme\") produced an unterminated quoted-string that parseNamedAddress couldn't round-trip.
+  const escaped = named.displayName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `"${escaped}" <${named.address.toString()}>`;
 }
 

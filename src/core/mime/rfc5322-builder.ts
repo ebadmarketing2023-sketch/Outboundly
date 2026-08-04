@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { NamedEmailAddress } from "../shared-kernel/email-address.js";
-import { formatNamedAddress } from "../shared-kernel/email-address.js";
+import { encodeHeaderText, formatAddressForHeader } from "./encoded-word.js";
 import type { MimeHeader } from "./types.js";
 
 /**
@@ -52,17 +52,20 @@ export interface Rfc5322BuilderInput {
   replyTo?: NamedEmailAddress;
 }
 
+/** formatAddressForHeader, not formatNamedAddress: display names crossing onto the wire need RFC
+ * 2047 encoding when they aren't pure ASCII (see encoded-word.ts). The plain formatter remains the
+ * right one for storage/display, which is why the distinction exists. */
 function joinAddresses(addresses: NamedEmailAddress[]): string {
-  return addresses.map(formatNamedAddress).join(", ");
+  return addresses.map(formatAddressForHeader).join(", ");
 }
 
 export function buildRfc5322Headers(input: Rfc5322BuilderInput): MimeHeader[] {
   const headers: MimeHeader[] = [
     { name: "Message-ID", value: input.messageId },
     { name: "Date", value: formatRfc5322Date(input.date) },
-    { name: "From", value: formatNamedAddress(input.from) },
+    { name: "From", value: formatAddressForHeader(input.from) },
     { name: "To", value: joinAddresses(input.to) },
-    { name: "Subject", value: input.subject }
+    { name: "Subject", value: encodeHeaderText(input.subject) }
   ];
 
   if (input.cc?.length) headers.push({ name: "Cc", value: joinAddresses(input.cc) });
@@ -71,7 +74,7 @@ export function buildRfc5322Headers(input: Rfc5322BuilderInput): MimeHeader[] {
   // matching standard Gmail compose behavior. A future direct-SMTP adapter would need to strip
   // this per-recipient itself, since SMTP has no equivalent server-side behavior to rely on.
   if (input.bcc?.length) headers.push({ name: "Bcc", value: joinAddresses(input.bcc) });
-  if (input.replyTo) headers.push({ name: "Reply-To", value: formatNamedAddress(input.replyTo) });
+  if (input.replyTo) headers.push({ name: "Reply-To", value: formatAddressForHeader(input.replyTo) });
   if (input.inReplyTo) headers.push({ name: "In-Reply-To", value: input.inReplyTo });
   if (input.references?.length) headers.push({ name: "References", value: input.references.join(" ") });
 
