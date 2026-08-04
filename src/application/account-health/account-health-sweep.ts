@@ -35,9 +35,13 @@ export interface AccountHealthSweepResult {
  * revoked/expired refresh token visible in the UI instead of only surfacing the next time
  * something tries to actually send or sync and fails.
  *
- * A transient failure (e.g. a network blip, not a real revoked token) would also flip an account
- * to 'reauth_required' here; this is self-correcting, since the next tick's successful check
- * flips it straight back to 'connected'.
+ * A real reported bug: a transient failure (a network blip, a provider's own 5xx, a momentary OS
+ * keychain hiccup) used to flip an account to 'reauth_required' here too, indistinguishable from
+ * an actually revoked token -- self-correcting on the next successful tick, but not before firing
+ * a disruptive critical notification and reconnect prompt over nothing. computeAccountHealthSnapshot
+ * now only ever flips status on an unambiguous revocation signal from the provider itself (see
+ * AccountReauthRequiredError); every other failure here is logged (errorLogRepository, when
+ * provided) but leaves accounts.status untouched.
  *
  * Section 21.3 failure isolation: one account's check throwing doesn't stop the sweep for the rest.
  */
@@ -60,6 +64,7 @@ export async function runAccountHealthSweep(deps: AccountHealthSweepDeps, now: D
         notificationRepository: deps.notificationRepository,
         providerName: account.provider,
         accountDirectory: deps.accountDirectory,
+        errorLogRepository: deps.errorLogRepository,
         now
       });
     } catch (err) {

@@ -4,7 +4,8 @@ import type { AccountDirectory } from "../../ports/account-directory.port.js";
 import type { AccountHealthMetricsSource } from "../../ports/account-health-metrics.port.js";
 import type { AccountHealthRepository } from "../../ports/account-health-repository.port.js";
 import type { DomainAuthChecker } from "../../ports/domain-auth-checker.port.js";
-import type { AccountRef, MailProvider } from "../../ports/mail-provider.port.js";
+import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
+import { AccountReauthRequiredError, type AccountRef, type MailProvider } from "../../ports/mail-provider.port.js";
 import type { NotificationRepository } from "../../ports/notification-repository.port.js";
 
 /**
@@ -26,7 +27,32 @@ export interface ComputeAccountHealthSnapshotParams {
    * 'connected' and 'reauth_required' (Section 13.3), so a revoked/expired token becomes visible
    * in the UI instead of only surfacing the next time a send/sync actually fails. */
   accountDirectory?: AccountDirectory;
+  /** Optional: records a transient/unclassified auth-check failure (a network blip, a provider's
+   * own 5xx, etc.) as a structured, queryable log entry -- the real bug this guards against found
+   * during real use is a false "please reconnect" prompt from exactly this kind of one-off error,
+   * so it's worth being able to see how often it's actually happening without it disrupting the
+   * user the way a flipped account status / critical notification would. */
+  errorLogRepository?: ErrorLogRepository;
   now?: Date;
+}
+
+/** A live auth check has three possible outcomes, not two: the provider explicitly says the stored
+ * credentials are permanently dead (`revoked` -- only this should ever mean "reconnect needed"),
+ * it plainly worked (`passed`), or something else went wrong that says nothing reliable either way
+ * (`unknown` -- a network blip, a provider 5xx/429, a momentary keychain hiccup, or any error shape
+ * this adapter doesn't specifically recognize as a real revocation). Collapsing `unknown` into
+ * "failed" is exactly the bug this type exists to prevent: it was flipping accounts to
+ * reauth_required (and firing a critical notification) over one-off transient errors that had
+ * nothing to do with the account's actual authorization. */
+type LiveAuthCheckOutcome = "passed" | "revoked" | "unknown";
+
+async function checkLiveAuth(provider: MailProvider, accountRef: AccountRef): Promise<{ outcome: LiveAuthCheckOutcome; error?: unknown }> {
+  try {
+    await provider.authenticate(accountRef);
+    return { outcome: "passed" };
+  } catch (err) {
+    return { outcome: err instanceof AccountReauthRequiredError ? "revoked" : "unknown", error: err };
+  }
 }
 
 export async function computeAccountHealthSnapshot(
@@ -35,15 +61,27 @@ export async function computeAccountHealthSnapshot(
   const now = params.now ?? new Date();
   const domain = params.accountRef.emailAddress.split("@")[1] ?? "";
 
-  const [metrics, authStatus, liveAuthCheckPassed] = await Promise.all([
+  const [metrics, authStatus, liveAuthCheck] = await Promise.all([
     params.metricsSource.getMetrics(params.accountRef.accountId, now),
     params.authChecker.check(domain, params.providerName),
-    params.provider
-      .authenticate(params.accountRef)
-      .then(() => true)
-      .catch(() => false)
+    checkLiveAuth(params.provider, params.accountRef)
   ]);
 
+  if (liveAuthCheck.outcome === "unknown") {
+    const errorMessage = liveAuthCheck.error instanceof Error ? liveAuthCheck.error.message : String(liveAuthCheck.error);
+    await params.errorLogRepository?.record({
+      occurredAt: now,
+      source: "account-health-sweep",
+      errorType: "auth_check_inconclusive",
+      errorMessage,
+      accountId: params.accountRef.accountId
+    });
+  }
+
+  // Only a genuine revocation should ever count against the health score or flip accounts.status
+  // -- an inconclusive ("unknown") check is treated the same as a passing one here so a transient
+  // blip never produces a false "auth check failed" finding or notification.
+  const liveAuthCheckPassed = liveAuthCheck.outcome !== "revoked";
   const input = { metrics, authStatus, liveAuthCheckPassed };
   const result = computeAccountHealth(input);
 
@@ -54,10 +92,13 @@ export async function computeAccountHealthSnapshot(
     result
   });
 
-  if (params.accountDirectory) {
+  // An inconclusive check leaves accounts.status untouched entirely -- neither flipped to
+  // reauth_required (the false-positive this exists to prevent) nor optimistically flipped back to
+  // connected (which would be claiming a verification that didn't actually happen).
+  if (params.accountDirectory && liveAuthCheck.outcome !== "unknown") {
     await params.accountDirectory.updateStatus(
       params.accountRef.accountId,
-      liveAuthCheckPassed ? "connected" : "reauth_required"
+      liveAuthCheck.outcome === "passed" ? "connected" : "reauth_required"
     );
   }
 

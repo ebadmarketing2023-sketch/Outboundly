@@ -13,7 +13,7 @@ import { SqliteNotificationRepository } from "../../src/adapters/persistence/rep
 import { accounts } from "../../src/adapters/persistence/schema.js";
 import { generateId } from "../../src/core/shared-kernel/ids.js";
 import type { DomainAuthChecker, DomainAuthStatus } from "../../src/ports/domain-auth-checker.port.js";
-import type { AccountRef, MailProvider } from "../../src/ports/mail-provider.port.js";
+import { AccountReauthRequiredError, type AccountRef, type MailProvider } from "../../src/ports/mail-provider.port.js";
 
 class FakeDomainAuthChecker implements DomainAuthChecker {
   async check(): Promise<DomainAuthStatus> {
@@ -22,11 +22,12 @@ class FakeDomainAuthChecker implements DomainAuthChecker {
 }
 
 /** Only `authenticate` matters to this sweep; everything else throws so a test fails loudly if
- * it's ever accidentally exercised. */
+ * it's ever accidentally exercised. Throws the specific AccountReauthRequiredError type to
+ * simulate a genuine revocation -- only that should ever flip accounts.status. */
 class FakeMailProvider implements MailProvider {
   constructor(private readonly authenticateShouldSucceed: boolean) {}
   async authenticate(_account: AccountRef): Promise<void> {
-    if (!this.authenticateShouldSucceed) throw new Error("simulated auth failure");
+    if (!this.authenticateShouldSucceed) throw new AccountReauthRequiredError("simulated revoked token");
   }
   sendMessage(): never {
     throw new Error("not used by this test");
@@ -144,15 +145,42 @@ describe("runAccountHealthSweep (Section 17.3 periodic mode, Section 21.1)", () 
       new Date()
     );
 
-    // computeAccountHealthSnapshot itself swallows an authenticate() failure into
-    // liveAuthCheckPassed=false, so this doesn't actually throw -- the isolation still matters for
-    // any other unexpected failure (e.g. the auth checker or repository throwing), so this test
-    // just confirms the healthy account was still processed regardless of the other account's outcome.
+    // computeAccountHealthSnapshot itself swallows an authenticate() failure that isn't a genuine
+    // AccountReauthRequiredError into an inconclusive ("unknown") outcome, so this doesn't actually
+    // throw -- the isolation still matters for any other unexpected failure (e.g. the auth checker
+    // or repository throwing), so this test just confirms the healthy account was still processed
+    // regardless of the other account's outcome.
     expect(result.checked).toBe(2);
 
     const accountDirectory = new SqliteAccountDirectory(db);
     const entries = await accountDirectory.list();
     expect(entries.find((e) => e.id === healthyAccountId)?.status).toBe("connected");
+  });
+
+  it("does not flip a healthy account to reauth_required over a transient/unclassified auth error (the false-reconnect-prompt bug)", async () => {
+    const result = await runAccountHealthSweep(
+      deps((account) => {
+        if (account.id === failingAccountId) {
+          return {
+            authenticate: async () => {
+              throw new Error("ECONNRESET: simulated transient network blip");
+            }
+          } as unknown as MailProvider;
+        }
+        return new FakeMailProvider(true);
+      }),
+      new Date()
+    );
+
+    expect(result.checked).toBe(2);
+    expect(result.failures).toEqual([]);
+
+    const accountDirectory = new SqliteAccountDirectory(db);
+    const entries = await accountDirectory.list();
+    expect(entries.find((e) => e.id === healthyAccountId)?.status).toBe("connected");
+    // Started as "connected" and must stay "connected" -- a transient error must never produce the
+    // false "please reconnect" prompt this fix exists to prevent.
+    expect(entries.find((e) => e.id === failingAccountId)?.status).toBe("connected");
   });
 
   it("records a genuine unexpected error (e.g. the auth checker throwing) as a structured log entry, isolated per account", async () => {

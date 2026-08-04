@@ -1,17 +1,18 @@
 import "isomorphic-fetch";
-import { PublicClientApplication } from "@azure/msal-node";
+import { InteractionRequiredAuthError, PublicClientApplication } from "@azure/msal-node";
 import type { ICachePlugin, TokenCacheContext } from "@azure/msal-node";
 import { Client } from "@microsoft/microsoft-graph-client";
 import type { BuiltMimeMessage } from "../../../core/mime/types.js";
-import type {
-  AccountRef,
-  ChangeSet,
-  MailProvider,
-  NormalizedMessage,
-  NormalizedThread,
-  ProviderDraftRef,
-  ProviderSendResult,
-  SyncCursor
+import {
+  AccountReauthRequiredError,
+  type AccountRef,
+  type ChangeSet,
+  type MailProvider,
+  type NormalizedMessage,
+  type NormalizedThread,
+  type ProviderDraftRef,
+  type ProviderSendResult,
+  type SyncCursor
 } from "../../../ports/mail-provider.port.js";
 import { MICROSOFT_CAPABILITIES, type ProviderCapabilities } from "../../../ports/provider-capabilities.port.js";
 import type { TokenVault } from "../../../ports/token-vault.port.js";
@@ -101,8 +102,19 @@ export class MicrosoftProvider implements MailProvider {
 
     // acquireTokenSilent handles refreshing the access token from MSAL's cache internally — there
     // is no manual "is it near expiry" check to write ourselves the way GmailProvider needs one,
-    // since MSAL never hands us the raw refresh token to manage.
-    const result = await pca.acquireTokenSilent({ account: matched, scopes: this.config.scopes });
+    // since MSAL never hands us the raw refresh token to manage. MSAL's own documented signal for
+    // "silent refresh can't work, the user must sign in again" (a revoked/expired refresh token)
+    // is InteractionRequiredAuthError specifically -- any other failure here (network, throttling,
+    // a transient MSAL/Graph error) must not be treated the same way.
+    let result;
+    try {
+      result = await pca.acquireTokenSilent({ account: matched, scopes: this.config.scopes });
+    } catch (err) {
+      if (err instanceof InteractionRequiredAuthError) {
+        throw new AccountReauthRequiredError("Microsoft refresh token requires interactive sign-in again", { cause: err });
+      }
+      throw err;
+    }
 
     return Client.init({
       authProvider: (done) => done(null, result.accessToken)

@@ -71,6 +71,24 @@ export interface NormalizedMessage {
 }
 
 /**
+ * Thrown by MailProvider.authenticate() (and anything else that resolves a client, e.g.
+ * sendMessage/fetchMessage) specifically when the provider gives an unambiguous, permanent
+ * signal that stored credentials are no longer usable and only a fresh sign-in can fix it --
+ * Google's `invalid_grant`, MSAL's `InteractionRequiredAuthError`, or an IMAP/SMTP login rejected
+ * for bad credentials. Every *other* failure (a network blip, a provider's own 5xx/429, a
+ * momentary OS keychain hiccup, an unrecognized error shape) must NOT be wrapped in this class --
+ * callers (see computeAccountHealthSnapshot) treat only this specific error as "this account
+ * genuinely needs to be reconnected," and anything else as inconclusive, precisely so a transient
+ * failure never flips a perfectly healthy account to reauth_required.
+ */
+export class AccountReauthRequiredError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "AccountReauthRequiredError";
+  }
+}
+
+/**
  * The single interface the Compose, Campaign, Deliverability, and Queue modules see (Section 12.1).
  * No provider-specific payload shape ever crosses this boundary.
  */

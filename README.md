@@ -19,13 +19,12 @@ Modern desktop email outreach platform combining authentic composition with powe
   installs that already have an unencrypted database on disk from before this shipped.
 - **Phase 3 (done):** the safety-rail layer that has to exist before Phase 4 turns on campaign
   volume. A **Deliverability Engine** (`src/core/deliverability/`) runs as a blocking gate on
-  every send (content-quality, sender-consistency, and delegated RFC/MIME rules), an **Account
-  Health Engine** (`src/core/account-health/`) scores each account from real signals only —
-  reply rate and send volume from the Conversation Engine's own data, SPF/DKIM/DMARC from real
-  DNS lookups (`src/adapters/dns/`), and a live authentication check, never a fabricated bounce
-  rate or failure counter — and a **Deliverability Lab** (`src/application/deliverability-lab/`)
-  lets you test a hypothetical message with zero side effects before you write it for real. Both
-  engines are exposed via new minimal tabs (Account Health, Deliverability Lab).
+  every send (content-quality, sender-consistency, and delegated RFC/MIME rules) — this is what
+  actually keeps outgoing mail out of spam, and it runs unconditionally, with no UI toggle — and
+  an **Account Health Engine** (`src/core/account-health/`) scores each account from real signals
+  only — reply rate and send volume from the Conversation Engine's own data, SPF/DKIM/DMARC from
+  real DNS lookups (`src/adapters/dns/`), and a live authentication check, never a fabricated
+  bounce rate or failure counter — exposed via its own minimal tab (Account Health).
 
 Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

@@ -9,11 +9,12 @@ import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/
 import { SqliteAccountDirectory } from "../../src/adapters/persistence/repositories/account-directory.js";
 import { SqliteAccountHealthMetricsSource } from "../../src/adapters/persistence/repositories/account-health-metrics-source.js";
 import { SqliteAccountHealthRepository } from "../../src/adapters/persistence/repositories/account-health-repository.js";
+import { SqliteErrorLogRepository } from "../../src/adapters/persistence/repositories/error-log-repository.js";
 import { SqliteNotificationRepository } from "../../src/adapters/persistence/repositories/notification-repository.js";
 import { accounts } from "../../src/adapters/persistence/schema.js";
 import { asAccountId, generateId } from "../../src/core/shared-kernel/ids.js";
 import type { DomainAuthChecker, DomainAuthStatus } from "../../src/ports/domain-auth-checker.port.js";
-import type { AccountRef, MailProvider } from "../../src/ports/mail-provider.port.js";
+import { AccountReauthRequiredError, type AccountRef, type MailProvider } from "../../src/ports/mail-provider.port.js";
 
 class FakeDomainAuthChecker implements DomainAuthChecker {
   constructor(private readonly status: DomainAuthStatus) {}
@@ -22,12 +23,18 @@ class FakeDomainAuthChecker implements DomainAuthChecker {
   }
 }
 
+type AuthOutcome = "pass" | "revoked" | "transient";
+
 /** Only `authenticate` matters to computeAccountHealthSnapshot; everything else throws so a test
- * fails loudly if it's ever accidentally exercised. */
+ * fails loudly if it's ever accidentally exercised. "revoked" throws the specific error type that
+ * means a real, permanent revocation (only this should ever flip accounts.status); "transient"
+ * throws a plain error to simulate a network blip or other inconclusive failure, which must NOT
+ * flip status or raise a critical finding -- that distinction is the whole point of this fix. */
 class FakeMailProvider implements MailProvider {
-  constructor(private readonly authenticateShouldSucceed: boolean) {}
+  constructor(private readonly outcome: AuthOutcome) {}
   async authenticate(_account: AccountRef): Promise<void> {
-    if (!this.authenticateShouldSucceed) throw new Error("simulated auth failure");
+    if (this.outcome === "revoked") throw new AccountReauthRequiredError("simulated revoked token");
+    if (this.outcome === "transient") throw new Error("simulated transient network error");
   }
   sendMessage(): never {
     throw new Error("not used by this test");
@@ -83,10 +90,10 @@ describe("computeAccountHealthSnapshot (Section 19, notifications surfaced per S
     notificationRepository = new SqliteNotificationRepository(db);
   });
 
-  it("records a critical account_health_issue notification when the live auth check fails", async () => {
+  it("records a critical account_health_issue notification when the live auth check reports a genuine revocation", async () => {
     const result = await computeAccountHealthSnapshot({
       accountRef,
-      provider: new FakeMailProvider(false),
+      provider: new FakeMailProvider("revoked"),
       metricsSource: new SqliteAccountHealthMetricsSource(db),
       authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
       repository: new SqliteAccountHealthRepository(db),
@@ -106,7 +113,7 @@ describe("computeAccountHealthSnapshot (Section 19, notifications surfaced per S
   it("does not record a notification for a healthy account", async () => {
     const result = await computeAccountHealthSnapshot({
       accountRef,
-      provider: new FakeMailProvider(true),
+      provider: new FakeMailProvider("pass"),
       metricsSource: new SqliteAccountHealthMetricsSource(db),
       authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
       repository: new SqliteAccountHealthRepository(db),
@@ -117,11 +124,48 @@ describe("computeAccountHealthSnapshot (Section 19, notifications surfaced per S
     expect(await notificationRepository.findUnread(10)).toEqual([]);
   });
 
-  it("flips accounts.status to reauth_required when the live auth check fails and an accountDirectory is provided", async () => {
+  // A real reported bug: a transient failure (a network blip, a provider's own 5xx, a momentary
+  // keychain hiccup) used to be indistinguishable from a genuinely revoked token here, flipping a
+  // perfectly healthy account to reauth_required and firing a disruptive critical notification.
+  it("does NOT record a notification or degrade health for a transient/unclassified auth-check error", async () => {
+    const result = await computeAccountHealthSnapshot({
+      accountRef,
+      provider: new FakeMailProvider("transient"),
+      metricsSource: new SqliteAccountHealthMetricsSource(db),
+      authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
+      repository: new SqliteAccountHealthRepository(db),
+      notificationRepository,
+      providerName: "google"
+    });
+    expect(result.riskLevel).toBe("healthy");
+    expect(await notificationRepository.findUnread(10)).toEqual([]);
+  });
+
+  it("logs a transient/unclassified auth-check error as a structured entry when an errorLogRepository is provided", async () => {
+    const errorLogRepository = new SqliteErrorLogRepository(db);
+    await computeAccountHealthSnapshot({
+      accountRef,
+      provider: new FakeMailProvider("transient"),
+      metricsSource: new SqliteAccountHealthMetricsSource(db),
+      authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
+      repository: new SqliteAccountHealthRepository(db),
+      notificationRepository,
+      providerName: "google",
+      errorLogRepository
+    });
+
+    const logged = await errorLogRepository.listRecent(10);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.errorType).toBe("auth_check_inconclusive");
+    expect(logged[0]?.errorMessage).toBe("simulated transient network error");
+    expect(logged[0]?.accountId).toBe(accountId);
+  });
+
+  it("flips accounts.status to reauth_required when the live auth check reports a genuine revocation and an accountDirectory is provided", async () => {
     const accountDirectory = new SqliteAccountDirectory(db);
     await computeAccountHealthSnapshot({
       accountRef,
-      provider: new FakeMailProvider(false),
+      provider: new FakeMailProvider("revoked"),
       metricsSource: new SqliteAccountHealthMetricsSource(db),
       authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
       repository: new SqliteAccountHealthRepository(db),
@@ -132,6 +176,25 @@ describe("computeAccountHealthSnapshot (Section 19, notifications surfaced per S
 
     const entries = await accountDirectory.list();
     expect(entries.find((e) => e.id === accountId)?.status).toBe("reauth_required");
+  });
+
+  it("leaves accounts.status untouched on a transient/unclassified auth-check error, neither flipping to reauth_required nor optimistically to connected", async () => {
+    const accountDirectory = new SqliteAccountDirectory(db);
+    await computeAccountHealthSnapshot({
+      accountRef,
+      provider: new FakeMailProvider("transient"),
+      metricsSource: new SqliteAccountHealthMetricsSource(db),
+      authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
+      repository: new SqliteAccountHealthRepository(db),
+      notificationRepository,
+      providerName: "google",
+      accountDirectory
+    });
+
+    const entries = await accountDirectory.list();
+    // Started as "connected" (see beforeEach) and must still read "connected" -- not because the
+    // check passed, but because an inconclusive result must never touch status either way.
+    expect(entries.find((e) => e.id === accountId)?.status).toBe("connected");
   });
 
   it("flips accounts.status back to connected once a subsequent live auth check succeeds", async () => {
@@ -146,17 +209,17 @@ describe("computeAccountHealthSnapshot (Section 19, notifications surfaced per S
       accountDirectory
     };
 
-    await computeAccountHealthSnapshot({ ...commonParams, provider: new FakeMailProvider(false) });
+    await computeAccountHealthSnapshot({ ...commonParams, provider: new FakeMailProvider("revoked") });
     expect((await accountDirectory.list()).find((e) => e.id === accountId)?.status).toBe("reauth_required");
 
-    await computeAccountHealthSnapshot({ ...commonParams, provider: new FakeMailProvider(true) });
+    await computeAccountHealthSnapshot({ ...commonParams, provider: new FakeMailProvider("pass") });
     expect((await accountDirectory.list()).find((e) => e.id === accountId)?.status).toBe("connected");
   });
 
   it("leaves accounts.status untouched when no accountDirectory is passed (manual-trigger backward compatibility)", async () => {
     await computeAccountHealthSnapshot({
       accountRef,
-      provider: new FakeMailProvider(false),
+      provider: new FakeMailProvider("revoked"),
       metricsSource: new SqliteAccountHealthMetricsSource(db),
       authChecker: new FakeDomainAuthChecker(HEALTHY_AUTH_STATUS),
       repository: new SqliteAccountHealthRepository(db),

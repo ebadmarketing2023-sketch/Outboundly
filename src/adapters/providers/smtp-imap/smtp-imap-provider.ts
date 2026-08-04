@@ -3,15 +3,16 @@ import { ImapFlow } from "imapflow";
 import { simpleParser, type AddressObject } from "mailparser";
 import { generateId } from "../../../core/shared-kernel/ids.js";
 import type { BuiltMimeMessage } from "../../../core/mime/types.js";
-import type {
-  AccountRef,
-  ChangeSet,
-  MailProvider,
-  NormalizedMessage,
-  NormalizedThread,
-  ProviderDraftRef,
-  ProviderSendResult,
-  SyncCursor
+import {
+  AccountReauthRequiredError,
+  type AccountRef,
+  type ChangeSet,
+  type MailProvider,
+  type NormalizedMessage,
+  type NormalizedThread,
+  type ProviderDraftRef,
+  type ProviderSendResult,
+  type SyncCursor
 } from "../../../ports/mail-provider.port.js";
 import { SMTP_IMAP_CAPABILITIES, type ProviderCapabilities } from "../../../ports/provider-capabilities.port.js";
 import type { TokenVault } from "../../../ports/token-vault.port.js";
@@ -86,7 +87,19 @@ export class SmtpImapProvider implements MailProvider {
       secure: credentials.imapSecure,
       auth: { user: credentials.username, pass: credentials.password }
     });
-    await client.connect();
+    try {
+      await client.connect();
+    } catch (err) {
+      // imapflow's own documented signal for "the server rejected the credentials themselves" (as
+      // opposed to a connection/network failure reaching the server at all) is an error with
+      // `authenticationFailed: true` -- since SMTP/IMAP has no separate refresh-token concept, a
+      // rejected login here genuinely does mean the stored password is wrong/changed, unlike a
+      // timeout or DNS failure reaching the host.
+      if ((err as { authenticationFailed?: boolean })?.authenticationFailed === true) {
+        throw new AccountReauthRequiredError("IMAP server rejected the stored credentials", { cause: err });
+      }
+      throw err;
+    }
     return client;
   }
 

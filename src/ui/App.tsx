@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ComposeScreen } from "./compose/ComposeScreen.js";
 import { InboxScreen } from "./unified-inbox/InboxScreen.js";
 import { AccountHealthScreen } from "./account-health/AccountHealthScreen.js";
-import { DeliverabilityLabScreen } from "./deliverability-lab/DeliverabilityLabScreen.js";
 import { LeadsScreen } from "./leads/LeadsScreen.js";
 import { CampaignsScreen } from "./campaigns/CampaignsScreen.js";
 import { AnalyticsScreen } from "./analytics/AnalyticsScreen.js";
@@ -13,7 +12,6 @@ import {
   ActivityIcon,
   BarChartIcon,
   BellIcon,
-  FlaskIcon,
   InboxIcon,
   MailIcon,
   MegaphoneIcon,
@@ -25,7 +23,6 @@ type Tab =
   | "compose"
   | "inbox"
   | "account-health"
-  | "deliverability-lab"
   | "leads"
   | "campaigns"
   | "analytics"
@@ -57,7 +54,6 @@ export function App(): JSX.Element {
     { key: "leads", label: "Leads", icon: <UsersIcon size={17} />, screen: <LeadsScreen /> },
     { key: "analytics", label: "Analytics", icon: <BarChartIcon size={17} />, screen: <AnalyticsScreen /> },
     { key: "account-health", label: "Account Health", icon: <ActivityIcon size={17} />, screen: <AccountHealthScreen /> },
-    { key: "deliverability-lab", label: "Deliverability Lab", icon: <FlaskIcon size={17} />, screen: <DeliverabilityLabScreen /> },
     { key: "notifications", label: "Notifications", icon: <BellIcon size={17} />, screen: <NotificationsScreen /> },
     { key: "settings", label: "Settings", icon: <SettingsIcon size={17} />, screen: <SettingsScreen /> }
   ];

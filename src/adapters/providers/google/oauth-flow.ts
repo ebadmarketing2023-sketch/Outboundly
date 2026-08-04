@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 import { CodeChallengeMethod, OAuth2Client } from "google-auth-library";
+import { AccountReauthRequiredError } from "../../../ports/mail-provider.port.js";
 import type { StoredTokens } from "../../../ports/token-vault.port.js";
 
 /**
@@ -129,6 +130,16 @@ export function runGoogleOAuthFlow(
   });
 }
 
+/** Google's token endpoint answers a permanently dead refresh token (revoked, expired from
+ * disuse, or from an app in "Testing" publishing status hitting its 7-day limit) with HTTP 400 and
+ * body `{ error: "invalid_grant", ... }` -- this is the one error shape that unambiguously means
+ * "only a fresh sign-in fixes this," distinct from a transient network error or one of Google's own
+ * 5xx/429s, which carry a different (or no) response body and must not be treated the same way. */
+function isInvalidGrantError(err: unknown): boolean {
+  const data = (err as { response?: { data?: { error?: unknown } } })?.response?.data;
+  return typeof data?.error === "string" && data.error === "invalid_grant";
+}
+
 /** Refreshes an access token using the stored refresh token (Section 13.3). */
 export async function refreshGoogleAccessToken(
   config: GoogleOAuthConfig,
@@ -136,7 +147,17 @@ export async function refreshGoogleAccessToken(
 ): Promise<StoredTokens> {
   const client = new OAuth2Client({ clientId: config.clientId, clientSecret: config.clientSecret });
   client.setCredentials({ refresh_token: refreshToken });
-  const { credentials } = await client.refreshAccessToken();
+
+  let credentials;
+  try {
+    ({ credentials } = await client.refreshAccessToken());
+  } catch (err) {
+    if (isInvalidGrantError(err)) {
+      throw new AccountReauthRequiredError("Google refresh token is no longer valid -- reconnect required", { cause: err });
+    }
+    throw err;
+  }
+
   if (!credentials.access_token) throw new Error("Google did not return a refreshed access token");
   return {
     accessToken: credentials.access_token,

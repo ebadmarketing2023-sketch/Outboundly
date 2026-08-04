@@ -28,7 +28,6 @@ contextBridge.exposeInMainWorld("outboundly", {
   setMessageStarred: (request) => ipcRenderer.invoke("inbox:setMessageStarred", request),
   computeAccountHealth: (request) => ipcRenderer.invoke("accountHealth:computeSnapshot", request),
   getLatestAccountHealth: (request) => ipcRenderer.invoke("accountHealth:getLatest", request),
-  runLabAnalysis: (request) => ipcRenderer.invoke("deliverabilityLab:runAnalysis", request),
   importContactsCsv: (request) => ipcRenderer.invoke("contacts:importCsv", request),
   listContacts: () => ipcRenderer.invoke("contacts:list"),
   listLeadImportBatches: () => ipcRenderer.invoke("leadImportBatches:list"),
