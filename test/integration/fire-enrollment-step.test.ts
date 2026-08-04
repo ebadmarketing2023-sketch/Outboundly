@@ -731,6 +731,85 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
     expect(unread[0]?.relatedCampaignId).toBe(campaign.id);
   });
 
+  it("handleReplyDetected suppresses the contact globally when the reply explicitly asks to be removed", async () => {
+    // A real reported gap: an opt-out reply used to stop only the contact's *current* enrollments,
+    // so the next CSV import would enroll and email them again. The suppression list is what makes
+    // the request stick across every future campaign.
+    const suppressionListRepository = deps.suppressionListRepository;
+    const contact = await deps.contactRepository.upsertByEmail({ email: "optout@example.com", source: "manual" });
+
+    expect(await suppressionListRepository.isSuppressed(contact.email)).toBe(false);
+
+    await handleReplyDetected(
+      { ...deps, eventRepository, notificationRepository, suppressionListRepository },
+      contact.email,
+      { threadId: "no-such-thread", accountId },
+      { subject: "Re: Quick question", bodyText: "Please take me off your list." }
+    );
+
+    expect(await suppressionListRepository.isSuppressed(contact.email)).toBe(true);
+
+    const unread = await notificationRepository.findUnread(10);
+    expect(unread.some((n) => n.notificationType === "contact_opted_out")).toBe(true);
+  });
+
+  it("handleReplyDetected leaves an ordinary reply unsuppressed, so a live lead is never lost to a false positive", async () => {
+    const suppressionListRepository = deps.suppressionListRepository;
+    const contact = await deps.contactRepository.upsertByEmail({ email: "interested@example.com", source: "manual" });
+
+    await handleReplyDetected(
+      { ...deps, eventRepository, notificationRepository, suppressionListRepository },
+      contact.email,
+      { threadId: "no-such-thread", accountId },
+      { subject: "Re: Quick question", bodyText: "Sounds interesting -- can you send pricing?" }
+    );
+
+    expect(await suppressionListRepository.isSuppressed(contact.email)).toBe(false);
+    const unread = await notificationRepository.findUnread(10);
+    expect(unread.some((n) => n.notificationType === "contact_opted_out")).toBe(false);
+    expect(unread.some((n) => n.notificationType === "reply_arrived")).toBe(true);
+  });
+
+  it("an opt-out reply stops the enrollment even when the step is configured to keep going through replies", async () => {
+    // stopOnReply:false deliberately keeps a sequence running past ordinary replies -- but an
+    // explicit removal request must override that, which is why the opt-out path stops with
+    // stopped_suppressed (unconditional) rather than stopped_reply (per-step).
+    const suppressionListRepository = deps.suppressionListRepository;
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id, stopOnReply: false },
+        { delayDays: 3, delayHours: 0, templateId: template.id, stopOnReply: false }
+      ]
+    });
+    await deps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[0]!.id, subjectText: "S1", weight: 1 });
+    await deps.subjectVariantRepository.create({ sequenceStepId: sequence.steps[1]!.id, subjectText: "S2", weight: 1 });
+    const campaign = await deps.campaignRepository.create({
+      name: "Keep-going camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await deps.contactRepository.upsertByEmail({ email: "persistent@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const stoppedIds = await handleReplyDetected(
+      { ...deps, eventRepository, notificationRepository, suppressionListRepository },
+      contact.email,
+      { threadId: "no-such-thread", accountId },
+      { subject: "Unsubscribe", bodyText: "" }
+    );
+
+    expect(stoppedIds).toEqual([enrollment.id]);
+    expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_suppressed");
+  });
+
   it("handleReplyDetected does not record an event or throw when the reply doesn't correlate to any campaign send", async () => {
     const contact = await deps.contactRepository.upsertByEmail({ email: "unrelated@example.com", source: "manual" });
     const stoppedIds = await handleReplyDetected(

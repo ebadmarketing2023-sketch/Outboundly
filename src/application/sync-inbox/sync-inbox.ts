@@ -24,7 +24,13 @@ export interface SyncInboxParams {
    * ReplyDetected event). Composed in by the caller so this stays decoupled from the Campaign
    * Engine's own repositories; wrapped in the same per-message failure isolation as ingestion
    * itself, so a stop-condition failure can't abort the rest of the sync. */
-  onReplyDetected?: (fromAddress: string, threadId: string) => Promise<void>;
+  onReplyDetected?: (
+    fromAddress: string,
+    threadId: string,
+    /** The reply's own subject/body, so the caller can detect an explicit opt-out request
+     * (opt-out-detection.ts) rather than only knowing that *some* reply arrived. */
+    content: { subject: string; bodyText?: string }
+  ) => Promise<void>;
   /** Invoked for an inbound message that looks like an automated delivery-failure notice (Section
    * 14.2's BounceDetected event) and threaded back to an existing conversation — a DSN that
    * doesn't thread back to one of our own sends can't be correlated to anything and is silently
@@ -108,7 +114,10 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
             await params.onBounceDetected?.(result.threadId);
           } else {
             repliesDetected++;
-            await params.onReplyDetected?.(normalized.from, result.threadId);
+            await params.onReplyDetected?.(normalized.from, result.threadId, {
+              subject: normalized.subject,
+              bodyText: normalized.bodyText
+            });
           }
         }
       }

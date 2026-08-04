@@ -1,6 +1,6 @@
 import type { AccountId, CampaignId, NotificationId } from "../core/shared-kernel/ids.js";
 
-export type NotificationType = "reply_arrived" | "send_failure" | "account_health_issue";
+export type NotificationType = "reply_arrived" | "send_failure" | "account_health_issue" | "contact_opted_out";
 export type NotificationSeverity = "info" | "warning" | "critical";
 
 export interface RecordNotificationInput {

@@ -315,15 +315,19 @@ async function syncAccountById(accountId, { reportProgress }) {
       contactRepository,
       conversationRepository,
       eventRepository,
-      notificationRepository
+      notificationRepository,
+      // Lets handleReplyDetected honor an explicit "remove me" reply by suppressing the contact
+      // globally, not just stopping their current enrollments -- otherwise the next CSV import
+      // would enroll and email them again (see opt-out-detection.ts).
+      suppressionListRepository
     };
     const result = await syncInboxForAccount({
       accountId: account.id,
       accountRef,
       provider: providerFor(account),
       repo: conversationRepository,
-      onReplyDetected: (fromAddress, threadId) =>
-        handleReplyDetected(stopEnrollmentDeps, fromAddress, { threadId, accountId: account.id }).then(() => undefined),
+      onReplyDetected: (fromAddress, threadId, replyContent) =>
+        handleReplyDetected(stopEnrollmentDeps, fromAddress, { threadId, accountId: account.id }, replyContent).then(() => undefined),
       onBounceDetected: (threadId) =>
         handleBounceDetected(stopEnrollmentDeps, threadId, account.id).then(() => undefined),
       errorLogRepository,

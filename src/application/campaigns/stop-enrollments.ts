@@ -1,4 +1,5 @@
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
+import { looksLikeOptOutRequest } from "../../core/campaigns/opt-out-detection.js";
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
 import { asAccountId, asEnrollmentId, type CampaignId, type ContactId, type EnrollmentId } from "../../core/shared-kernel/ids.js";
 import type { CampaignRepository } from "../../ports/campaign-repository.port.js";
@@ -70,6 +71,16 @@ export interface HandleReplyDetectedDeps extends StopEnrollmentsDeps {
   conversationRepository: ConversationRepository;
   eventRepository: EventRepository;
   notificationRepository: NotificationRepository;
+  /** Optional so existing callers/tests that only care about the stop-on-reply behavior keep
+   * working unchanged; when provided, an explicit opt-out request in the reply also suppresses the
+   * contact globally (see below). */
+  suppressionListRepository?: SuppressionListRepository;
+}
+
+/** The reply's own content, used only to detect an explicit opt-out request. */
+export interface ReplyContent {
+  subject: string;
+  bodyText?: string;
 }
 
 /** Resolves an inbound message's From address to a Contact and stops every active enrollment that
@@ -85,11 +96,19 @@ export interface HandleReplyDetectedDeps extends StopEnrollmentsDeps {
 export async function handleReplyDetected(
   deps: HandleReplyDetectedDeps,
   fromHeader: string,
-  context: { threadId: string; accountId: string }
+  context: { threadId: string; accountId: string },
+  replyContent?: ReplyContent
 ): Promise<EnrollmentId[]> {
   const email = parseNamedAddress(fromHeader).address.toString();
   const contact = await deps.contactRepository.findByEmail(email);
   if (!contact) return [];
+
+  // An explicit "remove me" is a fact about the *contact*, not about the campaign they happened to
+  // reply to: stopping only their current enrollments (what the stopped_reply path below does on
+  // its own) would let the very next CSV import enroll and email them all over again. Suppressing
+  // here is what actually honors the request across every future campaign. Reversible from the
+  // Leads screen's suppressed-contacts list if the detector ever gets one wrong.
+  const optedOut = replyContent ? looksLikeOptOutRequest(replyContent.subject, replyContent.bodyText) : false;
 
   const enrollmentId = await deps.conversationRepository.findCampaignEnrollmentIdForThread(context.threadId);
   let campaignId: CampaignId | undefined;
@@ -106,6 +125,28 @@ export async function handleReplyDetected(
     }
   }
 
+  if (optedOut && deps.suppressionListRepository) {
+    await deps.suppressionListRepository.add(contact.email, "unsubscribed");
+    // Recorded with the same event type the manual unsubscribeContact path uses, so opt-outs
+    // arriving by reply show up in the same analytics as ones clicked through the UI rather than
+    // silently under-reporting the campaign's real unsubscribe rate.
+    await deps.eventRepository.record({
+      eventType: "unsubscribed",
+      campaignId,
+      accountId: asAccountId(context.accountId),
+      occurredAt: new Date(),
+      metadata: { contactId: contact.id, detectedFrom: "reply" }
+    });
+    await deps.notificationRepository.record({
+      notificationType: "contact_opted_out",
+      severity: "info",
+      message: `${email} asked to be removed and was added to the suppression list`,
+      relatedAccountId: asAccountId(context.accountId),
+      relatedCampaignId: campaignId,
+      createdAt: new Date()
+    });
+  }
+
   await deps.notificationRepository.record({
     notificationType: "reply_arrived",
     severity: "info",
@@ -115,7 +156,11 @@ export async function handleReplyDetected(
     createdAt: new Date()
   });
 
-  return stopEnrollmentsForContact(deps, contact.id, "stopped_reply");
+  // An explicit removal request stops unconditionally (stopped_suppressed), bypassing the current
+  // step's own stopOnReply flag -- a sequence deliberately configured to keep going through
+  // replies must still honor "stop contacting me". An ordinary reply keeps the pre-existing
+  // per-step behavior unchanged.
+  return stopEnrollmentsForContact(deps, contact.id, optedOut ? "stopped_suppressed" : "stopped_reply");
 }
 
 export interface HandleBounceDetectedDeps extends StopEnrollmentsDeps {
