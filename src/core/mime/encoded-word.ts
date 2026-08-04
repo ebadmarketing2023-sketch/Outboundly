@@ -1,3 +1,4 @@
+import { sanitizeHeaderValue } from "./canonicalizer.js";
 import type { NamedEmailAddress } from "../shared-kernel/email-address.js";
 
 /**
@@ -72,7 +73,12 @@ function chunkByUtf8Bytes(text: string, maxBytes: number): string[] {
  * concatenates adjacent encoded-words (RFC 2047 §6.2) -- and which also gives the header folder a
  * legal place to break the line.
  */
-export function encodeHeaderText(text: string): string {
+export function encodeHeaderText(rawText: string): string {
+  // Sanitize before encoding, not only at serialization: canonicalizer's own pass is what makes
+  // injection structurally impossible, but a CR/LF left in place here would survive *inside* the
+  // encoded-word and decode back to a literal newline in the recipient's client -- visible
+  // garbage in a display name rather than a forged header, but garbage all the same.
+  const text = sanitizeHeaderValue(rawText);
   if (!NEEDS_ENCODING.test(text)) return text;
   return chunkByUtf8Bytes(text, MAX_UTF8_BYTES_PER_WORD)
     .map((chunk) => `=?UTF-8?B?${Buffer.from(chunk, "utf8").toString("base64")}?=`)
@@ -91,7 +97,10 @@ export function formatAddressForHeader(named: NamedEmailAddress): string {
   const address = named.address.toString();
   if (!named.displayName) return address;
 
-  if (NEEDS_ENCODING.test(named.displayName)) {
+  const displayName = sanitizeHeaderValue(named.displayName);
+  if (!displayName) return address; // nothing left once control characters were stripped
+
+  if (NEEDS_ENCODING.test(displayName)) {
     // RFC 2047 §5: an encoded-word MUST NOT appear inside a quoted-string -- a parser treats the
     // quoted content as literal text and would show the raw `=?UTF-8?B?...?=` to the recipient.
     return `${encodeHeaderText(named.displayName)} <${address}>`;

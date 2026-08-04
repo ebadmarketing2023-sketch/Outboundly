@@ -46,8 +46,37 @@ export function dedupeAndOrderHeaders(headers: MimeHeader[]): MimeHeader[] {
 
 const MAX_LINE_LENGTH = 78;
 
+/**
+ * Characters that can never legitimately appear in a header field body. CR and LF are the ones
+ * that matter: a raw CRLF inside a value terminates the field, and whatever follows is parsed by
+ * the receiving system as *additional headers*.
+ *
+ * A real, reachable injection this closes: a contact's name comes from an imported CSV (a
+ * purchased or scraped lead list is normal in this domain and is not trusted input), flows into
+ * the To header's display name, and a value like `Bob\r\nBcc: attacker@example` silently added a
+ * real Bcc to outbound mail. The same applies to In-Reply-To/References, whose values come from
+ * provider-supplied Message-IDs and which never pass through the RFC 2047 encoder at all, and to
+ * an attachment's filename in Content-Disposition.
+ *
+ * Sanitizing here rather than in each builder is deliberate: this is the one function every header
+ * -- top-level, MIME part, present or future -- passes through on its way to becoming wire bytes,
+ * so no new header source can reintroduce the hole by forgetting to sanitize. Replacing rather
+ * than rejecting keeps one malformed row in a lead list from permanently failing a send: the value
+ * is visibly mangled, but it cannot forge a header.
+ */
+// Written as explicit escapes rather than a literal range so the control characters themselves
+// never appear in this source file.
+const HEADER_FORBIDDEN_CHARS = /[\u0000-\u001F\u007F]/g;
+
+export function sanitizeHeaderValue(value: string): string {
+  return value.replace(HEADER_FORBIDDEN_CHARS, " ").trim();
+}
+
 /** Folds a header line at word boundaries so no line exceeds the RFC 5322 recommended length. */
-export function foldHeaderLine(name: string, value: string): string {
+export function foldHeaderLine(name: string, rawValue: string): string {
+  // Must run before folding, never after: folding legitimately introduces its own CRLFs, so
+  // sanitizing the result would undo the fold.
+  const value = sanitizeHeaderValue(rawValue);
   const prefix = `${name}: `;
   if ((prefix + value).length <= MAX_LINE_LENGTH) return prefix + value;
 
