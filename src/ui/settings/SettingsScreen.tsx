@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   CardHeader,
+  Checkbox,
   ConfirmDialog,
   DownloadIcon,
   ErrorBanner,
@@ -103,6 +104,17 @@ export function SettingsScreen(): JSX.Element {
       const updated = await window.outboundly.updateAppPreferences({ defaultSendingAccountId: accountId || undefined });
       setPreferences(updated);
       toast.showToast("Default saved.", "success");
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleToggleConcurrentCampaigns(allow: boolean): Promise<void> {
+    setError(null);
+    try {
+      const updated = await window.outboundly.updateAppPreferences({ allowConcurrentCampaigns: allow });
+      setPreferences(updated);
+      toast.showToast(allow ? "A lead can now be in more than one live campaign." : "A lead will be skipped if they're already in a live campaign.", "success");
     } catch (err) {
       setError(String(err));
     }
@@ -281,6 +293,18 @@ export function SettingsScreen(): JSX.Element {
             Save
           </Button>
         </div>
+      </Card>
+
+      <Card style={{ marginBottom: "var(--space-6)" }}>
+        <CardHeader
+          title="Overlapping campaigns"
+          description="By default a lead already running in one campaign is skipped when you enroll them into another, and reported as skipped so you can see it. Two live campaigns sharing a lead send that person two unrelated cold emails from the same domain -- which reads as spam rather than as an extra touch. Enrolling them once the first campaign has finished is unaffected either way."
+        />
+        <Checkbox
+          checked={preferences.allowConcurrentCampaigns === true}
+          onChange={handleToggleConcurrentCampaigns}
+          label="Allow a lead to be in more than one campaign at the same time"
+        />
       </Card>
 
       <Card style={{ marginBottom: "var(--space-6)" }}>

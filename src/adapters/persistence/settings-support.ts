@@ -16,6 +16,7 @@ export const APP_SETTING_KEYS = {
   defaultSendingAccountId: "default_sending_account_id",
   defaultMinSendDelaySeconds: "default_min_send_delay_seconds",
   defaultMaxSendDelaySeconds: "default_max_send_delay_seconds",
+  allowConcurrentCampaigns: "allow_concurrent_campaigns",
   licenseKey: "license_key",
   licenseFingerprint: "license_fingerprint",
   licenseMachineId: "license_machine_id",
@@ -55,6 +56,10 @@ export interface AppPreferences {
    * later. */
   defaultMinSendDelaySeconds?: number;
   defaultMaxSendDelaySeconds?: number;
+  /** Whether a lead may be actively enrolled in more than one campaign at a time. Off unless the
+   * user turns it on -- see enroll-contacts.ts for why sharing a lead across two live campaigns is
+   * a spam-complaint risk rather than an extra touch. */
+  allowConcurrentCampaigns?: boolean;
 }
 
 export function getAppPreferences(db: OutboundlyDb): AppPreferences {
@@ -64,7 +69,9 @@ export function getAppPreferences(db: OutboundlyDb): AppPreferences {
     defaultBusinessHoursProfileId: getAppSetting(db, APP_SETTING_KEYS.defaultBusinessHoursProfileId),
     defaultSendingAccountId: getAppSetting(db, APP_SETTING_KEYS.defaultSendingAccountId),
     defaultMinSendDelaySeconds: min === undefined ? undefined : Number(min),
-    defaultMaxSendDelaySeconds: max === undefined ? undefined : Number(max)
+    defaultMaxSendDelaySeconds: max === undefined ? undefined : Number(max),
+    // Absent means off: the safe default has to survive a database that predates this setting.
+    allowConcurrentCampaigns: getAppSetting(db, APP_SETTING_KEYS.allowConcurrentCampaigns) === "true"
   };
 }
 
@@ -80,6 +87,9 @@ export function setAppPreferences(db: OutboundlyDb, prefs: AppPreferences, now: 
   }
   if (prefs.defaultMaxSendDelaySeconds !== undefined) {
     setAppSetting(db, APP_SETTING_KEYS.defaultMaxSendDelaySeconds, String(prefs.defaultMaxSendDelaySeconds), now);
+  }
+  if (prefs.allowConcurrentCampaigns !== undefined) {
+    setAppSetting(db, APP_SETTING_KEYS.allowConcurrentCampaigns, String(prefs.allowConcurrentCampaigns), now);
   }
 }
 

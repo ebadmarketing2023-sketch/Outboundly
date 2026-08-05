@@ -72,6 +72,7 @@ import { computeInsights } from "../dist/adapters/persistence/compute-insights.j
 import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
 import { createCampaignFromWizard } from "../dist/application/campaigns/create-campaign-from-wizard.js";
+import { enrollContactsIntoCampaign } from "../dist/application/campaigns/enroll-contacts.js";
 import { previewCampaignPersonalization } from "../dist/application/campaigns/preview-personalization.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
 import { importContactsCsv } from "../dist/application/leads/import-contacts-csv.js";
@@ -242,52 +243,15 @@ function campaignEngineDeps() {
   };
 }
 
-/** Shared by the manual contact-picker enrollment handler and the campaign-specific CSV-upload
- * handler (Critical Improvement #2) so there's exactly one place that enforces "not already
- * actively enrolled" and "not suppressed" before creating an enrollment row. */
+/** Thin wrapper over the application-layer enrollment rules (enroll-contacts.ts), which every
+ * enrollment path -- manual picker, campaign CSV upload, batch picker, creation wizard -- goes
+ * through. Only the repository wiring and the user's own "allow a lead in two live campaigns"
+ * preference live here. */
 async function enrollContactIdsIntoCampaign(campaignId, contactIds) {
-  const campaign = await campaignRepository.findById(campaignId);
-  if (!campaign) throw new Error("Campaign not found");
-  const sequence = await sequenceRepository.findById(campaign.sequenceId);
-  if (!sequence || sequence.steps.length === 0) throw new Error("Campaign's sequence has no steps");
-  const firstStep = sequence.steps[0];
-
-  let enrolled = 0;
-  const skipped = [];
-  for (const contactId of contactIds) {
-    const contact = await contactRepository.findById(contactId);
-    if (!contact) {
-      skipped.push({ contactId, reason: "Contact not found" });
-      continue;
-    }
-    if (await suppressionListRepository.isSuppressed(contact.email)) {
-      skipped.push({ contactId, reason: "Contact is on the suppression list" });
-      continue;
-    }
-    const existing = await enrollmentRepository.findActiveByCampaignAndContact(campaign.id, contactId);
-    if (existing) {
-      skipped.push({ contactId, reason: "Already actively enrolled in this campaign" });
-      continue;
-    }
-    try {
-      await enrollmentRepository.enroll({
-        campaignId: campaign.id,
-        contactId,
-        currentStepId: firstStep.id,
-        nextSendAt: new Date()
-      });
-      enrolled++;
-    } catch (err) {
-      // Database Integrity (Critical Improvement #13): campaign_enrollments has a real partial
-      // unique index on (campaign_id, contact_id) WHERE status = 'active', so a genuine race
-      // between two overlapping enroll requests for the same contact (the check above passing for
-      // both before either insert lands) throws here instead of silently creating a duplicate
-      // active enrollment. Treated the same as losing the check above -- skip this one contact,
-      // not the rest of the batch.
-      skipped.push({ contactId, reason: "Already actively enrolled in this campaign" });
-    }
-  }
-  return { enrolled, skipped };
+  return enrollContactsIntoCampaign(
+    { campaignRepository, sequenceRepository, contactRepository, enrollmentRepository, suppressionListRepository },
+    { campaignId, contactIds, allowConcurrentCampaigns: getAppPreferences(db).allowConcurrentCampaigns }
+  );
 }
 
 async function getProviderForAccount(accountId) {

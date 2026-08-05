@@ -577,6 +577,10 @@ export interface AppPreferencesSummary {
    * it immediately to every currently connected sending account, not just future ones. */
   defaultMinSendDelaySeconds?: number;
   defaultMaxSendDelaySeconds?: number;
+  /** Whether a lead may be actively enrolled in more than one campaign at a time. Off by default:
+   * two live campaigns sharing a lead send that person two unrelated cold emails from the same
+   * domain, which reads as spam rather than as an extra touch. */
+  allowConcurrentCampaigns?: boolean;
 }
 
 export interface UpdateAppPreferencesRequest {
@@ -584,6 +588,7 @@ export interface UpdateAppPreferencesRequest {
   defaultSendingAccountId?: string;
   defaultMinSendDelaySeconds?: number;
   defaultMaxSendDelaySeconds?: number;
+  allowConcurrentCampaigns?: boolean;
 }
 
 /** Backup/restore (Section 23: "Exported backups are encrypted with a user-supplied passphrase

@@ -65,13 +65,25 @@ describe("settings-support (Section 3 Settings module)", () => {
   });
 
   it("round-trips app preferences, leaving an omitted preference untouched", () => {
-    expect(getAppPreferences(db)).toEqual({ defaultBusinessHoursProfileId: undefined, defaultSendingAccountId: undefined });
+    expect(getAppPreferences(db)).toMatchObject({ defaultBusinessHoursProfileId: undefined, defaultSendingAccountId: undefined });
 
     setAppPreferences(db, { defaultBusinessHoursProfileId: "bhp-1" });
-    expect(getAppPreferences(db)).toEqual({ defaultBusinessHoursProfileId: "bhp-1", defaultSendingAccountId: undefined });
+    expect(getAppPreferences(db)).toMatchObject({ defaultBusinessHoursProfileId: "bhp-1", defaultSendingAccountId: undefined });
 
     setAppPreferences(db, { defaultSendingAccountId: accountId });
-    expect(getAppPreferences(db)).toEqual({ defaultBusinessHoursProfileId: "bhp-1", defaultSendingAccountId: accountId });
+    expect(getAppPreferences(db)).toMatchObject({ defaultBusinessHoursProfileId: "bhp-1", defaultSendingAccountId: accountId });
+  });
+
+  it("defaults the overlapping-campaigns guard to on, including on a database that predates the setting", () => {
+    // Absent must read as false (guard on). A database written before this setting existed has no
+    // row at all, and the safe reading of that is "the user never asked for overlap".
+    expect(getAppPreferences(db).allowConcurrentCampaigns).toBe(false);
+
+    setAppPreferences(db, { allowConcurrentCampaigns: true });
+    expect(getAppPreferences(db).allowConcurrentCampaigns).toBe(true);
+
+    setAppPreferences(db, { allowConcurrentCampaigns: false });
+    expect(getAppPreferences(db).allowConcurrentCampaigns).toBe(false);
   });
 
   it("round-trips the default send-delay range as numbers, not strings", () => {
