@@ -74,6 +74,7 @@ import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.j
 import { createCampaignFromWizard } from "../dist/application/campaigns/create-campaign-from-wizard.js";
 import { enrollContactsIntoCampaign } from "../dist/application/campaigns/enroll-contacts.js";
 import { previewCampaignPersonalization } from "../dist/application/campaigns/preview-personalization.js";
+import { diagnoseCampaign } from "../dist/application/campaigns/diagnose-campaign.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
 import { importContactsCsv } from "../dist/application/leads/import-contacts-csv.js";
 import { deleteContact } from "../dist/application/leads/delete-contact.js";
@@ -1002,6 +1003,14 @@ function registerIpcHandlers() {
       lastActivityAt: e.lastActivityAt ? e.lastActivityAt.toISOString() : undefined,
       createdAt: e.createdAt.toISOString()
     }));
+  });
+
+  ipcMain.handle("campaigns:diagnose", async (_event, request) => {
+    return diagnoseCampaign(
+      { db, campaignRepository, enrollmentRepository, businessHoursProfileRepository, accountHealthRepository },
+      request.campaignId,
+      new Date()
+    );
   });
 
   ipcMain.handle("campaigns:update", async (_event, request) => {

@@ -28,6 +28,10 @@ const NO_ACCOUNT_RETRY_MS = 5 * 60 * 1000;
 const PAUSED_CAMPAIGN_RETRY_MS = 5 * 60 * 1000;
 const MAX_CLAIMS_PER_TICK = 50; // bounded drain per tick (Section 21.2) rather than an unbounded loop
 
+/** Process-lifetime dedupe for the ineligible-account alert. Cleared whenever an account does
+ * dispatch successfully, so a genuine recovery re-arms the warning for next time. */
+const reportedIneligibleAccounts = new Set<string>();
+
 export interface SendWorkerDeps {
   db: OutboundlyDb;
   sendQueueRepository: SendQueueRepository;
@@ -162,6 +166,26 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     campaignId
   });
   if (!selection.selected) {
+    // Unlike the other holds, this one does not clear on its own. A disconnected account, or one
+    // Account Health has flagged critical, stays ineligible until a human does something -- so
+    // retrying every five minutes in silence means a campaign reads "Running" indefinitely with a
+    // full queue and no emails. Raised once per account per process so it is a single alert rather
+    // than one every tick.
+    if (!reportedIneligibleAccounts.has(claimed.accountId)) {
+      reportedIneligibleAccounts.add(claimed.accountId);
+      const accountRef = getAccountRef(deps.db, claimed.accountId);
+      const who = accountRef?.emailAddress ?? claimed.accountId;
+      const message = `No sending account is currently eligible for this campaign (${who}), so its queued emails are being held. The usual causes are an account that needs reconnecting, or one Account Health has flagged critical.`;
+      await logSendFailure(deps, now, { errorType: "no_eligible_account", errorMessage: message, campaignId, accountId: claimed.accountId });
+      await deps.notificationRepository.record({
+        notificationType: "send_failure",
+        severity: "warning",
+        message,
+        relatedAccountId: claimed.accountId,
+        relatedCampaignId: campaignId,
+        createdAt: now
+      });
+    }
     await deps.sendQueueRepository.releaseForRetry(claimed.id, new Date(now.getTime() + NO_ACCOUNT_RETRY_MS));
     return "retried";
   }
@@ -171,6 +195,7 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   // substituted), and only now that dispatch is truly committed, not during the eligibility checks
   // above (see RateLimiter.reserveNextSend's doc comment for why those must stay side-effect-free).
   deps.rateLimiter.reserveNextSend(selection.accountId);
+  reportedIneligibleAccounts.delete(selection.accountId);
 
   if (!message.draftId) {
     const errorMessage = "queued message has no associated draft to build MIME from";

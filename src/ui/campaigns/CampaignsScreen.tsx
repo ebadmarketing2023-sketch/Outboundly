@@ -6,6 +6,7 @@ import type {
   CampaignSummary,
   ContactSummary,
   CreateCampaignWizardLeadsSource,
+  CampaignDiagnosisSummary,
   EnrollmentSummary,
   LeadImportBatchSummary,
   PreviewCampaignPersonalizationResponse
@@ -133,6 +134,10 @@ export function CampaignsScreen(): JSX.Element {
   const [deleteCampaignTarget, setDeleteCampaignTarget] = useState<CampaignDashboardEntrySummary | null>(null);
   const [deleteCampaignBusy, setDeleteCampaignBusy] = useState(false);
   const [dashboardRefreshBusy, setDashboardRefreshBusy] = useState(false);
+  // "Why isn't this sending?" -- every gate between an enrolled lead and a delivered email defers
+  // quietly, so this asks the main process which one is actually holding this campaign right now.
+  const [diagnosis, setDiagnosis] = useState<CampaignDiagnosisSummary | null>(null);
+  const [diagnosisBusy, setDiagnosisBusy] = useState(false);
 
   // Campaign-creation wizard state (Section 5.6) -- nothing here is persisted until "Launch
   // campaign" on the final step; the underlying business-hours profile/templates/sequence are
@@ -430,6 +435,17 @@ export function CampaignsScreen(): JSX.Element {
       toast.showToast(successMessage, "success");
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function handleDiagnoseCampaign(entry: CampaignDashboardEntrySummary): Promise<void> {
+    setDiagnosisBusy(true);
+    try {
+      setDiagnosis(await window.outboundly.diagnoseCampaign({ campaignId: entry.id }));
+    } catch (err) {
+      toast.showToast(String(err), "error");
+    } finally {
+      setDiagnosisBusy(false);
     }
   }
 
@@ -736,6 +752,9 @@ export function CampaignsScreen(): JSX.Element {
                             <Button variant="secondary" size="sm" onClick={() => handleOpenEnrollCsv(c)}>
                               Enroll leads (CSV)
                             </Button>
+                            <Button variant="secondary" size="sm" loading={diagnosisBusy} onClick={() => handleDiagnoseCampaign(c)}>
+                              Why isn't it sending?
+                            </Button>
                             <Button variant="ghost" size="sm" onClick={() => handleOpenEditCampaign(c)}>
                               Edit
                             </Button>
@@ -811,6 +830,43 @@ export function CampaignsScreen(): JSX.Element {
         onConfirm={handleUnsubscribe}
         onCancel={() => setUnsubscribeTarget(null)}
       />
+
+      <Modal
+        open={diagnosis !== null}
+        onClose={() => setDiagnosis(null)}
+        title={`Why isn't it sending? — ${diagnosis?.campaignName ?? ""}`}
+        width={640}
+        footer={
+          <Button variant="secondary" onClick={() => setDiagnosis(null)}>
+            Close
+          </Button>
+        }
+      >
+        {diagnosis && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", fontSize: "13.5px" }}>
+            <p style={{ fontWeight: 600 }}>{diagnosis.summary}</p>
+            {diagnosis.findings.map((f, i) => (
+              <div
+                key={i}
+                style={{
+                  padding: "var(--space-3)",
+                  borderRadius: "var(--radius-md)",
+                  background: "var(--color-surface-hover)",
+                  borderLeft: `3px solid ${
+                    f.severity === "blocking" ? "var(--color-danger)" : f.severity === "waiting" ? "var(--color-warning)" : "var(--color-success)"
+                  }`
+                }}
+              >
+                <strong>{f.title}</strong>
+                <p style={{ color: "var(--color-text-secondary)", marginTop: "4px" }}>{f.detail}</p>
+                {f.action && (
+                  <p style={{ color: "var(--color-text-tertiary)", marginTop: "4px", fontSize: "12.5px" }}>What to do: {f.action}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={editCampaignTarget !== null}

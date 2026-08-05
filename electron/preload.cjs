@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld("outboundly", {
   previewCampaignPersonalization: (request) => ipcRenderer.invoke("campaigns:previewPersonalization", request),
   listCampaigns: () => ipcRenderer.invoke("campaigns:list"),
   listCampaignDashboard: () => ipcRenderer.invoke("campaigns:listDashboard"),
+  diagnoseCampaign: (request) => ipcRenderer.invoke("campaigns:diagnose", request),
   updateCampaign: (request) => ipcRenderer.invoke("campaigns:update", request),
   deleteCampaign: (request) => ipcRenderer.invoke("campaigns:delete", request),
   setCampaignStatus: (request) => ipcRenderer.invoke("campaigns:setStatus", request),

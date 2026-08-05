@@ -394,6 +394,27 @@ export interface CreateCampaignWizardResponse {
   enrollSkipped: Array<{ contactId: string; reason: string }>;
 }
 
+/** "Why isn't this campaign sending?" -- every gate between an enrolled lead and a delivered email
+ * defers quietly (rate limits, pacing, business hours, an ineligible account, an unresolvable
+ * token), so this reports which one is actually holding it right now. */
+export interface DiagnoseCampaignRequest {
+  campaignId: string;
+}
+
+export interface CampaignDiagnosisFindingSummary {
+  severity: "blocking" | "waiting" | "ok";
+  title: string;
+  detail: string;
+  action?: string;
+}
+
+export interface CampaignDiagnosisSummary {
+  campaignId: string;
+  campaignName: string;
+  summary: string;
+  findings: CampaignDiagnosisFindingSummary[];
+}
+
 export interface EnrollContactsRequest {
   campaignId: string;
   contactIds: string[];
@@ -658,6 +679,7 @@ export interface OutboundlyRendererApi {
   previewCampaignPersonalization(request: PreviewCampaignPersonalizationRequest): Promise<PreviewCampaignPersonalizationResponse>;
   listCampaigns(): Promise<CampaignSummary[]>;
   listCampaignDashboard(): Promise<CampaignDashboardEntrySummary[]>;
+  diagnoseCampaign(request: DiagnoseCampaignRequest): Promise<CampaignDiagnosisSummary>;
   updateCampaign(request: UpdateCampaignRequest): Promise<CampaignSummary>;
   deleteCampaign(request: DeleteCampaignRequest): Promise<void>;
   setCampaignStatus(request: SetCampaignStatusRequest): Promise<void>;
