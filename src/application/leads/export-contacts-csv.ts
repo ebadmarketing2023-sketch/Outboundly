@@ -6,10 +6,13 @@ const CORE_COLUMNS = ["email", "first_name", "last_name", "company", "title", "t
 
 /** CSV export for Leads/Contacts (Section 5.5) — the inverse of importContactsCsv. Every distinct
  * custom_fields key across all contacts becomes its own trailing column, so a re-import of the
- * exported file round-trips losslessly. Cells are re-neutralized here too (Section 23: "neutralized
- * on import AND re-export") as defense in depth -- importContactsCsv already neutralizes on the way
- * in, but a contact could also have been created directly (not via CSV import), so its fields
- * were never neutralized until now. */
+ * exported file round-trips losslessly (importContactsCsv strips the escape this adds).
+ *
+ * This is the one and only place formula-injection neutralization happens, and it covers every
+ * contact regardless of where it came from -- CSV import, an inbound reply, manual entry. It
+ * deliberately does not happen on import: the apostrophe protects a spreadsheet app, but stored
+ * values are also the text leads read in emails, so escaping them on the way in corrupted the
+ * emails themselves. */
 export async function exportContactsCsv(contactRepository: ContactRepository): Promise<string> {
   const contacts = await contactRepository.list();
 

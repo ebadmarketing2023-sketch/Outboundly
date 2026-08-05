@@ -1,5 +1,5 @@
 import { parse } from "csv-parse/sync";
-import { CSV_SAFETY_LIMITS, CsvTooLargeError, neutralizeCsvCell } from "../../core/shared-kernel/csv-safety.js";
+import { CSV_SAFETY_LIMITS, CsvTooLargeError, denormalizeCsvCell } from "../../core/shared-kernel/csv-safety.js";
 import { EmailAddress } from "../../core/shared-kernel/email-address.js";
 import type { ContactId } from "../../core/shared-kernel/ids.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
@@ -63,10 +63,11 @@ export function mapCsvRecordToContactFields(record: Record<string, string>): Map
     if (value.length > CSV_SAFETY_LIMITS.maxFieldLength) {
       return { knownFields, customFields, fieldTooLong: true };
     }
-    // Neutralized here (Section 23), not only on export: a "company"/custom-field value that
-    // opens with =/+/-/@ would otherwise be interpreted as a formula the moment this data is
-    // ever exported back out and opened in a spreadsheet app.
-    const safeValue = neutralizeCsvCell(value);
+    // Stored verbatim, minus any escaping apostrophe the *source* file carried (exportContactsCsv
+    // writes one, so this makes an export/re-import round-trip lossless). Neutralization belongs on
+    // the way out, not here: the apostrophe only protects a spreadsheet app, while this value is
+    // also the text a lead reads in an email -- storing it escaped sent "Saw you're at '+Post Inc."
+    const safeValue = denormalizeCsvCell(value);
     const normalized = normalizeHeader(rawHeader);
     const knownField = KNOWN_FIELD_ALIASES[normalized];
     if (knownField) {

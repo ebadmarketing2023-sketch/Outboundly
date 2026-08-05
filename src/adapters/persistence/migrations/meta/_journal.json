@@ -120,6 +120,13 @@
       "when": 1785921550817,
       "tag": "0016_seed_sending_limit_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1785930000000,
+      "tag": "0017_unescape_contact_fields",
+      "breakpoints": true
     }
   ]
 }

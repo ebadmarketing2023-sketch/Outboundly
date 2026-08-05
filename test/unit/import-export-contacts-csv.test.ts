@@ -108,22 +108,44 @@ describe("importContactsCsv (Section 5.5)", () => {
     expect(all[0]?.firstName).toBe("Janet");
   });
 
-  it("neutralizes a formula-injection payload in a known field before it's ever stored (Section 23)", async () => {
+  it("stores a value beginning with a formula character verbatim, because the lead reads it in an email", async () => {
+    // Import used to escape this to "'+Post Inc" before storing, so personalization put
+    // "Saw you're at '+Post Inc." in the actual email. The spreadsheet guard belongs on export
+    // (asserted below), where a spreadsheet app is the thing being protected.
     const repo = new InMemoryContactRepository();
-    const csv = 'email,company\nme@example.com,"=cmd|\'/c calc\'!A1"\n';
+    const csv = "email,company,title\nme@example.com,+Post Inc,-Head of Growth\n";
 
     await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     const contact = await repo.findByEmail("me@example.com");
-    expect(contact?.company).toBe("'=cmd|'/c calc'!A1");
+    expect(contact?.company).toBe("+Post Inc");
+    expect(contact?.title).toBe("-Head of Growth");
   });
 
-  it("neutralizes a formula-injection payload in a custom field before it's ever stored", async () => {
+  it("stores a custom field verbatim too, including a genuine formula payload", async () => {
     const repo = new InMemoryContactRepository();
     const csv = 'email,notes\nme@example.com,"=HYPERLINK(""http://evil.example"",""click"")"\n';
 
     await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
     const contact = await repo.findByEmail("me@example.com");
-    expect(contact?.customFields?.notes?.startsWith("'=")).toBe(true);
+    // Stored as written: nothing evaluates a string in this app, and export re-escapes it before
+    // it can reach anything that would.
+    expect(contact?.customFields?.notes).toBe('=HYPERLINK("http://evil.example","click")');
+  });
+
+  it("strips the escaping apostrophe a CSV written by this app carries, so a re-import doesn't accumulate one", async () => {
+    const repo = new InMemoryContactRepository();
+    const csv = "email,company\nme@example.com,'+Post Inc\n";
+
+    await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
+    expect((await repo.findByEmail("me@example.com"))?.company).toBe("+Post Inc");
+  });
+
+  it("leaves a name that genuinely starts with an apostrophe alone", async () => {
+    const repo = new InMemoryContactRepository();
+    const csv = "email,company\nme@example.com,'Tis Season Ltd\n";
+
+    await importContactsCsv(csv, repo, new InMemoryLeadImportBatchRepository(), "test.csv");
+    expect((await repo.findByEmail("me@example.com"))?.company).toBe("'Tis Season Ltd");
   });
 
   it("skips a row whose field exceeds the maximum allowed length instead of storing it truncated or aborting the import", async () => {
@@ -191,5 +213,22 @@ describe("exportContactsCsv (Section 5.5)", () => {
 
     const csv = await exportContactsCsv(repo);
     expect(csv).toContain("'=cmd|'/c calc'!A1");
+  });
+
+  it("round-trips a formula-character value unchanged: escaped in the file, intact once re-imported", async () => {
+    // The property that matters end to end -- the file on disk is safe to open in Excel, and the
+    // value that comes back (and goes into an email) is exactly what the user started with.
+    const repo = new InMemoryContactRepository();
+    await repo.upsertByEmail({ email: "me@example.com", company: "+Post Inc", title: "@Large", source: "manual" });
+
+    const csv = await exportContactsCsv(repo);
+    expect(csv).toContain("'+Post Inc");
+    expect(csv).toContain("'@Large");
+
+    const reimportRepo = new InMemoryContactRepository();
+    await importContactsCsv(csv, reimportRepo, new InMemoryLeadImportBatchRepository(), "test.csv");
+    const reimported = await reimportRepo.findByEmail("me@example.com");
+    expect(reimported?.company).toBe("+Post Inc");
+    expect(reimported?.title).toBe("@Large");
   });
 });

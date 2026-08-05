@@ -12,11 +12,34 @@
 
 const DANGEROUS_PREFIXES = ["=", "+", "-", "@"];
 
+/**
+ * Applied when *writing* a CSV, never to stored data. The apostrophe exists to stop a spreadsheet
+ * app from evaluating the cell, and a spreadsheet file is the only place that risk exists -- but
+ * this same value is also the text a lead reads in an email. Neutralizing on import meant a
+ * company named "+Post Inc" or a title like "-Head of Growth" was *stored* mangled, so the lead
+ * received "Saw you're at '+Post Inc." That was invisible while personalization was broken; it is
+ * not any more.
+ */
+/** A value needs escaping if it opens with a formula character -- or if it opens with an
+ * apostrophe that is itself sitting in front of one, since the reader below would otherwise
+ * mistake the user's own apostrophe for an escape and eat it. */
+function needsEscape(value: string): boolean {
+  if (DANGEROUS_PREFIXES.some((prefix) => value.startsWith(prefix))) return true;
+  return value.startsWith("'") && needsEscape(value.slice(1));
+}
+
 export function neutralizeCsvCell(value: string): string {
-  if (DANGEROUS_PREFIXES.some((prefix) => value.startsWith(prefix))) {
-    return `'${value}`;
-  }
-  return value;
+  return needsEscape(value) ? `'${value}` : value;
+}
+
+/**
+ * The exact inverse, applied when *reading* a CSV, so an export/re-import round-trips a value
+ * unchanged instead of accumulating apostrophes. It strips a leading apostrophe only when what
+ * follows is something neutralizeCsvCell would itself have escaped — so "'Tis Season Ltd" and
+ * "O'Brien & Co" survive untouched, while the escape this app writes is undone exactly.
+ */
+export function denormalizeCsvCell(value: string): string {
+  return value.startsWith("'") && needsEscape(value.slice(1)) ? value.slice(1) : value;
 }
 
 /** Generous upper bounds for a "CSV of contacts" use case -- well beyond any realistic legitimate
