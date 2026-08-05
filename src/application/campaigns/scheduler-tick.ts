@@ -23,6 +23,10 @@ export interface SchedulerTickResult {
  * row (status=active, next_send_at<=now) through fireEnrollmentStep. Purely the "what's due right
  * now" query plus per-item failure isolation -- fireEnrollmentStep owns all the actual logic.
  */
+/** Process-lifetime dedupe for the missing-personalization log below. In-memory on purpose: it only
+ * guards log volume, so losing it on restart costs one extra row per affected enrollment. */
+const loggedMissingPersonalization = new Set<string>();
+
 export async function runSchedulerTick(deps: FireEnrollmentStepDeps, now: Date): Promise<SchedulerTickResult> {
   const due = await deps.enrollmentRepository.findDueForScheduling(now);
   const result: SchedulerTickResult = {
@@ -52,6 +56,22 @@ export async function runSchedulerTick(deps: FireEnrollmentStepDeps, now: Date):
         result.suppressed++;
       } else if (outcome.outcome === "missing_personalization") {
         result.missingPersonalization++;
+        // This outcome leaves next_send_at alone, so the enrollment stays due and is retried on
+        // every subsequent tick -- correct (the user can fix the lead's data or add a fallback and
+        // it recovers by itself) but completely invisible: nothing sends and nothing is reported.
+        // Logged once per enrollment+token so the error log names the lead's problem instead of
+        // filling up with one row per tick, forever.
+        const key = `${enrollment.id}:${outcome.variableName}`;
+        if (!loggedMissingPersonalization.has(key)) {
+          loggedMissingPersonalization.add(key);
+          await deps.errorLogRepository?.record({
+            occurredAt: now,
+            source: "scheduler",
+            errorType: "missing_personalization",
+            errorMessage: `Lead has no value for {{${outcome.variableName}}}, so this step cannot be sent. Fix that lead's data, or give the token a fallback ({{${outcome.variableName}|...}}).`,
+            campaignId: enrollment.campaignId
+          });
+        }
       } else if (outcome.outcome === "waiting_on_prior_send") {
         result.waitingOnPriorSend++;
       }

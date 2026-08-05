@@ -1,3 +1,5 @@
+import { isMissingValue } from "./personalization-tokens.js";
+
 /**
  * The Internal Document Model (Section 8.1) — the single source of truth for message content.
  * The compose editor writes into this directly; pasted/imported HTML is parsed into it
@@ -23,6 +25,11 @@ export interface LinkRun {
 export interface VariableRun {
   type: "variable";
   name: string;
+  /** Rendered when the contact has no value for this token ({{first_name|there}}). Undefined means
+   * the token is required, so a contact without a value is a hard stop for that contact rather
+   * than a message that reads "Hi ,". An empty string is a real fallback meaning "render nothing",
+   * which is deliberately distinct from having none. */
+  fallback?: string;
 }
 
 export interface LineBreakNode {
@@ -116,8 +123,11 @@ export function resolveVariables(document: Document, values: Record<string, stri
   const resolveInline = (node: InlineNode): InlineNode => {
     if (node.type !== "variable") return node;
     const value = values[node.name];
-    if (value === undefined) throw new MissingPersonalizationValueError(node.name);
-    return textRun(value);
+    // A blank cell in a CSV must behave exactly like a missing column, so whitespace-only counts
+    // as missing -- otherwise a lead with an empty company field would be sent "Saw you're at ."
+    if (!isMissingValue(value)) return textRun(value!);
+    if (node.fallback !== undefined) return textRun(node.fallback);
+    throw new MissingPersonalizationValueError(node.name);
   };
 
   const resolveBlock = (block: BlockNode): BlockNode => {

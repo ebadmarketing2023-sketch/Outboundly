@@ -126,6 +126,58 @@ describe("Draft Lifecycle service (Section 7)", () => {
     });
     expect(built.raw).toContain("Hi Jordan");
   });
+
+  it("personalizes the subject line too, not only the body", async () => {
+    // "Quick question, {{first_name}}" is the single most common outreach subject, and the campaign
+    // wizard invites you to write one -- but the subject is a plain string, not a Document, so it
+    // used to skip the personalization pass entirely and ship with the literal token in it.
+    const { service } = makeTestService();
+    const draft = await service.createDraft({
+      accountId,
+      subject: "Quick question, {{first_name}}",
+      document: { blocks: [paragraph(textRun("No tokens here."))] },
+      to: [{ address: EmailAddress.parse("them@example.com") }]
+    });
+
+    const built = service.buildMimeMessage(draft, {
+      from: { address: EmailAddress.parse("me@outboundly.app") },
+      sendingDomain: "outboundly.app",
+      personalizationValues: { first_name: "Jordan" }
+    });
+
+    expect(built.headers.find((h) => h.name === "Subject")?.value).toBe("Quick question, Jordan");
+    expect(built.raw).not.toContain("{{first_name}}");
+  });
+
+  it("applies a subject fallback, and hard-stops on a required subject token with no value", async () => {
+    const { service } = makeTestService();
+    const withFallback = await service.createDraft({
+      accountId,
+      subject: "Quick question, {{first_name|there}}",
+      document: { blocks: [paragraph(textRun("Body."))] },
+      to: [{ address: EmailAddress.parse("them@example.com") }]
+    });
+    const built = service.buildMimeMessage(withFallback, {
+      from: { address: EmailAddress.parse("me@outboundly.app") },
+      sendingDomain: "outboundly.app",
+      personalizationValues: { email: "them@example.com" }
+    });
+    expect(built.headers.find((h) => h.name === "Subject")?.value).toBe("Quick question, there");
+
+    const required = await service.createDraft({
+      accountId,
+      subject: "Quick question, {{first_name}}",
+      document: { blocks: [paragraph(textRun("Body."))] },
+      to: [{ address: EmailAddress.parse("them@example.com") }]
+    });
+    expect(() =>
+      service.buildMimeMessage(required, {
+        from: { address: EmailAddress.parse("me@outboundly.app") },
+        sendingDomain: "outboundly.app",
+        personalizationValues: { email: "them@example.com" }
+      })
+    ).toThrow(/first_name/);
+  });
 });
 
 // Helper to avoid name collision with the `service` variable inside each `it` block.

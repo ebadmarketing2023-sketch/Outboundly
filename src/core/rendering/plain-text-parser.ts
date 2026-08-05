@@ -1,5 +1,6 @@
 import type { Document, ParagraphBlock } from "./document-model.js";
-import { paragraph, textRun } from "./document-model.js";
+import { paragraph } from "./document-model.js";
+import { splitTextIntoInlineNodes } from "./personalization-tokens.js";
 
 /**
  * Parses plain typed text into the Internal Document Model (Section 8.1) — the plain-text
@@ -14,7 +15,12 @@ import { paragraph, textRun } from "./document-model.js";
  */
 export function parsePlainTextToDocument(text: string): Document {
   const lines = text.split("\n");
-  const blocks: ParagraphBlock[] = lines.map((line) => (line.length === 0 ? paragraph() : paragraph(textRun(line))));
+  // splitTextIntoInlineNodes, not a bare textRun: this is where `{{first_name}}` becomes a real
+  // VariableRun. A shipped bug it fixes -- nothing in the application ever constructed one, so
+  // resolveVariables had nothing to replace and templates were sent with their literal token text
+  // still in them. Text containing no tokens yields exactly one TextRun, i.e. the previous
+  // behavior, so an ordinary template is unchanged.
+  const blocks: ParagraphBlock[] = lines.map((line) => (line.length === 0 ? paragraph() : paragraph(...splitTextIntoInlineNodes(line))));
 
   return { blocks: blocks.length > 0 ? blocks : [paragraph()] };
 }

@@ -3,7 +3,8 @@ import type { Repository } from "../../ports/repository.port.js";
 import type { NamedEmailAddress } from "../shared-kernel/email-address.js";
 import { generateId } from "../shared-kernel/ids.js";
 import type { AccountId, DraftId } from "../shared-kernel/ids.js";
-import { resolveVariables } from "../rendering/document-model.js";
+import { MissingPersonalizationValueError, resolveVariables } from "../rendering/document-model.js";
+import { resolveTextTokens } from "../rendering/personalization-tokens.js";
 import { renderHtml } from "../rendering/html-renderer.js";
 import { renderPlainText } from "../rendering/text-renderer.js";
 import { generateMimeTree } from "../mime/mime-generator.js";
@@ -87,6 +88,16 @@ export class DraftLifecycleService {
       ? resolveVariables(draft.document, params.personalizationValues)
       : draft.document;
 
+    // The subject is a plain string rather than a Document, so it needs its own resolution pass --
+    // without one, `Quick question, {{first_name}}` (the single most common outreach subject
+    // pattern, and one the campaign wizard invites you to write) shipped with the literal token in
+    // it. Same token syntax and same missing-value rules as the body, via the shared tokenizer.
+    const resolvedSubject = params.personalizationValues
+      ? resolveTextTokens(draft.subject, params.personalizationValues, (name) => {
+          throw new MissingPersonalizationValueError(name);
+        })
+      : draft.subject;
+
     const html = renderHtml(resolvedDocument);
     const text = renderPlainText(resolvedDocument);
     const tree = generateMimeTree({ html, text });
@@ -96,7 +107,7 @@ export class DraftLifecycleService {
       to: draft.to,
       cc: draft.cc,
       bcc: draft.bcc,
-      subject: draft.subject,
+      subject: resolvedSubject,
       date: this.clock.now(),
       // This message gets built more than once for the same draft -- once at enqueue time for the
       // Gmail Compatibility/Deliverability check (fire-enrollment-step.ts), again later at actual

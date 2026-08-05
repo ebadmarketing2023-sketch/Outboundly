@@ -7,7 +7,8 @@ import type {
   ContactSummary,
   CreateCampaignWizardLeadsSource,
   EnrollmentSummary,
-  LeadImportBatchSummary
+  LeadImportBatchSummary,
+  PreviewCampaignPersonalizationResponse
 } from "../../ipc-boundary/contracts.js";
 import {
   AccountStatusBadge,
@@ -51,7 +52,10 @@ const WEEKDAY_LABELS: Record<string, string> = {
   sunday: "Sun"
 };
 
-const DEFAULT_BODY = "Hi {{first_name}},\n\nJust checking in.\n\nBest,\nMe";
+// The fallback in {{first_name|there}} is deliberate: a token written without one is *required*,
+// and a lead whose CSV has no first name is then skipped rather than emailed (see
+// resolveVariables). The default copy must not quietly opt every new campaign into that.
+const DEFAULT_BODY = "Hi {{first_name|there}},\n\nJust checking in.\n\nBest,\nMe";
 
 const WIZARD_STEP_LABELS = ["Details", "Leads", "Content", "Review"];
 
@@ -149,6 +153,11 @@ export function CampaignsScreen(): JSX.Element {
   const wizardCsvFileInputRef = useRef<HTMLInputElement>(null);
   const [wizardContentGroups, setWizardContentGroups] = useState<WizardContentGroupDraft[]>([newContentGroupDraft()]);
   const [wizardFollowUps, setWizardFollowUps] = useState<WizardFollowUpDraft[]>([]);
+  // Personalization dry-run for the Review step: the wizard's own copy checked against the real
+  // leads before anything is created, so a {{token}} the leads have no values for is a warning here
+  // rather than a lead that silently never receives an email once the campaign is running.
+  const [wizardPersonalization, setWizardPersonalization] = useState<PreviewCampaignPersonalizationResponse | null>(null);
+  const [wizardPersonalizationError, setWizardPersonalizationError] = useState<string | null>(null);
 
   function refreshAll(): Promise<void> {
     const accountsPromise = window.outboundly
@@ -222,6 +231,34 @@ export function CampaignsScreen(): JSX.Element {
       .catch((err) => setError(String(err)));
   }, [selectedCampaignId]);
 
+  // Runs the personalization dry-run when the user lands on Review, and again if they step back to
+  // edit the copy and return -- the whole point is that it reflects what is on screen right now.
+  useEffect(() => {
+    if (!wizardOpen || wizardStep !== 3) return;
+    let cancelled = false;
+    const leadsSource: CreateCampaignWizardLeadsSource =
+      wizardLeadsMode === "batch"
+        ? { type: "batch", batchId: wizardBatchId }
+        : { type: "csv", csvText: wizardCsvText, filename: wizardCsvFilename || undefined };
+    const texts = [
+      ...wizardContentGroups.flatMap((g) => [g.subjectText, g.bodyText]),
+      ...wizardFollowUps.map((f) => f.bodyText)
+    ];
+    setWizardPersonalization(null);
+    setWizardPersonalizationError(null);
+    window.outboundly
+      .previewCampaignPersonalization({ texts, leadsSource })
+      .then((preview) => {
+        if (!cancelled) setWizardPersonalization(preview);
+      })
+      .catch((err) => {
+        if (!cancelled) setWizardPersonalizationError(String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [wizardOpen, wizardStep, wizardLeadsMode, wizardBatchId, wizardCsvText, wizardCsvFilename, wizardContentGroups, wizardFollowUps]);
+
   async function handleSaveAccountLimits(accountId: string): Promise<void> {
     setError(null);
     const draft = accountLimitDrafts[accountId] ?? { daily: "", hourly: "", minDelay: "", maxDelay: "" };
@@ -264,6 +301,8 @@ export function CampaignsScreen(): JSX.Element {
     setWizardCsvFilename("");
     setWizardContentGroups([newContentGroupDraft()]);
     setWizardFollowUps([]);
+    setWizardPersonalization(null);
+    setWizardPersonalizationError(null);
     setWizardOpen(true);
   }
 
@@ -1157,6 +1196,43 @@ export function CampaignsScreen(): JSX.Element {
                   ? "None"
                   : wizardFollowUps.map((f, i) => `#${i + 1}: ${f.delayDays}d ${f.delayHours}h after the previous step`).join(" · ")}
               </p>
+            </div>
+            <div>
+              <strong>Personalization</strong>
+              {wizardPersonalizationError && (
+                <p style={{ color: "var(--color-text-secondary)" }}>Couldn't check the leads: {wizardPersonalizationError}</p>
+              )}
+              {!wizardPersonalizationError && !wizardPersonalization && (
+                <p style={{ color: "var(--color-text-secondary)" }}>Checking your {`{{tokens}}`} against these leads…</p>
+              )}
+              {wizardPersonalization && wizardPersonalization.tokens.length === 0 && (
+                <p style={{ color: "var(--color-text-secondary)" }}>
+                  No {`{{tokens}}`} used — every lead gets the same copy.
+                </p>
+              )}
+              {wizardPersonalization && wizardPersonalization.tokens.length > 0 && (
+                <>
+                  <ul style={{ color: "var(--color-text-secondary)", marginLeft: "1.2rem" }}>
+                    {wizardPersonalization.tokens.map((t) => (
+                      <li key={t.name}>
+                        {`{{${t.name}}}`} —{" "}
+                        {t.missingCount === 0
+                          ? `all ${wizardPersonalization.totalLeads} lead(s) have a value`
+                          : t.hasFallback
+                            ? `${t.missingCount} of ${wizardPersonalization.totalLeads} lead(s) have no value, and will use your fallback text`
+                            : `${t.missingCount} of ${wizardPersonalization.totalLeads} lead(s) have no value`}
+                      </li>
+                    ))}
+                  </ul>
+                  {wizardPersonalization.leadsMissingRequiredValues > 0 && (
+                    <p style={{ color: "var(--color-danger)", fontWeight: 600 }}>
+                      {wizardPersonalization.leadsMissingRequiredValues} of {wizardPersonalization.totalLeads} lead(s) would be skipped
+                      and never emailed. Either fix those rows in your CSV, or give the token a fallback by writing it as{" "}
+                      {`{{first_name|there}}`} — the text after the | is used when a lead has no value.
+                    </p>
+                  )}
+                </>
+              )}
             </div>
             <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)" }}>
               Launching enrolls the leads above and starts sending immediately, within the schedule set on the first step.

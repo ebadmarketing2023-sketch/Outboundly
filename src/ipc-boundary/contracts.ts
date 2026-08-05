@@ -362,6 +362,27 @@ export interface CreateCampaignWizardRequest {
   leadsSource: CreateCampaignWizardLeadsSource;
 }
 
+/** Checks the wizard's copy against the leads it will be launched with, before anything is
+ * created. A {{token}} with no fallback that a lead has no value for means that lead is silently
+ * never emailed, so the Review step reports it up front instead. */
+export interface PreviewCampaignPersonalizationRequest {
+  /** Every subject and body the campaign will send. */
+  texts: string[];
+  leadsSource: CreateCampaignWizardLeadsSource;
+}
+
+export interface PersonalizationTokenCoverageSummary {
+  name: string;
+  hasFallback: boolean;
+  missingCount: number;
+}
+
+export interface PreviewCampaignPersonalizationResponse {
+  totalLeads: number;
+  tokens: PersonalizationTokenCoverageSummary[];
+  leadsMissingRequiredValues: number;
+}
+
 export interface CreateCampaignWizardResponse {
   campaign: CampaignSummary;
   imported?: number;
@@ -626,6 +647,7 @@ export interface OutboundlyRendererApi {
   deleteSequence(request: DeleteSequenceRequest): Promise<void>;
   createCampaign(request: CreateCampaignRequest): Promise<CampaignSummary>;
   createCampaignFromWizard(request: CreateCampaignWizardRequest): Promise<CreateCampaignWizardResponse>;
+  previewCampaignPersonalization(request: PreviewCampaignPersonalizationRequest): Promise<PreviewCampaignPersonalizationResponse>;
   listCampaigns(): Promise<CampaignSummary[]>;
   listCampaignDashboard(): Promise<CampaignDashboardEntrySummary[]>;
   updateCampaign(request: UpdateCampaignRequest): Promise<CampaignSummary>;

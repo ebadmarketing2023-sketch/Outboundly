@@ -40,6 +40,45 @@ function normalizeHeader(header: string): string {
   return header.trim().toLowerCase().replace(/[\s_-]+/g, "");
 }
 
+export interface MappedCsvRow {
+  knownFields: Record<string, string>;
+  customFields: Record<string, string>;
+  /** True when some cell is over the safety limit — the importer skips such a row entirely. */
+  fieldTooLong: boolean;
+}
+
+/**
+ * Turns one parsed CSV record into the contact fields it would be imported as. Exported so the
+ * campaign wizard's personalization preview can ask "what values would these leads actually have?"
+ * against a CSV that has not been imported yet — using this exact mapping rather than a second,
+ * drifting copy of the alias table.
+ */
+export function mapCsvRecordToContactFields(record: Record<string, string>): MappedCsvRow {
+  const knownFields: Record<string, string> = {};
+  const customFields: Record<string, string> = {};
+
+  for (const [rawHeader, rawValue] of Object.entries(record)) {
+    const value = (rawValue ?? "").trim();
+    if (!value) continue;
+    if (value.length > CSV_SAFETY_LIMITS.maxFieldLength) {
+      return { knownFields, customFields, fieldTooLong: true };
+    }
+    // Neutralized here (Section 23), not only on export: a "company"/custom-field value that
+    // opens with =/+/-/@ would otherwise be interpreted as a formula the moment this data is
+    // ever exported back out and opened in a spreadsheet app.
+    const safeValue = neutralizeCsvCell(value);
+    const normalized = normalizeHeader(rawHeader);
+    const knownField = KNOWN_FIELD_ALIASES[normalized];
+    if (knownField) {
+      knownFields[knownField] = safeValue;
+    } else if (!IGNORED_HEADERS.has(normalized)) {
+      customFields[rawHeader] = safeValue;
+    }
+  }
+
+  return { knownFields, customFields, fieldTooLong: false };
+}
+
 export interface ImportContactsCsvResult {
   imported: number;
   skipped: Array<{ row: number; reason: string }>;
@@ -78,29 +117,7 @@ export async function importContactsCsv(
   for (const [index, record] of records.entries()) {
     const rowNumber = index + 2; // +1 for 1-indexing, +1 for the header row itself
 
-    const knownFields: Record<string, string> = {};
-    const customFields: Record<string, string> = {};
-    let fieldTooLong = false;
-
-    for (const [rawHeader, rawValue] of Object.entries(record)) {
-      const value = (rawValue ?? "").trim();
-      if (!value) continue;
-      if (value.length > CSV_SAFETY_LIMITS.maxFieldLength) {
-        fieldTooLong = true;
-        break;
-      }
-      // Neutralized here (Section 23), not only on export: a "company"/custom-field value that
-      // opens with =/+/-/@ would otherwise be interpreted as a formula the moment this data is
-      // ever exported back out and opened in a spreadsheet app.
-      const safeValue = neutralizeCsvCell(value);
-      const normalized = normalizeHeader(rawHeader);
-      const knownField = KNOWN_FIELD_ALIASES[normalized];
-      if (knownField) {
-        knownFields[knownField] = safeValue;
-      } else if (!IGNORED_HEADERS.has(normalized)) {
-        customFields[rawHeader] = safeValue;
-      }
-    }
+    const { knownFields, customFields, fieldTooLong } = mapCsvRecordToContactFields(record);
 
     if (fieldTooLong) {
       skipped.push({ row: rowNumber, reason: `A field exceeds the maximum allowed length (${CSV_SAFETY_LIMITS.maxFieldLength} characters)` });

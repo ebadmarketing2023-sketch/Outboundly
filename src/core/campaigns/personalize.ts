@@ -1,12 +1,25 @@
 import type { Contact } from "../../ports/contact-repository.port.js";
 
+/** Just the parts of a Contact that personalization can read. Split out from Contact itself so the
+ * campaign wizard can run this same mapping over CSV rows that have not been imported yet (and so
+ * have no id/timestamps), guaranteeing its warnings describe what sending would really do. */
+export interface PersonalizableContactFields {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  company?: string;
+  title?: string;
+  timezone?: string;
+  customFields?: Record<string, string>;
+}
+
 /**
  * Maps a Contact's known fields (plus any CSV-imported custom fields) to the personalization
  * variable names a Template's document uses (Section 9.2 stage 3) — e.g. {{first_name}} resolves
  * against contact.firstName. Custom fields are exposed under their own original header name, same
  * as they were captured on CSV import (import-contacts-csv.ts), not renamed to a fixed schema.
  */
-export function contactToPersonalizationValues(contact: Contact): Record<string, string> {
+export function contactFieldsToPersonalizationValues(contact: PersonalizableContactFields): Record<string, string> {
   const values: Record<string, string> = { email: contact.email };
   if (contact.firstName) values.first_name = contact.firstName;
   if (contact.lastName) values.last_name = contact.lastName;
@@ -19,4 +32,8 @@ export function contactToPersonalizationValues(contact: Contact): Record<string,
     }
   }
   return values;
+}
+
+export function contactToPersonalizationValues(contact: Contact): Record<string, string> {
+  return contactFieldsToPersonalizationValues(contact);
 }

@@ -72,6 +72,7 @@ import { computeInsights } from "../dist/adapters/persistence/compute-insights.j
 import { SqliteProviderSelector } from "../dist/adapters/persistence/provider-selector.js";
 import { runSchedulerTick } from "../dist/application/campaigns/scheduler-tick.js";
 import { createCampaignFromWizard } from "../dist/application/campaigns/create-campaign-from-wizard.js";
+import { previewCampaignPersonalization } from "../dist/application/campaigns/preview-personalization.js";
 import { runSendWorkerTick } from "../dist/application/campaigns/send-worker-tick.js";
 import { importContactsCsv } from "../dist/application/leads/import-contacts-csv.js";
 import { deleteContact } from "../dist/application/leads/delete-contact.js";
@@ -1002,6 +1003,13 @@ function registerIpcHandlers() {
       enrolled: enrollResult.enrolled,
       enrollSkipped: enrollResult.skipped
     };
+  });
+
+  ipcMain.handle("campaigns:previewPersonalization", async (_event, request) => {
+    return previewCampaignPersonalization(
+      { contactRepository },
+      { texts: request.texts, leadsSource: request.leadsSource }
+    );
   });
 
   ipcMain.handle("campaigns:list", async () => {
