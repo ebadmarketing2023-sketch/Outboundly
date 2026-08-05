@@ -46,6 +46,7 @@ import { getAppPreferences, setAccountSignature, setAppPreferences } from "../di
 import { exportEncryptedBackup, restoreEncryptedBackup } from "../dist/adapters/persistence/backup-restore.js";
 import { EmailAddress } from "../dist/core/shared-kernel/email-address.js";
 import { generateId } from "../dist/core/shared-kernel/ids.js";
+import { SENDING_DEFAULTS } from "../dist/core/scheduling/sending-defaults.js";
 import { SqliteContactRepository } from "../dist/adapters/persistence/repositories/contact-repository.js";
 import { SqliteSuppressionListRepository } from "../dist/adapters/persistence/repositories/suppression-list-repository.js";
 import { SqliteEnrollmentRepository } from "../dist/adapters/persistence/repositories/enrollment-repository.js";
@@ -594,8 +595,12 @@ function registerIpcHandlers() {
           emailAddress: result.emailAddress,
           displayName: result.displayName,
           status: "connected",
-          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds,
-          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds,
+          // A brand-new mailbox starts capped and paced rather than unlimited -- see
+          // SENDING_DEFAULTS. An explicit app-level preference still wins where one is set.
+          dailySendLimit: SENDING_DEFAULTS.dailySendLimit,
+          hourlySendLimit: SENDING_DEFAULTS.hourlySendLimit,
+          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds ?? SENDING_DEFAULTS.minSendDelaySeconds,
+          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds ?? SENDING_DEFAULTS.maxSendDelaySeconds,
           connectedAt: now,
           createdAt: now,
           updatedAt: now
@@ -650,8 +655,12 @@ function registerIpcHandlers() {
           emailAddress: result.emailAddress,
           displayName: result.displayName,
           status: "connected",
-          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds,
-          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds,
+          // A brand-new mailbox starts capped and paced rather than unlimited -- see
+          // SENDING_DEFAULTS. An explicit app-level preference still wins where one is set.
+          dailySendLimit: SENDING_DEFAULTS.dailySendLimit,
+          hourlySendLimit: SENDING_DEFAULTS.hourlySendLimit,
+          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds ?? SENDING_DEFAULTS.minSendDelaySeconds,
+          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds ?? SENDING_DEFAULTS.maxSendDelaySeconds,
           connectedAt: now,
           createdAt: now,
           updatedAt: now
@@ -714,8 +723,12 @@ function registerIpcHandlers() {
           emailAddress: request.emailAddress,
           displayName: request.displayName,
           status: "connected",
-          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds,
-          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds,
+          // A brand-new mailbox starts capped and paced rather than unlimited -- see
+          // SENDING_DEFAULTS. An explicit app-level preference still wins where one is set.
+          dailySendLimit: SENDING_DEFAULTS.dailySendLimit,
+          hourlySendLimit: SENDING_DEFAULTS.hourlySendLimit,
+          minSendDelaySeconds: defaults.defaultMinSendDelaySeconds ?? SENDING_DEFAULTS.minSendDelaySeconds,
+          maxSendDelaySeconds: defaults.defaultMaxSendDelaySeconds ?? SENDING_DEFAULTS.maxSendDelaySeconds,
           connectedAt: now,
           createdAt: now,
           updatedAt: now
