@@ -2,7 +2,7 @@ import { getAccountRef } from "../../adapters/persistence/campaign-scheduling-su
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
 import { isPermanentSmtpRejection } from "../../core/campaigns/bounce-detection.js";
 import { isWithinBusinessHours, nextWindowOpening } from "../../core/scheduling/business-hours-window.js";
-import { contactToPersonalizationValues } from "../../core/campaigns/personalize.js";
+import { personalizationValuesFor } from "../../core/campaigns/personalize.js";
 import type { Draft } from "../../core/drafts/draft.js";
 import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js";
 import { EmailAddress, parseNamedAddress, type NamedEmailAddress } from "../../core/shared-kernel/email-address.js";
@@ -206,7 +206,9 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   const built = deps.draftLifecycle.buildMimeMessage(draft, {
     from,
     sendingDomain: draftAccountRef.emailAddress.split("@")[1]!,
-    personalizationValues: contact ? contactToPersonalizationValues(contact) : undefined,
+    // accountRef, not draftAccountRef: {{Account Name}} has to name the mailbox this copy is
+    // actually going out from, which is the one the From header above carries.
+    personalizationValues: personalizationValuesFor(contact, accountRef),
     senderTimeZone
   });
 

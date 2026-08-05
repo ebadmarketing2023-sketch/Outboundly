@@ -6,7 +6,7 @@ import { getAccountRef, buildSchedulingContext, type BuildSchedulingContextDeps 
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
 import { enqueueAndAdvanceEnrollment } from "../../adapters/persistence/enqueue-and-advance-support.js";
 import type { CampaignEnrollment } from "../../core/campaigns/campaign.js";
-import { contactToPersonalizationValues } from "../../core/campaigns/personalize.js";
+import { personalizationValuesFor } from "../../core/campaigns/personalize.js";
 import { selectWeightedVariant } from "../../core/campaigns/variant-selection.js";
 import type { Document } from "../../core/rendering/document-model.js";
 import { MissingPersonalizationValueError } from "../../core/rendering/document-model.js";
@@ -24,6 +24,7 @@ import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js
 import type { AdvanceEnrollmentInput, EnrollmentRepository } from "../../ports/enrollment-repository.port.js";
 import type { ContentGroupRepository } from "../../ports/content-group-repository.port.js";
 import type { ErrorLogRepository } from "../../ports/error-log-repository.port.js";
+import type { NotificationRepository } from "../../ports/notification-repository.port.js";
 import type { SendQueueRepository } from "../../ports/send-queue-repository.port.js";
 import type { SequenceRepository } from "../../ports/sequence-repository.port.js";
 import type { SubjectVariantRepository } from "../../ports/subject-variant-repository.port.js";
@@ -61,6 +62,10 @@ export interface FireEnrollmentStepDeps extends BuildSchedulingContextDeps {
    * failure isolation also records a structured, queryable log entry. Omitted in most existing
    * tests since it's a pure side effect. */
   errorLogRepository?: ErrorLogRepository;
+  /** Optional: when provided, a campaign that can't render a token for its leads raises an in-app
+   * alert instead of quietly sending nothing. See the missing_personalization branch in
+   * scheduler-tick.ts. */
+  notificationRepository?: NotificationRepository;
 }
 
 /**
@@ -187,7 +192,7 @@ export async function fireEnrollmentStep(
     built = deps.draftLifecycle.buildMimeMessage(draft, {
       from,
       sendingDomain: accountRef.emailAddress.split("@")[1]!,
-      personalizationValues: contactToPersonalizationValues(contact),
+      personalizationValues: personalizationValuesFor(contact, accountRef),
       // The campaign's own business-hours timezone, deliberately, not the recipient's: it is the
       // sender's local time the Date header declares, and sends already cluster inside this zone's
       // working hours, so the offset agrees with the observable pattern instead of contradicting it.

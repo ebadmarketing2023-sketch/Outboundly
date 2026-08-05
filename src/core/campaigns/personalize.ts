@@ -37,3 +37,39 @@ export function contactFieldsToPersonalizationValues(contact: PersonalizableCont
 export function contactToPersonalizationValues(contact: Contact): Record<string, string> {
   return contactFieldsToPersonalizationValues(contact);
 }
+
+/**
+ * Tokens that describe the *sending* account rather than the lead — for signing off a message with
+ * the name on the mailbox it goes out from, which is the one thing a signature always needs and no
+ * CSV can ever supply. Both casings of each name work, so {{Account Name}} and {{account_name}}
+ * are the same token.
+ *
+ * These are reserved: they win over a lead field of the same name, so a CSV that happens to carry
+ * an "Account Name" column can't quietly rewrite the sender's own signature.
+ *
+ * They also always resolve, which matters more than it sounds. A token no lead has a value for is
+ * a hard stop for *every* lead, so before these existed, putting {{Account Name}} in a signature
+ * silently stalled the entire campaign -- nothing sent, nothing reported.
+ */
+export const ACCOUNT_TOKEN_NAMES = ["Account Name", "account_name", "Account Email", "account_email"] as const;
+
+export function accountPersonalizationValues(account: { emailAddress: string; displayName?: string }): Record<string, string> {
+  // An account connected without a profile name still has to produce something, or the token it
+  // was meant to fix becomes the same hard stop all over again. The mailbox's local part is the
+  // closest thing to a name we actually hold.
+  const name = account.displayName?.trim() || account.emailAddress.split("@")[0]!;
+  return {
+    "Account Name": name,
+    account_name: name,
+    "Account Email": account.emailAddress,
+    account_email: account.emailAddress
+  };
+}
+
+/** Lead values with the sending account's reserved tokens layered on top. */
+export function personalizationValuesFor(
+  contact: Contact | undefined,
+  account: { emailAddress: string; displayName?: string }
+): Record<string, string> {
+  return { ...(contact ? contactToPersonalizationValues(contact) : {}), ...accountPersonalizationValues(account) };
+}

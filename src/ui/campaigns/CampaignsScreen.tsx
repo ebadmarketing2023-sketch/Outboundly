@@ -1072,6 +1072,20 @@ export function CampaignsScreen(): JSX.Element {
 
         {wizardStep === 2 && (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+            <div
+              style={{
+                padding: "var(--space-3)",
+                background: "var(--color-surface-hover)",
+                borderRadius: "var(--radius-md)",
+                fontSize: "12.5px",
+                color: "var(--color-text-secondary)"
+              }}
+            >
+              <strong style={{ color: "var(--color-text-primary)" }}>Personalization</strong> — {`{{first_name}}`}, {`{{company}}`} and
+              any column from your CSV, by its own header name. Write {`{{first_name|there}}`} to say what should appear when a lead has
+              no value; without a fallback, a lead missing that value is skipped rather than emailed. {`{{Account Name}}`} and{" "}
+              {`{{Account Email}}`} come from the sending account itself, so they always work — use them to sign off.
+            </div>
             <div>
               <CardHeader
                 title="First email"

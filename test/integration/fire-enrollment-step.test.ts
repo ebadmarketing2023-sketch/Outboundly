@@ -15,6 +15,7 @@ import { maybeCompleteCampaign } from "../../src/application/campaigns/maybe-com
 import { recordConversion } from "../../src/application/analytics/record-conversion.js";
 import { DraftLifecycleService } from "../../src/core/drafts/draft-lifecycle.js";
 import { paragraph, textRun } from "../../src/core/rendering/document-model.js";
+import { parsePlainTextToDocument } from "../../src/core/rendering/plain-text-parser.js";
 import { SystemClock } from "../../src/ports/clock.port.js";
 import { openDatabase, type OutboundlyDb } from "../../src/adapters/persistence/db.js";
 import { SqliteBusinessHoursProfileRepository } from "../../src/adapters/persistence/repositories/business-hours-profile-repository.js";
@@ -161,6 +162,69 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     // id, which reads as unprofessional/spammy.
     const message = db.select().from(messages).where(eq(messages.id, queueRow!.messageId)).get();
     expect(message?.fromAddress).toBe('"Ada Lovelace" <me@outboundly.app>');
+  });
+
+  it("resolves {{Account Name}} from the sending mailbox, so a signature token can't stall the campaign", async () => {
+    // A real reported failure: a campaign sat "running" and sent nothing at all. The signature used
+    // {{Account Name}}, no lead had a value for it, and a token with no value is a hard stop -- so
+    // *every* lead was blocked, silently, forever. Account tokens resolve from the account itself.
+    const { campaign, sequence } = await setUpTwoStepCampaign([
+      parsePlainTextToDocument("Hi {{first_name}},\n\nBest,\n{{Account Name}}\n{{Account Email}}")
+    ]);
+    const contact = await deps.contactRepository.upsertByEmail({ email: "lead@example.com", firstName: "Ada", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const result = await fireEnrollmentStep(deps, enrollment, new Date());
+
+    expect(result.outcome).toBe("enqueued");
+    if (result.outcome !== "enqueued") return;
+    const queueRow = db.select().from(sendQueue).where(eq(sendQueue.id, result.sendQueueEntryId)).get();
+    const message = db.select().from(messages).where(eq(messages.id, queueRow!.messageId)).get();
+    // "Ada Lovelace" is this fixture's connected account display name -- the Google profile name.
+    expect(message?.bodyText).toContain("Ada Lovelace");
+    expect(message?.bodyText).toContain("me@outboundly.app");
+    expect(message?.bodyText).not.toContain("{{");
+  });
+
+  it("still reports a genuinely missing lead value rather than sending an empty greeting", async () => {
+    const { campaign, sequence } = await setUpTwoStepCampaign([parsePlainTextToDocument("Hi {{first_name}},")]);
+    const contact = await deps.contactRepository.upsertByEmail({ email: "nameless@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const result = await fireEnrollmentStep(deps, enrollment, new Date());
+
+    expect(result.outcome).toBe("missing_personalization");
+    if (result.outcome !== "missing_personalization") return;
+    expect(result.variableName).toBe("first_name");
+  });
+
+  it("a fallback keeps that same lead sending", async () => {
+    const { campaign, sequence } = await setUpTwoStepCampaign([parsePlainTextToDocument("Hi {{first_name|there}},")]);
+    const contact = await deps.contactRepository.upsertByEmail({ email: "nameless@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const result = await fireEnrollmentStep(deps, enrollment, new Date());
+
+    expect(result.outcome).toBe("enqueued");
+    if (result.outcome !== "enqueued") return;
+    const queueRow = db.select().from(sendQueue).where(eq(sendQueue.id, result.sendQueueEntryId)).get();
+    const message = db.select().from(messages).where(eq(messages.id, queueRow!.messageId)).get();
+    expect(message?.bodyText).toContain("Hi there,");
   });
 
   it("selects an atomic template+subject content group when one is configured, never mixing a group's subject with another group's template", async () => {

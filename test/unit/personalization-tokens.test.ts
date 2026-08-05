@@ -166,3 +166,11 @@ describe("previewPersonalization (the wizard's pre-launch check)", () => {
     expect(preview.tokens).toEqual([{ name: "first_name", hasFallback: false, missingCount: 0 }]);
   });
 });
+
+describe("the wizard preview and account tokens", () => {
+  it("never reports an account token as short of values, since no lead supplies it", () => {
+    const preview = previewPersonalization(["Hi {{first_name}},", "Best,\n{{Account Name}}"], [{ email: "a@x.com", first_name: "Ada" }]);
+    expect(preview.tokens.map((t) => t.name)).toEqual(["first_name"]);
+    expect(preview.leadsMissingRequiredValues).toBe(0);
+  });
+});

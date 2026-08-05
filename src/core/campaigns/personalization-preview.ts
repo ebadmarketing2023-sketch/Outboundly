@@ -1,4 +1,5 @@
 import { collectTextTokens, isMissingValue } from "../rendering/personalization-tokens.js";
+import { ACCOUNT_TOKEN_NAMES } from "./personalize.js";
 
 /**
  * Answers "will this campaign's copy actually personalize for the leads I just uploaded?" before
@@ -45,6 +46,10 @@ export function previewPersonalization(texts: string[], leadValues: Array<Record
 
   for (const text of texts) {
     for (const token of collectTextTokens(text)) {
+      // The sending account's own tokens ({{Account Name}}) are resolved from the mailbox, not the
+      // lead, so they can never be short of values -- listing them here would report a problem the
+      // user has no way to act on.
+      if ((ACCOUNT_TOKEN_NAMES as readonly string[]).includes(token.name)) continue;
       if (!order.includes(token.name)) order.push(token.name);
       if (token.fallback === undefined) required.add(token.name);
       else withFallback.add(token.name);

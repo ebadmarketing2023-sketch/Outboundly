@@ -239,7 +239,10 @@ function campaignEngineDeps() {
     deliverabilityReportRepository,
     conversationRepository,
     draftLifecycle,
-    errorLogRepository
+    errorLogRepository,
+    // Lets the scheduler raise an in-app alert when a campaign can't render one of its tokens,
+    // rather than sitting "running" having sent nothing.
+    notificationRepository
   };
 }
 
