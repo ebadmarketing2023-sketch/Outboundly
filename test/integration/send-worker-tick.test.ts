@@ -33,7 +33,7 @@ import { SqliteRateLimiter } from "../../src/adapters/persistence/rate-limiter.j
 import { SqliteEventRepository } from "../../src/adapters/persistence/repositories/event-repository.js";
 import { SqliteErrorLogRepository } from "../../src/adapters/persistence/repositories/error-log-repository.js";
 import { accounts, messages, sendQueue, threads } from "../../src/adapters/persistence/schema.js";
-import { asAccountId, generateId } from "../../src/core/shared-kernel/ids.js";
+import { asAccountId, generateId, type CampaignId } from "../../src/core/shared-kernel/ids.js";
 import type { AccountRef, ChangeSet, MailProvider, NormalizedMessage, NormalizedThread, ProviderDraftRef, ProviderSendResult, SyncCursor } from "../../src/ports/mail-provider.port.js";
 import type { BuiltMimeMessage } from "../../src/core/mime/types.js";
 import { GMAIL_CAPABILITIES, type ProviderCapabilities } from "../../src/ports/provider-capabilities.port.js";
@@ -182,6 +182,7 @@ describe("runSendWorkerTick (Section 21.1)", () => {
       conversationRepository,
       enrollmentRepository,
       campaignRepository,
+      businessHoursProfileRepository,
       sequenceRepository,
       contactRepository,
       draftRepository,
@@ -231,6 +232,62 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     if (fireResult.outcome !== "enqueued") throw new Error(`setup failed: ${fireResult.outcome}`);
     return { ...fireResult, enrollmentId: enrollment.id, contactId: contact.id, campaignId: campaign.id };
   }
+
+  /** Points an already-enqueued campaign at weekday-only 09:00-17:00 UTC hours. Used by the two
+   * tests below, which cover the case the Scheduler's own snap cannot: a queue row whose send time
+   * was moved *after* it was scheduled. */
+  async function restrictToWeekdayBusinessHours(campaignId: CampaignId) {
+    const weekdayWindow = [{ start: "09:00", end: "17:00" }];
+    const profile = await fireStepDeps.businessHoursProfileRepository.create({
+      name: "Weekdays 9-5 UTC",
+      timezone: "UTC",
+      windows: {
+        monday: weekdayWindow,
+        tuesday: weekdayWindow,
+        wednesday: weekdayWindow,
+        thursday: weekdayWindow,
+        friday: weekdayWindow
+      }
+    });
+    await fireStepDeps.campaignRepository.update(campaignId, { businessHoursProfileId: profile.id });
+  }
+
+  it("holds a queued campaign message that a retry pushed outside business hours, instead of sending it", async () => {
+    // The gap this closes: the Scheduler snaps the original send into an allowed window, but every
+    // path that moves the row afterwards is plain clock arithmetic -- the transient-failure backoff
+    // (1 min doubling to 24h), the Rate Limiter's retryAfter, the paused-campaign hold, and
+    // unclean-shutdown recovery. A send that failed at 16:55 came back at 17:55 and went out past
+    // the cutoff; enough doublings and it goes out at 3am or on a Sunday. Simulated here by simply
+    // running the tick at a time outside the window, which is exactly the state those retries leave
+    // the row in.
+    const fireResult = await enqueueOneCampaignMessage();
+    await restrictToWeekdayBusinessHours(fireResult.campaignId);
+
+    const sundayAt3am = new Date(Date.UTC(2030, 0, 6, 3, 0, 0)); // 2030-01-06 is a Sunday
+    const result = await runSendWorkerTick(sendWorkerDeps, sundayAt3am);
+
+    expect(result).toMatchObject({ claimed: 1, sent: 0, retried: 1, failed: 0, bounced: 0 });
+    expect(provider.sentDrafts).toEqual([]);
+
+    const queueRow = db.select().from(sendQueue).where(eq(sendQueue.id, fireResult.sendQueueEntryId)).get();
+    expect(queueRow?.status).toBe("pending");
+    // Held precisely until Monday's window opens -- not dropped, not retried in five minutes to be
+    // rejected again, and with attemptCount untouched since nothing about the send itself failed.
+    expect(queueRow?.earliestSendAt).toEqual(new Date(Date.UTC(2030, 0, 7, 9, 0, 0)));
+    expect(queueRow?.attemptCount).toBe(0);
+  });
+
+  it("sends the same message once the window is open, so the hold is a delay and not a block", async () => {
+    const fireResult = await enqueueOneCampaignMessage();
+    await restrictToWeekdayBusinessHours(fireResult.campaignId);
+
+    const mondayAt10am = new Date(Date.UTC(2030, 0, 7, 10, 0, 0));
+    const result = await runSendWorkerTick(sendWorkerDeps, mondayAt10am);
+
+    expect(result).toMatchObject({ claimed: 1, sent: 1, retried: 0 });
+    expect(provider.sentDrafts).toHaveLength(1);
+    expect(db.select().from(sendQueue).where(eq(sendQueue.id, fireResult.sendQueueEntryId)).get()?.status).toBe("sent");
+  });
 
   it("dispatches a claimed message end-to-end: provider calls happen, message and queue row are marked sent", async () => {
     const fireResult = await enqueueOneCampaignMessage();

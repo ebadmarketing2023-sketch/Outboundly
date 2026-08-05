@@ -1,11 +1,13 @@
 import { getAccountRef } from "../../adapters/persistence/campaign-scheduling-support.js";
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
 import { isPermanentSmtpRejection } from "../../core/campaigns/bounce-detection.js";
+import { isWithinBusinessHours, nextWindowOpening } from "../../core/scheduling/business-hours-window.js";
 import { contactToPersonalizationValues } from "../../core/campaigns/personalize.js";
 import type { Draft } from "../../core/drafts/draft.js";
 import type { DraftLifecycleService } from "../../core/drafts/draft-lifecycle.js";
 import { EmailAddress, parseNamedAddress, type NamedEmailAddress } from "../../core/shared-kernel/email-address.js";
 import { asDraftId, asEnrollmentId, asMessageId, type AccountId, type CampaignId, type DraftId, type SendQueueId } from "../../core/shared-kernel/ids.js";
+import type { BusinessHoursProfileRepository } from "../../ports/business-hours-profile-repository.port.js";
 import type { CampaignRepository } from "../../ports/campaign-repository.port.js";
 import type { ContactRepository } from "../../ports/contact-repository.port.js";
 import type { ConversationRepository } from "../../ports/conversation-repository.port.js";
@@ -34,6 +36,9 @@ export interface SendWorkerDeps {
   conversationRepository: ConversationRepository;
   enrollmentRepository: EnrollmentRepository;
   campaignRepository: CampaignRepository;
+  /** Read at dispatch time, not only at scheduling time -- see the business-hours re-check in
+   * dispatchOne for what a retry does to an already-snapped send time. */
+  businessHoursProfileRepository: BusinessHoursProfileRepository;
   sequenceRepository: SequenceRepository;
   contactRepository: ContactRepository;
   eventRepository: EventRepository;
@@ -96,6 +101,12 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     return "retried";
   }
 
+  // Resolved before the campaign checks below rather than at the point of use, because the
+  // business-hours re-check needs this contact's own timezone -- the same one the Timezone Policy
+  // resolved against when the message was first scheduled (Section 15.2).
+  const recipientEmail = message.toAddresses[0];
+  const contact = recipientEmail ? await deps.contactRepository.findByEmail(parseNamedAddress(recipientEmail).address.toString()) : undefined;
+
   let rotationPool: AccountId[] = [claimed.accountId];
   let campaignId: CampaignId | undefined;
   if (message.campaignEnrollmentId) {
@@ -113,6 +124,25 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
         await deps.sendQueueRepository.releaseForRetry(claimed.id, new Date(now.getTime() + PAUSED_CAMPAIGN_RETRY_MS));
         return "retried";
       }
+
+      // The campaign's business hours, re-checked at the moment of dispatch rather than trusted
+      // from enqueue time. The Scheduler does snap the original send into an allowed window, but
+      // every path that moves a queued row afterwards is plain clock arithmetic with no idea the
+      // window exists: the transient-failure backoff (1 minute, doubling to a 24h ceiling), the
+      // Rate Limiter's retryAfter, the paused-campaign hold above, and unclean-shutdown recovery.
+      // A send that failed once at 16:55 came back at 17:55 and went out past the 17:00 cutoff;
+      // a few doublings put it at 3am or on a Sunday, which is precisely the sending pattern that
+      // gets cold outreach filed as spam. Holding the row until the window reopens costs nothing
+      // -- the same row picks up where it left off, exactly like the pause path.
+      const profile = await deps.businessHoursProfileRepository.findById(campaign.businessHoursProfileId);
+      if (profile) {
+        const timezone = contact?.timezone ?? profile.timezone;
+        if (!isWithinBusinessHours(now, profile, timezone)) {
+          await deps.sendQueueRepository.releaseForRetry(claimed.id, nextWindowOpening(now, profile, timezone));
+          return "retried";
+        }
+      }
+
       rotationPool = campaign.sendingAccountIds;
       campaignId = campaign.id;
     }
@@ -138,8 +168,6 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   // above (see RateLimiter.reserveNextSend's doc comment for why those must stay side-effect-free).
   deps.rateLimiter.reserveNextSend(selection.accountId);
 
-  const recipientEmail = message.toAddresses[0];
-
   if (!message.draftId) {
     const errorMessage = "queued message has no associated draft to build MIME from";
     await deps.sendQueueRepository.markFailed(claimed.id, errorMessage, { permanent: true, now });
@@ -161,8 +189,6 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     await logSendFailure(deps, now, { errorType: "account_missing", errorMessage, campaignId, accountId: selection.accountId, recipientEmail });
     return "failed";
   }
-
-  const contact = recipientEmail ? await deps.contactRepository.findByEmail(parseNamedAddress(recipientEmail).address.toString()) : undefined;
 
   const from: NamedEmailAddress = { address: EmailAddress.parse(accountRef.emailAddress), displayName: accountRef.displayName };
   // Deliberately draft.accountId here, not selection.accountId/accountRef above: buildMimeMessage's

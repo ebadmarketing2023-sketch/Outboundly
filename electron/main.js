@@ -388,6 +388,7 @@ function startBackgroundWorkers() {
         conversationRepository,
         enrollmentRepository,
         campaignRepository,
+        businessHoursProfileRepository,
         sequenceRepository,
         contactRepository,
         draftRepository,
