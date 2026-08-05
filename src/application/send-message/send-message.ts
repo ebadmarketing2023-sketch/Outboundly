@@ -45,7 +45,10 @@ export interface SendMessageParams {
 export async function sendDraftMessage(params: SendMessageParams): Promise<SendMessageResult> {
   const built = params.draftLifecycle.buildMimeMessage(params.draft, {
     from: params.from,
-    sendingDomain: params.accountRef.emailAddress.split("@")[1]!
+    sendingDomain: params.accountRef.emailAddress.split("@")[1]!,
+    // A person clicking Send is in their own timezone, and their mail client would stamp it --
+    // this is the one send path where the machine's own zone is exactly the right answer.
+    senderTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
   });
 
   const compatibilityReport = evaluateGmailCompatibility(built);

@@ -152,9 +152,11 @@ export async function fireEnrollmentStep(
       : (selectWeightedVariant(templateVariants).documentOverride ?? template.document);
 
   let candidate;
+  let senderTimeZone: string;
   try {
     const preferredAccountId = mostRecentMessage ? asAccountId(mostRecentMessage.accountId) : undefined;
     const ctx = await buildSchedulingContext(deps, campaign, now, contact.timezone, preferredAccountId);
+    senderTimeZone = ctx.businessHoursProfile.timezone;
     candidate = schedule(now, ctx);
   } catch (err) {
     if (err instanceof NoEligibleAccountError) return { outcome: "no_eligible_account" };
@@ -185,7 +187,11 @@ export async function fireEnrollmentStep(
     built = deps.draftLifecycle.buildMimeMessage(draft, {
       from,
       sendingDomain: accountRef.emailAddress.split("@")[1]!,
-      personalizationValues: contactToPersonalizationValues(contact)
+      personalizationValues: contactToPersonalizationValues(contact),
+      // The campaign's own business-hours timezone, deliberately, not the recipient's: it is the
+      // sender's local time the Date header declares, and sends already cluster inside this zone's
+      // working hours, so the offset agrees with the observable pattern instead of contradicting it.
+      senderTimeZone
     });
   } catch (err) {
     if (err instanceof MissingPersonalizationValueError) {

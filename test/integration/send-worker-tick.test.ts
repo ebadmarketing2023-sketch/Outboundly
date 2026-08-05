@@ -289,6 +289,29 @@ describe("runSendWorkerTick (Section 21.1)", () => {
     expect(db.select().from(sendQueue).where(eq(sendQueue.id, fireResult.sendQueueEntryId)).get()?.status).toBe("sent");
   });
 
+  it("stamps the campaign's own timezone offset on the dispatched Date header, not a uniform +0000", async () => {
+    // A real mail client stamps the sender's configured zone. A mailbox whose every message claims
+    // UTC while its sends cluster inside one region's working hours describes itself as automated.
+    const fireResult = await enqueueOneCampaignMessage();
+    const allDay = [{ start: "00:00", end: "23:59" }];
+    const newYork = await fireStepDeps.businessHoursProfileRepository.create({
+      name: "New York, always open",
+      timezone: "America/New_York",
+      windows: {
+        sunday: allDay, monday: allDay, tuesday: allDay, wednesday: allDay, thursday: allDay, friday: allDay, saturday: allDay
+      }
+    });
+    await fireStepDeps.campaignRepository.update(fireResult.campaignId, { businessHoursProfileId: newYork.id });
+
+    await runSendWorkerTick(sendWorkerDeps, new Date());
+
+    const dateHeader = provider.createdDrafts[0]!.message.headers.find((h) => h.name === "Date")?.value;
+    // -0500 or -0400 depending on whether the suite runs in EST or EDT -- asserting the real
+    // offset rather than recomputing it here, which would just restate the implementation.
+    expect(dateHeader).toMatch(/ -0[45]00$/);
+    expect(dateHeader).not.toContain("+0000");
+  });
+
   it("dispatches a claimed message end-to-end: provider calls happen, message and queue row are marked sent", async () => {
     const fireResult = await enqueueOneCampaignMessage();
 

@@ -28,6 +28,52 @@ describe("RFC 5322 builder", () => {
     expect(formatted).toBe("Thu, 15 Jan 2026 09:30:00 +0000");
   });
 
+  it("stamps the sender's own local time and offset when a timezone is given", () => {
+    // Every message used to claim +0000 regardless of who sent it. A real mail client stamps the
+    // sender's configured zone, so a mailbox uniformly declaring UTC describes itself as automated.
+    const at = new Date(Date.UTC(2026, 0, 15, 14, 30, 0));
+    expect(formatRfc5322Date(at, "America/New_York")).toBe("Thu, 15 Jan 2026 09:30:00 -0500");
+    expect(formatRfc5322Date(at, "Asia/Karachi")).toBe("Thu, 15 Jan 2026 19:30:00 +0500");
+  });
+
+  it("follows the zone across a DST transition rather than using a fixed offset", () => {
+    const winter = new Date(Date.UTC(2026, 0, 15, 14, 30, 0));
+    const summer = new Date(Date.UTC(2026, 6, 15, 14, 30, 0));
+    expect(formatRfc5322Date(winter, "America/New_York")).toContain("-0500");
+    expect(formatRfc5322Date(summer, "America/New_York")).toContain("-0400");
+    // Same wall-clock reading either side, which is the whole point of tracking the real offset.
+    expect(formatRfc5322Date(summer, "America/New_York")).toBe("Wed, 15 Jul 2026 10:30:00 -0400");
+  });
+
+  it("handles a half-hour zone, which a fixed offset table gets wrong", () => {
+    const at = new Date(Date.UTC(2026, 0, 15, 14, 30, 0));
+    expect(formatRfc5322Date(at, "Asia/Kolkata")).toBe("Thu, 15 Jan 2026 20:00:00 +0530");
+  });
+
+  it("rolls the calendar date correctly when the offset crosses midnight", () => {
+    // 23:30 UTC is already the next morning in Karachi -- the day name and date have to move too.
+    expect(formatRfc5322Date(new Date(Date.UTC(2026, 0, 15, 23, 30, 0)), "Asia/Karachi")).toBe("Fri, 16 Jan 2026 04:30:00 +0500");
+    // ...and the previous evening in Los Angeles.
+    expect(formatRfc5322Date(new Date(Date.UTC(2026, 0, 15, 2, 30, 0)), "America/Los_Angeles")).toBe("Wed, 14 Jan 2026 18:30:00 -0800");
+  });
+
+  it("falls back to UTC for a timezone the runtime can't resolve, rather than emitting a wrong date", () => {
+    const at = new Date(Date.UTC(2026, 0, 15, 9, 30, 0));
+    expect(formatRfc5322Date(at, "Not/AZone")).toBe("Thu, 15 Jan 2026 09:30:00 +0000");
+  });
+
+  it("puts the sender's offset on the Date header it builds", () => {
+    const headers = buildRfc5322Headers({
+      from: { address: EmailAddress.parse("me@outboundly.app") },
+      to: [{ address: EmailAddress.parse("them@example.com") }],
+      subject: "Hello",
+      date: new Date(Date.UTC(2026, 0, 15, 14, 30, 0)),
+      timeZone: "America/New_York",
+      messageId: "<abc@outboundly.app>"
+    });
+    expect(headers.find((h) => h.name === "Date")?.value).toBe("Thu, 15 Jan 2026 09:30:00 -0500");
+  });
+
   it("builds required headers and omits optional ones when absent", () => {
     const headers = buildRfc5322Headers({
       from: { address: EmailAddress.parse("me@outboundly.app") },

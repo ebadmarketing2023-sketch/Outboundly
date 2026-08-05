@@ -82,6 +82,10 @@ export class DraftLifecycleService {
        * comment below for why that distinction matters. */
       sendingDomain: string;
       personalizationValues?: Record<string, string>;
+      /** The *sender's* IANA timezone (the campaign's business hours, or the machine's own for a
+       * manual send) -- not the recipient's. Stamps the Date header's offset; omitted means UTC.
+       * See formatRfc5322Date for why a mailbox whose every message claims +0000 stands out. */
+      senderTimeZone?: string;
     }
   ): BuiltMimeMessage {
     const resolvedDocument = params.personalizationValues
@@ -109,6 +113,7 @@ export class DraftLifecycleService {
       bcc: draft.bcc,
       subject: resolvedSubject,
       date: this.clock.now(),
+      timeZone: params.senderTimeZone,
       // This message gets built more than once for the same draft -- once at enqueue time for the
       // Gmail Compatibility/Deliverability check (fire-enrollment-step.ts), again later at actual
       // dispatch (send-worker-tick.ts). A real reported bug: callers used to derive sendingDomain

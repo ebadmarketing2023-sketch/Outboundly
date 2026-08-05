@@ -18,16 +18,59 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** RFC 5322 date-time with a numeric zone offset — the current, non-obsolete form. */
-export function formatRfc5322Date(date: Date): string {
-  const day = DAYS[date.getUTCDay()];
-  const dd = pad2(date.getUTCDate());
-  const mon = MONTHS[date.getUTCMonth()];
-  const yyyy = date.getUTCFullYear();
-  const hh = pad2(date.getUTCHours());
-  const mm = pad2(date.getUTCMinutes());
-  const ss = pad2(date.getUTCSeconds());
-  return `${day}, ${dd} ${mon} ${yyyy} ${hh}:${mm}:${ss} +0000`;
+/**
+ * The zone's real offset at this instant, in minutes east of UTC — DST-correct, and correct for
+ * the half-hour zones (Asia/Kolkata's +05:30, Australia/Adelaide's +09:30/+10:30) that a fixed
+ * offset table gets wrong. Returns undefined if the runtime can't resolve the zone, so the caller
+ * falls back to UTC rather than emitting a wrong Date.
+ */
+function utcOffsetMinutes(date: Date, timeZone: string): number | undefined {
+  try {
+    const name = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" })
+      .formatToParts(date)
+      .find((p) => p.type === "timeZoneName")?.value;
+    if (!name) return undefined;
+    if (name === "GMT" || name === "UTC") return 0; // some runtimes render a zero offset bare
+    const match = /^(?:GMT|UTC)([+-])(\d{2}):(\d{2})$/.exec(name);
+    if (!match) return undefined;
+    const minutes = Number(match[2]) * 60 + Number(match[3]);
+    return match[1] === "-" ? -minutes : minutes;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * RFC 5322 date-time with a numeric zone offset — the current, non-obsolete form.
+ *
+ * @param timeZone the sender's IANA timezone. Omitted (or unresolvable) means UTC.
+ *
+ * Every message used to be stamped +0000 no matter who sent it or from where. That is not what a
+ * person's mail client does — Gmail stamps the offset of the account's own configured timezone,
+ * so a human's mail carries -0500, +0500, +05:30, and it shifts with their DST. A mailbox whose
+ * every message claims UTC while its send times cluster neatly inside one region's working hours
+ * is describing itself as automated. The date is not wrong either way (the instant is the same);
+ * it is the uniformity that stands out.
+ */
+export function formatRfc5322Date(date: Date, timeZone?: string): string {
+  const offsetMinutes = timeZone ? utcOffsetMinutes(date, timeZone) ?? 0 : 0;
+  // Shifting the instant lets the same getUTC* accessors render local wall-clock components, which
+  // is exactly what the offset suffix then declares them to be.
+  const shifted = new Date(date.getTime() + offsetMinutes * 60_000);
+
+  const day = DAYS[shifted.getUTCDay()];
+  const dd = pad2(shifted.getUTCDate());
+  const mon = MONTHS[shifted.getUTCMonth()];
+  const yyyy = shifted.getUTCFullYear();
+  const hh = pad2(shifted.getUTCHours());
+  const mm = pad2(shifted.getUTCMinutes());
+  const ss = pad2(shifted.getUTCSeconds());
+
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absolute = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad2(Math.floor(absolute / 60))}${pad2(absolute % 60)}`;
+
+  return `${day}, ${dd} ${mon} ${yyyy} ${hh}:${mm}:${ss} ${offset}`;
 }
 
 /**
@@ -46,6 +89,8 @@ export interface Rfc5322BuilderInput {
   bcc?: NamedEmailAddress[];
   subject: string;
   date: Date;
+  /** The sender's IANA timezone, for the Date header's offset. Omitted means UTC. */
+  timeZone?: string;
   messageId: string;
   inReplyTo?: string;
   references?: string[];
@@ -62,7 +107,7 @@ function joinAddresses(addresses: NamedEmailAddress[]): string {
 export function buildRfc5322Headers(input: Rfc5322BuilderInput): MimeHeader[] {
   const headers: MimeHeader[] = [
     { name: "Message-ID", value: input.messageId },
-    { name: "Date", value: formatRfc5322Date(input.date) },
+    { name: "Date", value: formatRfc5322Date(input.date, input.timeZone) },
     { name: "From", value: formatAddressForHeader(input.from) },
     { name: "To", value: joinAddresses(input.to) },
     { name: "Subject", value: encodeHeaderText(input.subject) }

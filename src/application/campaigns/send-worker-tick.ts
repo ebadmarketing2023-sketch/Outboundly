@@ -109,6 +109,9 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
 
   let rotationPool: AccountId[] = [claimed.accountId];
   let campaignId: CampaignId | undefined;
+  /** The campaign's business-hours timezone, for the Date header's offset -- see
+   * formatRfc5322Date. Left undefined for a manual send, which falls back to UTC. */
+  let senderTimeZone: string | undefined;
   if (message.campaignEnrollmentId) {
     const enrollment = await deps.enrollmentRepository.findById(asEnrollmentId(message.campaignEnrollmentId));
     const campaign = enrollment ? await deps.campaignRepository.findById(enrollment.campaignId) : undefined;
@@ -136,6 +139,7 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
       // -- the same row picks up where it left off, exactly like the pause path.
       const profile = await deps.businessHoursProfileRepository.findById(campaign.businessHoursProfileId);
       if (profile) {
+        senderTimeZone = profile.timezone;
         const timezone = contact?.timezone ?? profile.timezone;
         if (!isWithinBusinessHours(now, profile, timezone)) {
           await deps.sendQueueRepository.releaseForRetry(claimed.id, nextWindowOpening(now, profile, timezone));
@@ -202,7 +206,8 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   const built = deps.draftLifecycle.buildMimeMessage(draft, {
     from,
     sendingDomain: draftAccountRef.emailAddress.split("@")[1]!,
-    personalizationValues: contact ? contactToPersonalizationValues(contact) : undefined
+    personalizationValues: contact ? contactToPersonalizationValues(contact) : undefined,
+    senderTimeZone
   });
 
   const provider = await deps.getProviderForAccount(selection.accountId);
