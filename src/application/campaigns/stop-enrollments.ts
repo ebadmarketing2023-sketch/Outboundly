@@ -166,22 +166,34 @@ export async function handleReplyDetected(
 export interface HandleBounceDetectedDeps extends StopEnrollmentsDeps {
   conversationRepository: ConversationRepository;
   eventRepository: EventRepository;
+  contactRepository: ContactRepository;
 }
 
-/** Resolves a bounce notification's thread back to the campaign-originated message it's a
- * delivery-failure report for (via ConversationRepository.findCampaignEnrollmentIdForThread,
- * which relies on the notification having threaded correctly to one of our own sends), records a
- * 'bounced' event for that campaign (Section 20.1), and stops every active enrollment that
- * respects stopOnBounce for that contact. A no-op when the bounce didn't thread back to anything
- * of ours, or wasn't for a campaign-originated message at all. */
+/**
+ * Resolves a bounce notification back to the contact whose delivery failed, records a 'bounced'
+ * event for the campaign involved (Section 20.1), and stops every active enrollment that respects
+ * stopOnBounce for that contact.
+ *
+ * Two ways of resolving it, in order:
+ *   1. the thread it arrived on (findCampaignEnrollmentIdForThread), which works when the DSN
+ *      threaded back to one of our own sends;
+ *   2. failing that, the address the DSN itself names as having failed (RFC 3464 Final-Recipient).
+ *
+ * The fallback is not a nicety. Plenty of MTAs send a DSN as a brand-new message carrying the
+ * original only as an attachment, with no In-Reply-To to thread on -- so correlating by thread
+ * alone meant those bounces were ingested, matched nothing, and the campaign carried on mailing an
+ * address that had already hard-bounced. Nothing about that is visible from inside the app, while
+ * the sending domain's reputation pays for it.
+ *
+ * Still a no-op when neither route identifies a contact with an active enrollment.
+ */
 export async function handleBounceDetected(
   deps: HandleBounceDetectedDeps,
   threadId: string,
-  accountId: string
+  accountId: string,
+  failedRecipient?: string
 ): Promise<EnrollmentId[]> {
-  const enrollmentId = await deps.conversationRepository.findCampaignEnrollmentIdForThread(threadId);
-  if (!enrollmentId) return [];
-  const enrollment = await deps.enrollmentRepository.findById(asEnrollmentId(enrollmentId));
+  const enrollment = (await enrollmentFromThread(deps, threadId)) ?? (await enrollmentFromRecipient(deps, failedRecipient));
   if (!enrollment) return [];
 
   await deps.eventRepository.record({
@@ -192,6 +204,25 @@ export async function handleBounceDetected(
   });
 
   return stopEnrollmentsForContact(deps, enrollment.contactId, "stopped_bounce");
+}
+
+async function enrollmentFromThread(deps: HandleBounceDetectedDeps, threadId: string): Promise<CampaignEnrollment | undefined> {
+  const enrollmentId = await deps.conversationRepository.findCampaignEnrollmentIdForThread(threadId);
+  if (!enrollmentId) return undefined;
+  return deps.enrollmentRepository.findById(asEnrollmentId(enrollmentId));
+}
+
+async function enrollmentFromRecipient(
+  deps: HandleBounceDetectedDeps,
+  failedRecipient: string | undefined
+): Promise<CampaignEnrollment | undefined> {
+  if (!failedRecipient) return undefined;
+  const contact = await deps.contactRepository.findByEmail(failedRecipient.toLowerCase());
+  if (!contact) return undefined;
+  // Any one active enrollment is enough to attribute the 'bounced' event to a campaign;
+  // stopEnrollmentsForContact then fans the stop out across every campaign this contact is in.
+  const active = await deps.enrollmentRepository.findActiveByContact(contact.id);
+  return active[0];
 }
 
 export interface UnsubscribeContactDeps extends StopEnrollmentsDeps {

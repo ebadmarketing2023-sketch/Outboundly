@@ -680,6 +680,50 @@ describe("stopEnrollmentsForContact (Section 14.3 fan-out)", () => {
     expect(await handleBounceDetected({ ...deps, eventRepository }, "some-unrelated-thread-id", accountId)).toEqual([]);
   });
 
+  it("handleBounceDetected falls back to the address the DSN names when the bounce didn't thread", async () => {
+    // Plenty of MTAs send a DSN as a fresh message with no In-Reply-To, carrying the original only
+    // as an attachment. Correlating by thread alone meant those bounces matched nothing and the
+    // campaign kept mailing an address that had already hard-bounced -- invisible from inside the
+    // app, while the sending domain's reputation paid for it.
+    const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
+    const sequence = await deps.sequenceRepository.create({
+      name: "Seq",
+      steps: [
+        { delayDays: 0, delayHours: 0, templateId: template.id },
+        { delayDays: 3, delayHours: 0, templateId: template.id }
+      ]
+    });
+    const campaign = await deps.campaignRepository.create({
+      name: "Camp",
+      sequenceId: sequence.id,
+      sendingAccountIds: [asAccountId(accountId)],
+      businessHoursProfileId
+    });
+    const contact = await deps.contactRepository.upsertByEmail({ email: "unthreaded-bounce@example.com", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date()
+    });
+
+    const stoppedIds = await handleBounceDetected(
+      { ...deps, eventRepository },
+      "a-thread-that-correlates-to-nothing",
+      accountId,
+      contact.email
+    );
+
+    expect(stoppedIds).toEqual([enrollment.id]);
+    expect((await deps.enrollmentRepository.findById(enrollment.id))?.status).toBe("stopped_bounce");
+    const events = await eventRepository.findByCampaignInWindow(campaign.id, new Date(0), new Date(Date.now() + 60_000));
+    expect(events.some((e) => e.eventType === "bounced")).toBe(true);
+  });
+
+  it("handleBounceDetected stays a no-op for a named recipient who isn't a lead of ours", async () => {
+    expect(await handleBounceDetected({ ...deps, eventRepository }, "unrelated-thread", accountId, "stranger@example.com")).toEqual([]);
+  });
+
   it("handleReplyDetected records a 'replied' event for the thread-correlated campaign and stops the contact's enrollments", async () => {
     const template = await deps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });
     // Two steps, not one: firing the only step of a single-step sequence already completes the

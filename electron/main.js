@@ -330,8 +330,8 @@ async function syncAccountById(accountId, { reportProgress }) {
       repo: conversationRepository,
       onReplyDetected: (fromAddress, threadId, replyContent) =>
         handleReplyDetected(stopEnrollmentDeps, fromAddress, { threadId, accountId: account.id }, replyContent).then(() => undefined),
-      onBounceDetected: (threadId) =>
-        handleBounceDetected(stopEnrollmentDeps, threadId, account.id).then(() => undefined),
+      onBounceDetected: (threadId, failedRecipient) =>
+        handleBounceDetected(stopEnrollmentDeps, threadId, account.id, failedRecipient).then(() => undefined),
       errorLogRepository,
       onProgress: reportProgress ? (done, total) => sendToRenderer("inbox:syncProgress", { accountId, done, total }) : undefined
     });
@@ -794,6 +794,7 @@ function registerIpcHandlers() {
       newMessageCount: result.newMessageCount,
       repliesDetected: result.repliesDetected,
       bouncesDetected: result.bouncesDetected,
+      transientBouncesDetected: result.transientBouncesDetected,
       failedCount: result.failedRefs.length
     };
   });

@@ -91,7 +91,13 @@ export function InboxScreen(): JSX.Element {
       const result = await window.outboundly.syncInbox({ accountId: selectedAccountId });
       const failedNote = result.failedCount > 0 ? `, ${result.failedCount} failed to sync` : "";
       const bounceNote = result.bouncesDetected > 0 ? `, ${result.bouncesDetected} bounce(s)` : "";
-      toast.showToast(`${result.newMessageCount} new message(s), ${result.repliesDetected} repl(y/ies)${bounceNote}${failedNote}.`, "success");
+      // Surfaced separately so a delay notice doesn't look like nothing happened: it deliberately
+      // leaves the sequence running, since the message is still in flight.
+      const delayNote = result.transientBouncesDetected > 0 ? `, ${result.transientBouncesDetected} delayed (still trying)` : "";
+      toast.showToast(
+        `${result.newMessageCount} new message(s), ${result.repliesDetected} repl(y/ies)${bounceNote}${delayNote}${failedNote}.`,
+        "success"
+      );
       await loadThreads(selectedAccountId);
     } catch (err) {
       setError(String(err));

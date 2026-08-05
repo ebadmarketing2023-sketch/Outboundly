@@ -1,4 +1,4 @@
-import { looksLikeBounceNotification } from "../../core/campaigns/bounce-detection.js";
+import { classifyBounceNotification, extractFailedRecipient } from "../../core/campaigns/bounce-detection.js";
 import { sanitizeInboundHtml } from "../../core/rendering/sanitize-html.js";
 import { parseNamedAddress } from "../../core/shared-kernel/email-address.js";
 import { asAccountId } from "../../core/shared-kernel/ids.js";
@@ -31,12 +31,15 @@ export interface SyncInboxParams {
      * (opt-out-detection.ts) rather than only knowing that *some* reply arrived. */
     content: { subject: string; bodyText?: string }
   ) => Promise<void>;
-  /** Invoked for an inbound message that looks like an automated delivery-failure notice (Section
-   * 14.2's BounceDetected event) and threaded back to an existing conversation — a DSN that
-   * doesn't thread back to one of our own sends can't be correlated to anything and is silently
-   * not detected (see bounce-detection.ts's docblock). Mutually exclusive with onReplyDetected:
-   * an automated bounce is never counted as a genuine reply. */
-  onBounceDetected?: (threadId: string) => Promise<void>;
+  /** Invoked for an inbound message that is a *permanent* delivery-failure notice (Section 14.2's
+   * BounceDetected event). A delay/deferral notice is deliberately not reported here -- see
+   * bounce-detection.ts for why treating one as a bounce wrote off leads whose mail then arrived
+   * fine. Mutually exclusive with onReplyDetected: an automated bounce is never a genuine reply.
+   *
+   * `failedRecipient` is the address the DSN itself names as having failed (RFC 3464
+   * Final-Recipient), when it carries one. Passed because a DSN frequently arrives as its own new
+   * thread with no In-Reply-To, so thread correlation alone silently misses it. */
+  onBounceDetected?: (threadId: string, failedRecipient?: string) => Promise<void>;
   /** Optional (Critical Improvement #12): when provided, a per-message fetch/ingest failure is
    * also recorded as a structured, queryable log entry, not just returned in failedRefs. Omitted
    * in most existing tests since it's a pure side effect. */
@@ -52,6 +55,9 @@ export interface SyncInboxResult {
   newMessageCount: number;
   repliesDetected: number;
   bouncesDetected: number;
+  /** Delivery *delay* notices seen this sync. Counted rather than acted on: the message is still
+   * in flight, so stopping the sequence would write off a live lead. */
+  transientBouncesDetected: number;
   /**
    * Refs that failed to fetch/ingest (message deleted/moved since being listed, a transient
    * API error, etc.) — Section 21.3's failure-isolation principle applies here exactly as it
@@ -76,6 +82,7 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
   let newMessageCount = 0;
   let repliesDetected = 0;
   let bouncesDetected = 0;
+  let transientBouncesDetected = 0;
   const failedRefs: { ref: string; error: string }[] = [];
   const total = changeSet.newOrChangedMessageRefs.length;
   let done = 0;
@@ -108,11 +115,18 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
 
       if (result.outcome !== "duplicate") {
         newMessageCount++;
-        if (direction === "inbound" && result.outcome !== "new-thread") {
-          if (looksLikeBounceNotification(normalized.from, normalized.subject)) {
+        if (direction === "inbound") {
+          const classification = classifyBounceNotification(normalized.from, normalized.subject, normalized.bodyText);
+          if (classification === "permanent") {
+            // Reported even when this started its own thread, unlike a reply: a bounce names the
+            // failed address outright (Final-Recipient), so it can be correlated without threading.
             bouncesDetected++;
-            await params.onBounceDetected?.(result.threadId);
-          } else {
+            await params.onBounceDetected?.(result.threadId, extractFailedRecipient(normalized.bodyText));
+          } else if (classification === "transient") {
+            transientBouncesDetected++;
+          } else if (result.outcome !== "new-thread") {
+            // A reply still requires threading -- an inbound message that matches nothing we sent
+            // is not a reply to us.
             repliesDetected++;
             await params.onReplyDetected?.(normalized.from, result.threadId, {
               subject: normalized.subject,
@@ -139,5 +153,5 @@ export async function syncInboxForAccount(params: SyncInboxParams): Promise<Sync
   }
 
   await params.repo.setSyncCursor(params.accountId, changeSet.cursor);
-  return { newMessageCount, repliesDetected, bouncesDetected, failedRefs };
+  return { newMessageCount, repliesDetected, bouncesDetected, transientBouncesDetected, failedRefs };
 }

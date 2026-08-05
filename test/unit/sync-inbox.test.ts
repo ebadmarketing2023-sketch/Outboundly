@@ -307,7 +307,10 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
     expect(result.repliesDetected).toBe(0);
   });
 
-  it("does not invoke onBounceDetected for a bounce-looking message that starts a new/cold thread (nothing to correlate it to)", async () => {
+  it("reports a bounce that arrived as its own new thread, naming the address the DSN says failed", async () => {
+    // Plenty of MTAs send a DSN as a fresh message carrying the original only as an attachment,
+    // with no In-Reply-To to thread on. Requiring a thread match meant those bounces were ingested,
+    // matched nothing, and the campaign carried on mailing an address that had already hard-bounced.
     const repo = new InMemoryConversationRepository();
 
     const provider = new FakeMailProvider({
@@ -317,23 +320,72 @@ describe("syncInboxForAccount (Section 11 orchestration)", () => {
         from: "mailer-daemon@example.com",
         to: ["me@outboundly.app"],
         subject: "Undelivered Mail Returned to Sender",
+        bodyText: "Final-Recipient: rfc822; lead@example.com\nAction: failed\nStatus: 5.1.1",
         date: new Date()
       }
     });
 
-    const detectedThreads: string[] = [];
+    const detected: Array<{ threadId: string; failedRecipient?: string }> = [];
     const result = await syncInboxForAccount({
       accountId: "acct-1",
       accountRef,
       provider,
       repo,
+      onBounceDetected: async (threadId, failedRecipient) => {
+        detected.push({ threadId, failedRecipient });
+      }
+    });
+
+    expect(detected).toHaveLength(1);
+    expect(detected[0]?.failedRecipient).toBe("lead@example.com");
+    expect(result.bouncesDetected).toBe(1);
+    expect(result.repliesDetected).toBe(0);
+  });
+
+  it("does not stop anything for a delay notice, and does not mistake it for a reply either", async () => {
+    // The lead's mail is still in flight. Stopping the sequence here writes off a live lead.
+    const repo = new InMemoryConversationRepository();
+
+    const provider = new FakeMailProvider({
+      "msg-parent": {
+        providerMessageId: "msg-parent",
+        messageIdHeader: "<parent@x>",
+        from: "me@outboundly.app",
+        to: ["lead@example.com"],
+        subject: "Quick question",
+        date: new Date()
+      },
+      "msg-delay": {
+        providerMessageId: "msg-delay",
+        messageIdHeader: "<delay@x>",
+        inReplyToHeader: "<parent@x>",
+        from: "mailer-daemon@googlemail.com",
+        to: ["me@outboundly.app"],
+        subject: "Delivery Status Notification (Delay)",
+        bodyText: "Final-Recipient: rfc822; lead@example.com\nAction: delayed\nStatus: 4.4.1",
+        date: new Date()
+      }
+    });
+
+    const detectedThreads: string[] = [];
+    const detectedFrom: string[] = [];
+    const result = await syncInboxForAccount({
+      accountId: "acct-1",
+      accountRef,
+      provider,
+      repo,
+      onReplyDetected: async (from) => {
+        detectedFrom.push(from);
+      },
       onBounceDetected: async (threadId) => {
         detectedThreads.push(threadId);
       }
     });
 
     expect(detectedThreads).toEqual([]);
+    expect(detectedFrom).toEqual([]);
     expect(result.bouncesDetected).toBe(0);
+    expect(result.transientBouncesDetected).toBe(1);
   });
 
   it("sanitizes a synced message's bodyHtml before it's ever persisted (Section 23)", async () => {

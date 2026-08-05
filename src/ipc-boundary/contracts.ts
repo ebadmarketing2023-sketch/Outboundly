@@ -112,6 +112,9 @@ export interface SyncInboxResponse {
   newMessageCount: number;
   repliesDetected: number;
   bouncesDetected: number;
+  /** Delivery *delay* notices seen. Reported separately because they are deliberately not acted
+   * on -- the message is still in flight, so stopping the sequence would write off a live lead. */
+  transientBouncesDetected: number;
   /** Count of messages that failed to sync (deleted/moved since listing, transient API errors,
    * etc.) without aborting the rest of the sync — see Section 21.3's failure-isolation principle. */
   failedCount: number;
