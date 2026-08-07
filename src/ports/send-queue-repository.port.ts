@@ -47,6 +47,15 @@ export interface SendQueueRepository {
    * lastError -- for the Rate Limiter's retryAfter (Section 16.2) or a momentarily-ineligible
    * Provider Selector result (Section 16.3), neither of which is a failure of the send itself. */
   releaseForRetry(id: SendQueueId, earliestSendAt: Date): Promise<void>;
+  /** Brings every still-pending row for this campaign forward so it is due immediately, returning
+   * how many moved. For "Resume": a queued row carries whatever future timestamp the gate that
+   * last deferred it chose -- a rate-limit denial can push it a full 24 hours out -- and resuming a
+   * campaign otherwise only flips the campaign's own status, leaving those rows sitting on a
+   * timestamp set under conditions that may no longer apply. This makes Resume mean what it looks
+   * like it means. It bypasses nothing: every dispatch-time gate (business hours, per-account
+   * limits, pacing, account eligibility) is re-evaluated on the next tick and will simply defer the
+   * row again if it still has to. */
+  releaseDeferredForCampaign(campaignId: string, now: Date): Promise<number>;
   /** Startup crash recovery (Section 16.2): a row can only ever be left in status='claimed' by a
    * process that died mid-dispatch (the send worker's own try/catch always resolves a claim to a
    * terminal or pending state otherwise), and a fresh process starting up has no in-flight

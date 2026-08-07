@@ -240,6 +240,61 @@ describe("a campaign with more than one sending account", () => {
     expect(sentRows).toHaveLength(DAILY_LIMIT * 2);
   });
 
+  it("Resume releases rows a limit parked a day out, and they then actually send", async () => {
+    // Reported after the rotation fix shipped: rows already deferred 24 hours by the *old* logic
+    // kept that timestamp, so the campaign still looked dead and pausing/resuming changed nothing --
+    // Resume only ever flipped the campaign's status. It now brings the queue forward too.
+    const campaign = await launchCampaignWithLeads(3);
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    db.update(sendQueue).set({ earliestSendAt: tomorrow }).run();
+
+    // Nothing is due, so a tick does nothing at all -- the state the campaign was stuck in.
+    expect((await runSendWorkerTick(sendDeps, new Date())).claimed).toBe(0);
+
+    await fireDeps.campaignRepository.setStatus(campaign.id, "paused");
+    await fireDeps.campaignRepository.setStatus(campaign.id, "running");
+    const released = await fireDeps.sendQueueRepository.releaseDeferredForCampaign(campaign.id, new Date());
+    expect(released).toBe(3);
+
+    await drain();
+
+    expect(provider.sentFrom).toHaveLength(3);
+    expect(db.select().from(sendQueue).all().every((r) => r.status === "sent")).toBe(true);
+  });
+
+  it("releasing does not bypass a limit that still genuinely applies", async () => {
+    // Releasing only makes rows *due*; every dispatch-time gate still runs. With both accounts
+    // already at their daily cap, the released rows must be deferred again rather than sent.
+    const campaign = await launchCampaignWithLeads(2);
+    const justNow = new Date(Date.now() - 60_000);
+    for (const accountId of [accountA, accountB]) {
+      for (let i = 0; i < DAILY_LIMIT; i++) {
+        db.insert(messages)
+          .values({
+            id: generateId(),
+            accountId,
+            sentFromAccountId: accountId,
+            direction: "outbound",
+            status: "sent",
+            fromAddress: "x@outboundly.app",
+            toAddresses: ["someone@example.com"],
+            subject: "s",
+            messageIdHeader: `<cap-${accountId}-${i}@outboundly.app>`,
+            sentAt: justNow,
+            createdAt: justNow,
+            updatedAt: justNow
+          })
+          .run();
+      }
+    }
+
+    await fireDeps.sendQueueRepository.releaseDeferredForCampaign(campaign.id, new Date());
+    await drain();
+
+    expect(provider.sentFrom).toHaveLength(0);
+    expect(db.select().from(sendQueue).all().every((r) => r.status === "pending")).toBe(true);
+  });
+
   it("still sends everything from the one account when a campaign only has one", async () => {
     // Guards the single-account path this change must not disturb.
     const template = await fireDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });

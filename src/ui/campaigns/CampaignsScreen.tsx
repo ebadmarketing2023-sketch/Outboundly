@@ -430,9 +430,13 @@ export function CampaignsScreen(): JSX.Element {
   async function handleSetCampaignStatus(campaignId: string, status: "running" | "paused", successMessage: string): Promise<void> {
     setError(null);
     try {
-      await window.outboundly.setCampaignStatus({ campaignId, status });
+      const result = await window.outboundly.setCampaignStatus({ campaignId, status });
       refreshAll();
-      toast.showToast(successMessage, "success");
+      const released =
+        result?.releasedForSending > 0
+          ? ` ${result.releasedForSending} queued email(s) released to send now.`
+          : "";
+      toast.showToast(`${successMessage}${released}`, "success");
     } catch (err) {
       setError(String(err));
     }

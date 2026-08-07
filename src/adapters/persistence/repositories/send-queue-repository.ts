@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, gt, inArray, lte } from "drizzle-orm";
 import { asAccountId, asMessageId, asSendQueueId, generateId, type SendQueueId } from "../../../core/shared-kernel/ids.js";
 import type {
   EnqueueInput,
@@ -8,7 +8,7 @@ import type {
   SendQueueStatus
 } from "../../../ports/send-queue-repository.port.js";
 import type { OutboundlyDb } from "../db.js";
-import { sendQueue } from "../schema.js";
+import { campaignEnrollments, messages, sendQueue } from "../schema.js";
 
 const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 60_000; // 1 minute, doubling per attempt
@@ -136,6 +136,31 @@ export class SqliteSendQueueRepository implements SendQueueRepository {
       })
       .where(eq(sendQueue.id, row.id))
       .run();
+  }
+
+  async releaseDeferredForCampaign(campaignId: string, now: Date): Promise<number> {
+    const messageIds = this.db
+      .select({ id: messages.id })
+      .from(messages)
+      .innerJoin(campaignEnrollments, eq(messages.campaignEnrollmentId, campaignEnrollments.id))
+      .where(eq(campaignEnrollments.campaignId, campaignId))
+      .all()
+      .map((r) => r.id);
+    if (messageIds.length === 0) return 0;
+
+    const deferred = this.db
+      .select({ id: sendQueue.id })
+      .from(sendQueue)
+      .where(and(inArray(sendQueue.messageId, messageIds), eq(sendQueue.status, "pending"), gt(sendQueue.earliestSendAt, now)))
+      .all();
+    if (deferred.length === 0) return 0;
+
+    this.db
+      .update(sendQueue)
+      .set({ earliestSendAt: now })
+      .where(inArray(sendQueue.id, deferred.map((r) => r.id)))
+      .run();
+    return deferred.length;
   }
 
   async requeueOrphanedClaims(now: Date): Promise<number> {

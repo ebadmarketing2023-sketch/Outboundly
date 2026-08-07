@@ -328,6 +328,12 @@ export interface SetCampaignStatusRequest {
   status: string;
 }
 
+export interface SetCampaignStatusResponse {
+  /** How many queued emails Resume brought forward to be due immediately. Reported so resuming a
+   * stalled campaign visibly does something, rather than looking identical to a no-op. */
+  releasedForSending: number;
+}
+
 /** Campaign-creation wizard (Section 5.6): one atomic template+subject pair for the first step.
  * Weight is a share, not required to sum to 100 -- selectWeightedVariant normalizes against
  * whatever total the groups actually add up to. */
@@ -682,7 +688,7 @@ export interface OutboundlyRendererApi {
   diagnoseCampaign(request: DiagnoseCampaignRequest): Promise<CampaignDiagnosisSummary>;
   updateCampaign(request: UpdateCampaignRequest): Promise<CampaignSummary>;
   deleteCampaign(request: DeleteCampaignRequest): Promise<void>;
-  setCampaignStatus(request: SetCampaignStatusRequest): Promise<void>;
+  setCampaignStatus(request: SetCampaignStatusRequest): Promise<SetCampaignStatusResponse>;
   enrollContacts(request: EnrollContactsRequest): Promise<EnrollContactsResponse>;
   enrollContactsFromCsv(request: EnrollContactsFromCsvRequest): Promise<EnrollContactsFromCsvResponse>;
   enrollContactsFromBatch(request: EnrollContactsFromBatchRequest): Promise<EnrollContactsResponse>;

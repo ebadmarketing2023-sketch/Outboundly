@@ -1139,6 +1139,13 @@ function registerIpcHandlers() {
 
   ipcMain.handle("campaigns:setStatus", async (_event, request) => {
     await campaignRepository.setStatus(request.campaignId, request.status);
+    // Resuming re-evaluates the queue now instead of leaving rows sitting on whatever future
+    // timestamp the gate that last deferred them chose (a rate-limit denial parks a row a full day
+    // out). Nothing is bypassed -- every dispatch-time check runs again on the next tick.
+    if (request.status === "running") {
+      return { releasedForSending: await sendQueueRepository.releaseDeferredForCampaign(request.campaignId, new Date()) };
+    }
+    return { releasedForSending: 0 };
   });
 
   ipcMain.handle("campaigns:enrollContacts", async (_event, request) => {
