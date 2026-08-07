@@ -295,6 +295,55 @@ describe("a campaign with more than one sending account", () => {
     expect(db.select().from(sendQueue).all().every((r) => r.status === "pending")).toBe(true);
   });
 
+  it("releasing never overrides the campaign's schedule: outside its hours, nothing goes out", async () => {
+    // The guarantee that matters: Resume makes rows *due*, it does not send them. The
+    // business-hours check runs at dispatch, before anything reaches the provider, so a released
+    // row outside the window is simply deferred again to the next opening. Resume can never push
+    // an email out at 3am.
+    const weekday = [{ start: "09:00", end: "17:00" }];
+    const officeHours = await fireDeps.businessHoursProfileRepository.create({
+      name: "Weekdays 9-5 UTC",
+      timezone: "UTC",
+      windows: { monday: weekday, tuesday: weekday, wednesday: weekday, thursday: weekday, friday: weekday }
+    });
+    const campaign = await launchCampaignWithLeads(3);
+    await fireDeps.campaignRepository.update(campaign.id, { businessHoursProfileId: officeHours.id });
+
+    // Everything released and due right now -- exactly the state Resume leaves the queue in.
+    const released = await fireDeps.sendQueueRepository.releaseDeferredForCampaign(campaign.id, new Date());
+    void released;
+    db.update(sendQueue).set({ earliestSendAt: new Date(Date.now() - 60_000) }).run();
+
+    // 03:00 on a Wednesday: due, but hours away from the window opening.
+    const middleOfTheNight = new Date(Date.UTC(2030, 0, 9, 3, 0, 0));
+    const result = await runSendWorkerTick(sendDeps, middleOfTheNight);
+
+    expect(provider.sentFrom).toHaveLength(0);
+    expect(result.sent).toBe(0);
+    expect(result.retried).toBeGreaterThan(0);
+    // Pushed to the window opening, not sent and not left due.
+    const rows = db.select().from(sendQueue).all();
+    expect(rows.every((r) => r.status === "pending")).toBe(true);
+    expect(rows.some((r) => r.earliestSendAt.getTime() === Date.UTC(2030, 0, 9, 9, 0, 0))).toBe(true);
+  });
+
+  it("and once the window is open, those same rows go out normally", async () => {
+    const weekday = [{ start: "09:00", end: "17:00" }];
+    const officeHours = await fireDeps.businessHoursProfileRepository.create({
+      name: "Weekdays 9-5 UTC",
+      timezone: "UTC",
+      windows: { monday: weekday, tuesday: weekday, wednesday: weekday, thursday: weekday, friday: weekday }
+    });
+    const campaign = await launchCampaignWithLeads(3);
+    await fireDeps.campaignRepository.update(campaign.id, { businessHoursProfileId: officeHours.id });
+    db.update(sendQueue).set({ earliestSendAt: new Date(Date.now() - 60_000) }).run();
+
+    const duringOfficeHours = new Date(Date.UTC(2030, 0, 9, 10, 0, 0));
+    for (let i = 0; i < 5; i++) await runSendWorkerTick(sendDeps, duringOfficeHours);
+
+    expect(provider.sentFrom).toHaveLength(3);
+  });
+
   it("still sends everything from the one account when a campaign only has one", async () => {
     // Guards the single-account path this change must not disturb.
     const template = await fireDeps.templateRepository.create({ name: "T", document: { blocks: [paragraph(textRun("Hi"))] } });

@@ -434,7 +434,7 @@ export function CampaignsScreen(): JSX.Element {
       refreshAll();
       const released =
         result?.releasedForSending > 0
-          ? ` ${result.releasedForSending} queued email(s) released to send now.`
+          ? ` ${result.releasedForSending} queued email(s) will be re-checked on the next send cycle.`
           : "";
       toast.showToast(`${successMessage}${released}`, "success");
     } catch (err) {

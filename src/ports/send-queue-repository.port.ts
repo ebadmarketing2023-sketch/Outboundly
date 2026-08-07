@@ -54,7 +54,9 @@ export interface SendQueueRepository {
    * timestamp set under conditions that may no longer apply. This makes Resume mean what it looks
    * like it means. It bypasses nothing: every dispatch-time gate (business hours, per-account
    * limits, pacing, account eligibility) is re-evaluated on the next tick and will simply defer the
-   * row again if it still has to. */
+   * row again if it still has to. In particular this can never push an email outside the campaign's
+   * own sending hours: the window is checked at dispatch, before anything reaches the provider, so a
+   * released row outside it is re-deferred to the next opening rather than sent. */
   releaseDeferredForCampaign(campaignId: string, now: Date): Promise<number>;
   /** Startup crash recovery (Section 16.2): a row can only ever be left in status='claimed' by a
    * process that died mid-dispatch (the send worker's own try/catch always resolves a claim to a
