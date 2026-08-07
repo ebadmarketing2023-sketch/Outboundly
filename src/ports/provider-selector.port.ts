@@ -14,6 +14,9 @@ export interface ProviderSelectionInput {
   excludedAccountIds: AccountId[];
   strategy: RotationStrategy;
   campaignId?: CampaignId;
+  /** The queue row being dispatched, so the Rate Limiter doesn't count it as competing with
+   * itself when screening candidates. See RateLimiter.CheckOptions. */
+  excludeSendQueueId?: string;
 }
 
 export type ProviderSelectionResult =

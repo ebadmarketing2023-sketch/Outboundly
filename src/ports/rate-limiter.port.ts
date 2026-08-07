@@ -2,6 +2,14 @@ import type { AccountId, CampaignId } from "../core/shared-kernel/ids.js";
 
 export type RateLimitDecision = { allowed: true } | { allowed: false; retryAfter: Date; reason: string };
 
+export interface CheckOptions {
+  /** The queue row this check is deciding about, so it isn't counted as in-flight competition with
+   * itself. In-flight rows exist to stop *other* concurrent dispatches pushing an account over its
+   * ceiling; counting the row under consideration as well asks "would sending this put me over?"
+   * and then adds it twice, which capped every account one send below its own configured limit. */
+  excludeSendQueueId?: string;
+}
+
 /** Authoritative admission control, consulted immediately before a claimed queue row is actually
  * dispatched (Section 16.2) — distinct from the Scheduling Policy Engine's Rate Limit Policy
  * (Section 15.4), which is predictive/soft and runs long before dispatch. Counts recent sent
@@ -13,7 +21,7 @@ export interface RateLimiter {
    * side effects — safe to call any number of times per real dispatch attempt, including once
    * directly and again per candidate account the Provider Selector screens for rotation-pool
    * eligibility. Committing to a send is a separate, deliberate step: see reserveNextSend. */
-  checkAndReserve(accountId: AccountId, campaignId?: CampaignId): RateLimitDecision;
+  checkAndReserve(accountId: AccountId, campaignId?: CampaignId, options?: CheckOptions): RateLimitDecision;
   /** Commits this account's next randomized send-pacing window (Critical Improvement #1). Call
    * exactly once, right when a send through this specific account is actually about to be
    * dispatched — never from an eligibility check, since eligibility may be evaluated more than

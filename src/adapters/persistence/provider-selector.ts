@@ -10,6 +10,7 @@ import type {
 import type { RateLimiter } from "../../ports/rate-limiter.port.js";
 import type { OutboundlyDb } from "./db.js";
 import { accounts, messages } from "./schema.js";
+import { sentByAccount } from "./sent-by-account.js";
 
 const CRITICAL_RISK_LEVEL = "critical";
 
@@ -33,7 +34,7 @@ export class SqliteProviderSelector implements ProviderSelector {
   async select(input: ProviderSelectionInput): Promise<ProviderSelectionResult> {
     const excluded = new Set(input.excludedAccountIds);
 
-    if (!excluded.has(input.candidateAccountId) && (await this.isEligible(input.candidateAccountId, input.campaignId))) {
+    if (!excluded.has(input.candidateAccountId) && (await this.isEligible(input.candidateAccountId, input.campaignId, input.excludeSendQueueId))) {
       return { selected: true, accountId: input.candidateAccountId, substituted: false };
     }
 
@@ -43,7 +44,7 @@ export class SqliteProviderSelector implements ProviderSelector {
 
     const eligibleAlternatives: AccountId[] = [];
     for (const accountId of alternatives) {
-      if (await this.isEligible(accountId, input.campaignId)) eligibleAlternatives.push(accountId);
+      if (await this.isEligible(accountId, input.campaignId, input.excludeSendQueueId)) eligibleAlternatives.push(accountId);
     }
 
     if (eligibleAlternatives.length === 0) {
@@ -54,14 +55,14 @@ export class SqliteProviderSelector implements ProviderSelector {
     return { selected: true, accountId: chosen, substituted: true };
   }
 
-  private async isEligible(accountId: AccountId, campaignId?: CampaignId): Promise<boolean> {
+  private async isEligible(accountId: AccountId, campaignId?: CampaignId, excludeSendQueueId?: string): Promise<boolean> {
     const account = this.db.select().from(accounts).where(eq(accounts.id, accountId)).get();
     if (!account || account.status !== "connected") return false;
 
     const snapshot = await this.accountHealthRepository.getLatest(accountId);
     if (snapshot?.result.riskLevel === CRITICAL_RISK_LEVEL) return false;
 
-    return this.rateLimiter.checkAndReserve(accountId, campaignId).allowed;
+    return this.rateLimiter.checkAndReserve(accountId, campaignId, { excludeSendQueueId }).allowed;
   }
 
   private async rankByStrategy(
@@ -101,7 +102,7 @@ export class SqliteProviderSelector implements ProviderSelector {
     const row = this.db
       .select()
       .from(messages)
-      .where(and(eq(messages.accountId, accountId), eq(messages.direction, "outbound"), eq(messages.status, "sent")))
+      .where(and(sentByAccount(accountId), eq(messages.direction, "outbound"), eq(messages.status, "sent")))
       .orderBy(desc(messages.sentAt))
       .get();
     return row?.sentAt ?? undefined;

@@ -8,6 +8,7 @@ import type { DelayPolicyConfigRepository } from "../../ports/delay-policy-confi
 import type { WarmupProfileRepository } from "../../ports/warmup-profile-repository.port.js";
 import type { OutboundlyDb } from "./db.js";
 import { accounts, messages } from "./schema.js";
+import { sentByAccount } from "./sent-by-account.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -93,7 +94,7 @@ function countRecentSends(db: OutboundlyDb, accountId: AccountId, now: Date): { 
   const sentLast24h = db
     .select()
     .from(messages)
-    .where(and(eq(messages.accountId, accountId), eq(messages.direction, "outbound"), eq(messages.status, "sent"), gte(messages.sentAt, since24h)))
+    .where(and(sentByAccount(accountId), eq(messages.direction, "outbound"), eq(messages.status, "sent"), gte(messages.sentAt, since24h)))
     .all();
 
   const sinceLastHour = new Date(now.getTime() - HOUR_MS);

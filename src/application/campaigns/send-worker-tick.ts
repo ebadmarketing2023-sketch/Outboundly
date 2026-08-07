@@ -90,6 +90,39 @@ export interface SendWorkerTickResult {
 
 type DispatchOutcome = "sent" | "retried" | "failed" | "bounced";
 
+interface PoolAvailability {
+  /** True when no account in the pool is even usable -- none connected, or every connected one is
+   * refused for a reason the Rate Limiter isn't responsible for (i.e. Account Health). */
+  structurallyUnavailable: boolean;
+  /** The soonest a queued row could plausibly be taken by *any* account in the pool. */
+  earliestRetryAt?: Date;
+}
+
+/** Why the whole rotation pool refused, so the caller can tell "everyone is at quota, wait" apart
+ * from "nothing here can ever send until someone intervenes". */
+function describePoolAvailability(deps: SendWorkerDeps, rotationPool: AccountId[], claimedId: string): PoolAvailability {
+  let anyConnected = false;
+  let anyAllowedByLimiter = false;
+  let earliestRetryAt: Date | undefined;
+
+  for (const accountId of rotationPool) {
+    if (!getAccountRef(deps.db, accountId)) continue;
+    const decision = deps.rateLimiter.checkAndReserve(accountId, undefined, { excludeSendQueueId: claimedId });
+    anyConnected = true;
+    if (decision.allowed) {
+      anyAllowedByLimiter = true;
+      continue;
+    }
+    if (decision.retryAfter && (!earliestRetryAt || decision.retryAfter < earliestRetryAt)) {
+      earliestRetryAt = decision.retryAfter;
+    }
+  }
+
+  // An account the limiter would allow, that the selector still refused, was refused on health or
+  // connection grounds -- which is the kind that needs a human.
+  return { structurallyUnavailable: !anyConnected || anyAllowedByLimiter, earliestRetryAt };
+}
+
 async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: Date): Promise<DispatchOutcome> {
   const message = await deps.conversationRepository.findMessageById(claimed.messageId);
   if (!message) {
@@ -99,11 +132,15 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     return "failed";
   }
 
-  const rateDecision = deps.rateLimiter.checkAndReserve(claimed.accountId);
-  if (!rateDecision.allowed) {
-    await deps.sendQueueRepository.releaseForRetry(claimed.id, rateDecision.retryAfter);
-    return "retried";
-  }
+  // The Rate Limiter is deliberately *not* consulted for claimed.accountId here. It used to be, and
+  // returning on its denial meant the Provider Selector below -- the one component that knows the
+  // campaign's rotation pool -- never ran. A campaign with two accounts capped at 5/day therefore
+  // sent ~5 from whichever account the Scheduler happened to pin the batch to and parked the rest
+  // for a full 24 hours, with the second account completely idle, which makes selecting more than
+  // one account pointless. The per-account check still happens, per candidate, inside
+  // ProviderSelector.isEligible -- so no account can exceed its own limit; the difference is that
+  // an account being at its limit now means "try the next one", not "hold everything until
+  // tomorrow".
 
   // Resolved before the campaign checks below rather than at the point of use, because the
   // business-hours re-check needs this contact's own timezone -- the same one the Timezone Policy
@@ -163,19 +200,18 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     // Campaigns don't persist a configured rotation strategy yet (Section 5.6) — round-robin is a
     // safe, deterministic default until that's added.
     strategy: "round-robin",
-    campaignId
+    campaignId,
+    excludeSendQueueId: claimed.id
   });
   if (!selection.selected) {
-    // Unlike the other holds, this one does not clear on its own. A disconnected account, or one
-    // Account Health has flagged critical, stays ineligible until a human does something -- so
-    // retrying every five minutes in silence means a campaign reads "Running" indefinitely with a
-    // full queue and no emails. Raised once per account per process so it is a single alert rather
-    // than one every tick.
-    if (!reportedIneligibleAccounts.has(claimed.accountId)) {
+    const pool = describePoolAvailability(deps, rotationPool, claimed.id);
+    // Two very different situations reach here, and conflating them is what made this invisible:
+    // every account merely being at its quota (normal, clears on its own) versus every account
+    // being unusable (disconnected, or health-critical) which never clears without a human.
+    if (pool.structurallyUnavailable && !reportedIneligibleAccounts.has(claimed.accountId)) {
       reportedIneligibleAccounts.add(claimed.accountId);
-      const accountRef = getAccountRef(deps.db, claimed.accountId);
-      const who = accountRef?.emailAddress ?? claimed.accountId;
-      const message = `No sending account is currently eligible for this campaign (${who}), so its queued emails are being held. The usual causes are an account that needs reconnecting, or one Account Health has flagged critical.`;
+      const who = rotationPool.map((id) => getAccountRef(deps.db, id)?.emailAddress ?? id).join(", ");
+      const message = `No sending account for this campaign can send (${who}). Queued emails are being held until one is usable again — the usual causes are an account that needs reconnecting, or one Account Health has flagged critical.`;
       await logSendFailure(deps, now, { errorType: "no_eligible_account", errorMessage: message, campaignId, accountId: claimed.accountId });
       await deps.notificationRepository.record({
         notificationType: "send_failure",
@@ -186,7 +222,10 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
         createdAt: now
       });
     }
-    await deps.sendQueueRepository.releaseForRetry(claimed.id, new Date(now.getTime() + NO_ACCOUNT_RETRY_MS));
+    // Held until the soonest moment any account in the pool could take it, rather than whatever
+    // the originally-pinned account's own window happened to be.
+    const retryAt = pool.earliestRetryAt ?? new Date(now.getTime() + NO_ACCOUNT_RETRY_MS);
+    await deps.sendQueueRepository.releaseForRetry(claimed.id, retryAt);
     return "retried";
   }
 

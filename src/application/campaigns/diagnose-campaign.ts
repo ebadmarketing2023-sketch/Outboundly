@@ -1,6 +1,7 @@
 import { and, eq, gte, inArray } from "drizzle-orm";
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
 import { accounts, messages, sendQueue } from "../../adapters/persistence/schema.js";
+import { sentByAccount } from "../../adapters/persistence/sent-by-account.js";
 import { isWithinBusinessHours, nextWindowOpening } from "../../core/scheduling/business-hours-window.js";
 import { asAccountId, type CampaignId } from "../../core/shared-kernel/ids.js";
 import type { AccountHealthRepository } from "../../ports/account-health-repository.port.js";
@@ -66,7 +67,7 @@ function countSentSince(db: OutboundlyDb, accountId: string, since: Date): numbe
     .from(messages)
     .where(
       and(
-        eq(messages.accountId, accountId),
+        sentByAccount(accountId),
         eq(messages.direction, "outbound"),
         eq(messages.status, "sent"),
         gte(messages.sentAt, since)

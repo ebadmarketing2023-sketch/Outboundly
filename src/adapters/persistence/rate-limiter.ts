@@ -1,8 +1,9 @@
 import { and, eq, gte } from "drizzle-orm";
-import type { AccountId } from "../../core/shared-kernel/ids.js";
-import type { RateLimitDecision, RateLimiter } from "../../ports/rate-limiter.port.js";
+import type { AccountId, CampaignId } from "../../core/shared-kernel/ids.js";
+import type { CheckOptions, RateLimitDecision, RateLimiter } from "../../ports/rate-limiter.port.js";
 import type { OutboundlyDb } from "./db.js";
 import { accounts, messages, sendQueue } from "./schema.js";
+import { sentByAccount } from "./sent-by-account.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -44,7 +45,7 @@ const DEFAULT_IN_FLIGHT_RETRY_MS = 5 * 60 * 1000; // no confirmed-sent timestamp
 export class SqliteRateLimiter implements RateLimiter {
   constructor(private readonly db: OutboundlyDb) {}
 
-  checkAndReserve(accountId: AccountId): RateLimitDecision {
+  checkAndReserve(accountId: AccountId, _campaignId?: CampaignId, options?: CheckOptions): RateLimitDecision {
     const account = this.db.select().from(accounts).where(eq(accounts.id, accountId)).get();
     const dailyLimit = account?.dailySendLimit ?? undefined;
     const hourlyLimit = account?.hourlySendLimit ?? undefined;
@@ -53,7 +54,8 @@ export class SqliteRateLimiter implements RateLimiter {
       .select()
       .from(sendQueue)
       .where(and(eq(sendQueue.accountId, accountId), eq(sendQueue.status, "claimed")))
-      .all().length;
+      .all()
+      .filter((row) => row.id !== options?.excludeSendQueueId).length;
 
     if (dailyLimit !== undefined) {
       const decision = this.checkWindow(accountId, dailyLimit, DAY_MS, claimedCount, "daily");
@@ -115,7 +117,7 @@ export class SqliteRateLimiter implements RateLimiter {
     const sent = this.db
       .select()
       .from(messages)
-      .where(and(eq(messages.accountId, accountId), eq(messages.direction, "outbound"), eq(messages.status, "sent"), gte(messages.sentAt, since)))
+      .where(and(sentByAccount(accountId), eq(messages.direction, "outbound"), eq(messages.status, "sent"), gte(messages.sentAt, since)))
       .all();
 
     const effectiveCount = sent.length + claimedCount;

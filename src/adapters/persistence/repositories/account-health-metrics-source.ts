@@ -3,6 +3,7 @@ import type { AccountId } from "../../../core/shared-kernel/ids.js";
 import type { AccountHealthMetricsSource, AccountMetrics } from "../../../ports/account-health-metrics.port.js";
 import type { OutboundlyDb } from "../db.js";
 import { accounts, messages } from "../schema.js";
+import { sentByAccount } from "../sent-by-account.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REPLY_RATE_LOOKBACK_DAYS = 30;
@@ -28,7 +29,7 @@ export class SqliteAccountHealthMetricsSource implements AccountHealthMetricsSou
     const outboundSince7d = this.db
       .select()
       .from(messages)
-      .where(and(eq(messages.accountId, accountId), eq(messages.direction, "outbound"), gte(messages.sentAt, last7d)))
+      .where(and(sentByAccount(accountId), eq(messages.direction, "outbound"), gte(messages.sentAt, last7d)))
       .all();
 
     const sendsLast24h = outboundSince7d.filter((m) => (m.sentAt ?? new Date(0)) >= last24h).length;
@@ -48,7 +49,7 @@ export class SqliteAccountHealthMetricsSource implements AccountHealthMetricsSou
     const outbound = this.db
       .select()
       .from(messages)
-      .where(and(eq(messages.accountId, accountId), eq(messages.direction, "outbound"), gte(messages.sentAt, since)))
+      .where(and(sentByAccount(accountId), eq(messages.direction, "outbound"), gte(messages.sentAt, since)))
       .all();
 
     const threadIds = new Set(outbound.map((m) => m.threadId).filter((id): id is string => Boolean(id)));
@@ -71,7 +72,7 @@ export class SqliteAccountHealthMetricsSource implements AccountHealthMetricsSou
     const outbound = this.db
       .select()
       .from(messages)
-      .where(and(eq(messages.accountId, accountId), eq(messages.direction, "outbound"), gte(messages.sentAt, since)))
+      .where(and(sentByAccount(accountId), eq(messages.direction, "outbound"), gte(messages.sentAt, since)))
       .all();
 
     const perDay = new Map<string, number>();
