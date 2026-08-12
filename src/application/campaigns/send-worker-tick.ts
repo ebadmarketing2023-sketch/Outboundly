@@ -1,4 +1,6 @@
+import { eq } from "drizzle-orm";
 import { getAccountRef } from "../../adapters/persistence/campaign-scheduling-support.js";
+import { accounts as accountsTable } from "../../adapters/persistence/schema.js";
 import type { OutboundlyDb } from "../../adapters/persistence/db.js";
 import { isPermanentSmtpRejection } from "../../core/campaigns/bounce-detection.js";
 import { isWithinBusinessHours, nextWindowOpening } from "../../core/scheduling/business-hours-window.js";
@@ -98,17 +100,34 @@ interface PoolAvailability {
   earliestRetryAt?: Date;
 }
 
+/**
+ * Every deferral must land strictly in the future. A release time of "now" (or earlier) puts the
+ * row straight back into the same tick's claim loop, which re-defers it, claims it again, and burns
+ * the whole per-tick budget churning one row -- while its due time visibly jitters. The rolling
+ * windows make this reachable: a daily denial's retryAfter is oldestSentAt + 24h, which lands on
+ * roughly *now* the moment the oldest send is about to age out.
+ */
+const MIN_DEFER_MS = 30_000;
+
+function deferUntil(now: Date, candidate: Date | undefined, fallbackMs: number): Date {
+  const floor = now.getTime() + MIN_DEFER_MS;
+  const target = candidate?.getTime() ?? now.getTime() + fallbackMs;
+  return new Date(Math.max(target, floor));
+}
+
 /** Why the whole rotation pool refused, so the caller can tell "everyone is at quota, wait" apart
  * from "nothing here can ever send until someone intervenes". */
-function describePoolAvailability(deps: SendWorkerDeps, rotationPool: AccountId[], claimedId: string): PoolAvailability {
-  let anyConnected = false;
+function describePoolAvailability(deps: SendWorkerDeps, rotationPool: AccountId[], claimedId: string, now: Date): PoolAvailability {
+  let anyUsable = false;
   let anyAllowedByLimiter = false;
   let earliestRetryAt: Date | undefined;
 
   for (const accountId of rotationPool) {
-    if (!getAccountRef(deps.db, accountId)) continue;
-    const decision = deps.rateLimiter.checkAndReserve(accountId, undefined, { excludeSendQueueId: claimedId });
-    anyConnected = true;
+    const account = deps.db.select().from(accountsTable).where(eq(accountsTable.id, accountId)).get();
+    // Existing *and* connected: a removed or disconnected mailbox is not something waiting will fix.
+    if (!account || account.status !== "connected") continue;
+    anyUsable = true;
+    const decision = deps.rateLimiter.checkAndReserve(accountId, undefined, { excludeSendQueueId: claimedId, now });
     if (decision.allowed) {
       anyAllowedByLimiter = true;
       continue;
@@ -118,9 +137,9 @@ function describePoolAvailability(deps: SendWorkerDeps, rotationPool: AccountId[
     }
   }
 
-  // An account the limiter would allow, that the selector still refused, was refused on health or
-  // connection grounds -- which is the kind that needs a human.
-  return { structurallyUnavailable: !anyConnected || anyAllowedByLimiter, earliestRetryAt };
+  // An account the limiter would allow, that the selector still refused, was refused on health
+  // grounds -- which, like having no usable account at all, needs a human rather than time.
+  return { structurallyUnavailable: !anyUsable || anyAllowedByLimiter, earliestRetryAt };
 }
 
 async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: Date): Promise<DispatchOutcome> {
@@ -165,7 +184,7 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
       // campaign genuinely stops dispatching, and the exact same row picks back up once resumed --
       // nothing is lost or skipped, just held.
       if (campaign.status !== "running") {
-        await deps.sendQueueRepository.releaseForRetry(claimed.id, new Date(now.getTime() + PAUSED_CAMPAIGN_RETRY_MS));
+        await deps.sendQueueRepository.releaseForRetry(claimed.id, deferUntil(now, undefined, PAUSED_CAMPAIGN_RETRY_MS));
         return "retried";
       }
 
@@ -183,7 +202,7 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
         senderTimeZone = profile.timezone;
         const timezone = contact?.timezone ?? profile.timezone;
         if (!isWithinBusinessHours(now, profile, timezone)) {
-          await deps.sendQueueRepository.releaseForRetry(claimed.id, nextWindowOpening(now, profile, timezone));
+          await deps.sendQueueRepository.releaseForRetry(claimed.id, deferUntil(now, nextWindowOpening(now, profile, timezone), NO_ACCOUNT_RETRY_MS));
           return "retried";
         }
       }
@@ -201,10 +220,11 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     // safe, deterministic default until that's added.
     strategy: "round-robin",
     campaignId,
-    excludeSendQueueId: claimed.id
+    excludeSendQueueId: claimed.id,
+    now
   });
   if (!selection.selected) {
-    const pool = describePoolAvailability(deps, rotationPool, claimed.id);
+    const pool = describePoolAvailability(deps, rotationPool, claimed.id, now);
     // Two very different situations reach here, and conflating them is what made this invisible:
     // every account merely being at its quota (normal, clears on its own) versus every account
     // being unusable (disconnected, or health-critical) which never clears without a human.
@@ -224,8 +244,7 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
     }
     // Held until the soonest moment any account in the pool could take it, rather than whatever
     // the originally-pinned account's own window happened to be.
-    const retryAt = pool.earliestRetryAt ?? new Date(now.getTime() + NO_ACCOUNT_RETRY_MS);
-    await deps.sendQueueRepository.releaseForRetry(claimed.id, retryAt);
+    await deps.sendQueueRepository.releaseForRetry(claimed.id, deferUntil(now, pool.earliestRetryAt, NO_ACCOUNT_RETRY_MS));
     return "retried";
   }
 
@@ -233,7 +252,7 @@ async function dispatchOne(deps: SendWorkerDeps, claimed: SendQueueEntry, now: D
   // actually selected (which may differ from claimed.accountId if the Provider Selector
   // substituted), and only now that dispatch is truly committed, not during the eligibility checks
   // above (see RateLimiter.reserveNextSend's doc comment for why those must stay side-effect-free).
-  deps.rateLimiter.reserveNextSend(selection.accountId);
+  deps.rateLimiter.reserveNextSend(selection.accountId, now);
   reportedIneligibleAccounts.delete(selection.accountId);
 
   if (!message.draftId) {

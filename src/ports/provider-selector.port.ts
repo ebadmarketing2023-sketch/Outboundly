@@ -17,6 +17,8 @@ export interface ProviderSelectionInput {
   /** The queue row being dispatched, so the Rate Limiter doesn't count it as competing with
    * itself when screening candidates. See RateLimiter.CheckOptions. */
   excludeSendQueueId?: string;
+  /** The instant to evaluate eligibility at, so the selector and its caller share one clock. */
+  now?: Date;
 }
 
 export type ProviderSelectionResult =

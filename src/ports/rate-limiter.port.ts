@@ -3,6 +3,11 @@ import type { AccountId, CampaignId } from "../core/shared-kernel/ids.js";
 export type RateLimitDecision = { allowed: true } | { allowed: false; retryAfter: Date; reason: string };
 
 export interface CheckOptions {
+  /** The instant to evaluate against. The Send worker is driven by an injected clock and every
+   * other component on the path honours it; this one used to read wall-clock time internally, so
+   * the limiter could disagree with the scheduler that called it, and no time-dependent scheduling
+   * behaviour could be tested deterministically. Defaults to now. */
+  now?: Date;
   /** The queue row this check is deciding about, so it isn't counted as in-flight competition with
    * itself. In-flight rows exist to stop *other* concurrent dispatches pushing an account over its
    * ceiling; counting the row under consideration as well asks "would sending this put me over?"
@@ -30,5 +35,5 @@ export interface RateLimiter {
    * check re-invoked checkAndReserve for the same account moments after dispatchOne's explicit
    * check had just reserved a fresh window, so that second check always failed and the message
    * could never actually go out. A no-op if the account has no delay range configured. */
-  reserveNextSend(accountId: AccountId): void;
+  reserveNextSend(accountId: AccountId, now?: Date): void;
 }

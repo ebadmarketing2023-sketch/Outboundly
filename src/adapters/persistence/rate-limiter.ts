@@ -46,6 +46,7 @@ export class SqliteRateLimiter implements RateLimiter {
   constructor(private readonly db: OutboundlyDb) {}
 
   checkAndReserve(accountId: AccountId, _campaignId?: CampaignId, options?: CheckOptions): RateLimitDecision {
+    const now = options?.now ?? new Date();
     const account = this.db.select().from(accounts).where(eq(accounts.id, accountId)).get();
     const dailyLimit = account?.dailySendLimit ?? undefined;
     const hourlyLimit = account?.hourlySendLimit ?? undefined;
@@ -58,16 +59,16 @@ export class SqliteRateLimiter implements RateLimiter {
       .filter((row) => row.id !== options?.excludeSendQueueId).length;
 
     if (dailyLimit !== undefined) {
-      const decision = this.checkWindow(accountId, dailyLimit, DAY_MS, claimedCount, "daily");
+      const decision = this.checkWindow(accountId, dailyLimit, DAY_MS, claimedCount, "daily", now);
       if (!decision.allowed) return decision;
     }
 
     if (hourlyLimit !== undefined) {
-      const decision = this.checkWindow(accountId, hourlyLimit, HOUR_MS, claimedCount, "hourly");
+      const decision = this.checkWindow(accountId, hourlyLimit, HOUR_MS, claimedCount, "hourly", now);
       if (!decision.allowed) return decision;
     }
 
-    const pacingDenial = this.checkPacing(account);
+    const pacingDenial = this.checkPacing(account, now);
     if (pacingDenial) return pacingDenial;
 
     return { allowed: true };
@@ -77,13 +78,14 @@ export class SqliteRateLimiter implements RateLimiter {
    * zero-length delay (same convention the Delay Policy already uses). Returns a denial if this
    * account's own randomized delay (set by a prior reserveNextSend call) hasn't elapsed yet. */
   private checkPacing(
-    account: { minSendDelaySeconds: number | null; maxSendDelaySeconds: number | null; nextAllowedSendAt: Date | null } | undefined
+    account: { minSendDelaySeconds: number | null; maxSendDelaySeconds: number | null; nextAllowedSendAt: Date | null } | undefined,
+    now: Date
   ): RateLimitDecision | undefined {
     if (!account) return undefined;
     const { minSendDelaySeconds: min, maxSendDelaySeconds: max } = account;
     if (min == null || max == null) return undefined;
 
-    if (account.nextAllowedSendAt && account.nextAllowedSendAt.getTime() > Date.now()) {
+    if (account.nextAllowedSendAt && account.nextAllowedSendAt.getTime() > now.getTime()) {
       return {
         allowed: false,
         retryAfter: account.nextAllowedSendAt,
@@ -93,7 +95,7 @@ export class SqliteRateLimiter implements RateLimiter {
     return undefined;
   }
 
-  reserveNextSend(accountId: AccountId): void {
+  reserveNextSend(accountId: AccountId, now: Date = new Date()): void {
     const account = this.db.select().from(accounts).where(eq(accounts.id, accountId)).get();
     if (!account) return;
     const { minSendDelaySeconds: min, maxSendDelaySeconds: max } = account;
@@ -101,7 +103,7 @@ export class SqliteRateLimiter implements RateLimiter {
 
     const spanSeconds = Math.max(0, max - min);
     const delaySeconds = min + Math.random() * spanSeconds;
-    const nextAllowedSendAt = new Date(Date.now() + delaySeconds * 1000);
+    const nextAllowedSendAt = new Date(now.getTime() + delaySeconds * 1000);
     this.db.update(accounts).set({ nextAllowedSendAt }).where(eq(accounts.id, accountId)).run();
   }
 
@@ -110,9 +112,9 @@ export class SqliteRateLimiter implements RateLimiter {
     limit: number,
     windowMs: number,
     claimedCount: number,
-    label: "daily" | "hourly"
+    label: "daily" | "hourly",
+    now: Date
   ): RateLimitDecision {
-    const now = new Date();
     const since = new Date(now.getTime() - windowMs);
     const sent = this.db
       .select()

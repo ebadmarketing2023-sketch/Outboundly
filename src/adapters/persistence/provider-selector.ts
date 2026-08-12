@@ -34,7 +34,7 @@ export class SqliteProviderSelector implements ProviderSelector {
   async select(input: ProviderSelectionInput): Promise<ProviderSelectionResult> {
     const excluded = new Set(input.excludedAccountIds);
 
-    if (!excluded.has(input.candidateAccountId) && (await this.isEligible(input.candidateAccountId, input.campaignId, input.excludeSendQueueId))) {
+    if (!excluded.has(input.candidateAccountId) && (await this.isEligible(input.candidateAccountId, input.campaignId, input.excludeSendQueueId, input.now))) {
       return { selected: true, accountId: input.candidateAccountId, substituted: false };
     }
 
@@ -44,7 +44,7 @@ export class SqliteProviderSelector implements ProviderSelector {
 
     const eligibleAlternatives: AccountId[] = [];
     for (const accountId of alternatives) {
-      if (await this.isEligible(accountId, input.campaignId, input.excludeSendQueueId)) eligibleAlternatives.push(accountId);
+      if (await this.isEligible(accountId, input.campaignId, input.excludeSendQueueId, input.now)) eligibleAlternatives.push(accountId);
     }
 
     if (eligibleAlternatives.length === 0) {
@@ -55,14 +55,14 @@ export class SqliteProviderSelector implements ProviderSelector {
     return { selected: true, accountId: chosen, substituted: true };
   }
 
-  private async isEligible(accountId: AccountId, campaignId?: CampaignId, excludeSendQueueId?: string): Promise<boolean> {
+  private async isEligible(accountId: AccountId, campaignId?: CampaignId, excludeSendQueueId?: string, now?: Date): Promise<boolean> {
     const account = this.db.select().from(accounts).where(eq(accounts.id, accountId)).get();
     if (!account || account.status !== "connected") return false;
 
     const snapshot = await this.accountHealthRepository.getLatest(accountId);
     if (snapshot?.result.riskLevel === CRITICAL_RISK_LEVEL) return false;
 
-    return this.rateLimiter.checkAndReserve(accountId, campaignId, { excludeSendQueueId }).allowed;
+    return this.rateLimiter.checkAndReserve(accountId, campaignId, { excludeSendQueueId, now }).allowed;
   }
 
   private async rankByStrategy(
