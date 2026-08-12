@@ -7,6 +7,7 @@ import type { OutboundlyDb } from "../../adapters/persistence/db.js";
 import { enqueueAndAdvanceEnrollment } from "../../adapters/persistence/enqueue-and-advance-support.js";
 import type { CampaignEnrollment } from "../../core/campaigns/campaign.js";
 import { personalizationValuesFor } from "../../core/campaigns/personalize.js";
+import { withQuotedReply } from "../../core/campaigns/reply-quoting.js";
 import { selectWeightedVariant } from "../../core/campaigns/variant-selection.js";
 import type { Document } from "../../core/rendering/document-model.js";
 import { MissingPersonalizationValueError } from "../../core/rendering/document-model.js";
@@ -150,11 +151,21 @@ export async function fireEnrollmentStep(
   const references = priorMessages.length > 0 ? priorMessages.map((m) => m.messageIdHeader) : undefined;
 
   const templateVariants = selectedContentGroup ? [] : await deps.templateVariantRepository.findByTemplateId(template.id);
-  const document: Document = selectedContentGroup
+  const baseDocument: Document = selectedContentGroup
     ? selectedContentGroup.document
     : templateVariants.length === 0
       ? template.document
       : (selectWeightedVariant(templateVariants).documentOverride ?? template.document);
+
+  // A follow-up quotes the message it answers, underneath its own copy, exactly the way a reply
+  // composed by hand does. In-Reply-To/References already thread it for Gmail's Conversation view,
+  // but with that view off (or in a client that threads differently) a bare "Re: ..." with no
+  // quoted text reads as an unrelated second email. The quote makes the follow-up carry its own
+  // context regardless of how the recipient's client is set up.
+  const quoted = originalMessage && mostRecentMessage?.bodyText && mostRecentMessage.sentAt
+    ? { bodyText: mostRecentMessage.bodyText, fromAddress: mostRecentMessage.fromAddress, sentAt: mostRecentMessage.sentAt }
+    : undefined;
+  const document: Document = withQuotedReply(baseDocument, quoted);
 
   let candidate;
   let senderTimeZone: string;

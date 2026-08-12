@@ -49,8 +49,12 @@ function renderBlock(block: BlockNode): string {
         })
         .join("\n");
     case "quote": {
+      // "\n", not "\n\n": Section 8.4's per-line paragraph model already represents a blank line
+      // as its own empty paragraph, exactly as renderPlainText's own top-level join assumes.
+      // Joining with "\n\n" here doubled every blank line inside a quoted message, so a quoted
+      // three-line email came back with two blank lines between each of its lines.
       const attribution = block.attribution ? `${block.attribution}\n` : "";
-      const inner = block.children.map(renderBlock).join("\n\n");
+      const inner = block.children.map(renderBlock).join("\n");
       return attribution + indentQuote(inner);
     }
     case "image":

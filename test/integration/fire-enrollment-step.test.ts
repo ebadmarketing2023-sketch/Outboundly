@@ -164,6 +164,50 @@ describe("fireEnrollmentStep (Section 14.3)", () => {
     expect(message?.fromAddress).toBe('"Ada Lovelace" <me@outboundly.app>');
   });
 
+  it("a follow-up quotes the email it answers, so it reads as a reply without Conversation view", async () => {
+    // Reported: the follow-up arrived as a separate email unless the recipient had Gmail's
+    // Conversation view switched on. Threading headers alone can't fix that -- every real client
+    // solves it by carrying the quoted original underneath, behind the "..." control.
+    const { campaign, sequence } = await setUpTwoStepCampaign([parsePlainTextToDocument("First touch body.")]);
+    const contact = await deps.contactRepository.upsertByEmail({ email: "lead@example.com", firstName: "Ada", source: "manual" });
+    const enrollment = await deps.enrollmentRepository.enroll({
+      campaignId: campaign.id,
+      contactId: contact.id,
+      currentStepId: sequence.steps[0]!.id,
+      nextSendAt: new Date(Date.now() - 60_000)
+    });
+
+    const first = await fireEnrollmentStep(deps, enrollment, new Date());
+    expect(first.outcome).toBe("enqueued");
+    if (first.outcome !== "enqueued") return;
+    // The first step must carry no quote at all.
+    const firstQueue = db.select().from(sendQueue).where(eq(sendQueue.id, first.sendQueueEntryId)).get();
+    const firstMessage = db.select().from(messages).where(eq(messages.id, firstQueue!.messageId)).get();
+    expect(firstMessage?.bodyHtml).not.toContain("gmail_quote");
+
+    // Mark it sent, the way the Send worker would, so the follow-up has something to quote.
+    await deps.conversationRepository.markMessageSent(firstMessage!.id, {
+      sentAt: new Date(),
+      providerMessageId: "p1",
+      sentFromAccountId: accountId
+    });
+
+    const reloaded = await deps.enrollmentRepository.findById(enrollment.id);
+    const second = await fireEnrollmentStep(deps, reloaded!, new Date());
+    expect(second.outcome).toBe("enqueued");
+    if (second.outcome !== "enqueued") return;
+
+    const secondQueue = db.select().from(sendQueue).where(eq(sendQueue.id, second.sendQueueEntryId)).get();
+    const followUp = db.select().from(messages).where(eq(messages.id, secondQueue!.messageId)).get();
+
+    expect(followUp?.subject).toMatch(/^Re: /);
+    expect(followUp?.bodyHtml).toContain('<div class="gmail_quote">');
+    expect(followUp?.bodyHtml).toContain('class="gmail_attr"');
+    expect(followUp?.bodyHtml).toContain("First touch body.");
+    expect(followUp?.bodyText).toContain("wrote:");
+    expect(followUp?.bodyText).toContain("> First touch body.");
+  });
+
   it("resolves {{Account Name}} from the sending mailbox, so a signature token can't stall the campaign", async () => {
     // A real reported failure: a campaign sat "running" and sent nothing at all. The signature used
     // {{Account Name}}, no lead had a value for it, and a token with no value is a hard stop -- so

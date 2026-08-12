@@ -68,13 +68,18 @@ function renderBlock(block: BlockNode): string {
       return `<${tag}>${items}</${tag}>`;
     }
     case "quote": {
+      // Gmail's own reply markup, matched structurally: a gmail_quote wrapper around a
+      // dir="ltr" gmail_attr attribution line and a gmail_quote blockquote. The wrapper and the
+      // class names are what a receiving client's trimming heuristic looks for when deciding to
+      // collapse the quoted history behind the "..." control, so a follow-up that carries its
+      // previous message reads as a reply rather than as a wall of repeated text.
       const attribution = block.attribution
-        ? `<div class="gmail_attr">${escapeHtml(block.attribution)}</div>`
+        ? `<div dir="ltr" class="gmail_attr">${escapeHtml(block.attribution)}<br></div>`
         : "";
       const inner = block.children.map(renderBlock).join("");
       return (
-        `${attribution}<blockquote class="gmail_quote" ` +
-        `style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${inner}</blockquote>`
+        `<div class="gmail_quote">${attribution}<blockquote class="gmail_quote" ` +
+        `style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${inner}</blockquote></div>`
       );
     }
     case "image":

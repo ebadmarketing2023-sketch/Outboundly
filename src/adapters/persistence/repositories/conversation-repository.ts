@@ -244,14 +244,27 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
 
   async findOutboundMessageHistoryForEnrollment(
     campaignEnrollmentId: string
-  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string; accountId: string }>> {
+  ): Promise<
+    Array<{
+      messageIdHeader: string;
+      subject: string;
+      status: string;
+      accountId: string;
+      bodyText?: string;
+      fromAddress: string;
+      sentAt?: Date;
+    }>
+  > {
     const rows = this.db
       .select({
         messageIdHeader: messages.messageIdHeader,
         subject: messages.subject,
         status: messages.status,
         accountId: messages.accountId,
-        sentFromAccountId: messages.sentFromAccountId
+        sentFromAccountId: messages.sentFromAccountId,
+        bodyText: messages.bodyText,
+        fromAddress: messages.fromAddress,
+        sentAt: messages.sentAt
       })
       .from(messages)
       .where(and(eq(messages.campaignEnrollmentId, campaignEnrollmentId), eq(messages.direction, "outbound")))
@@ -267,7 +280,10 @@ export class SqliteConversationRepository implements ConversationRepositoryPort 
       messageIdHeader: row.messageIdHeader,
       subject: row.subject,
       status: row.status,
-      accountId: row.sentFromAccountId ?? row.accountId
+      accountId: row.sentFromAccountId ?? row.accountId,
+      bodyText: row.bodyText ?? undefined,
+      fromAddress: row.fromAddress,
+      sentAt: row.sentAt ?? undefined
     }));
   }
 

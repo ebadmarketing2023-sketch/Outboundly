@@ -116,7 +116,18 @@ export interface ConversationRepository {
    * become due before the Send worker has actually dispatched the step before it). */
   findOutboundMessageHistoryForEnrollment(
     campaignEnrollmentId: string
-  ): Promise<Array<{ messageIdHeader: string; subject: string; status: string; accountId: string }>>;
+  ): Promise<
+    Array<{
+      messageIdHeader: string;
+      subject: string;
+      status: string;
+      accountId: string;
+      /** The body as actually sent, so a follow-up can quote it Gmail-style. */
+      bodyText?: string;
+      fromAddress: string;
+      sentAt?: Date;
+    }>
+  >;
   /** The provider's own thread id (e.g. Gmail's threadId) for one of our internal threads, if
    * known yet -- only populated once that thread's first message actually finishes sending
    * (markMessageSent's providerThreadId) -- AND only returned if that thread actually belongs to
